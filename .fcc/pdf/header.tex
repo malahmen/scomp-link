@@ -1,0 +1,129 @@
+% ---------------------------------------------------------------------------
+% header.tex — pandoc MD→PDF code block styling
+% Pair with: --highlight-style .fcc/pdf/p10k.theme
+%
+% Approach: tcolorbox owns the block background entirely.
+% fvextra patches Highlighting directly to fix the ␣ bug.
+% ---------------------------------------------------------------------------
+
+% ---------------------------------------------------------------------------
+% Page margins
+% ---------------------------------------------------------------------------
+\usepackage[top=2cm, bottom=2cm, left=2cm, right=2cm]{geometry}
+
+% ---------------------------------------------------------------------------
+% Hyperlinks — controlled via -V colorlinks=true passed to pandoc.
+% pandoc's template conditionally sets colorlinks/hidelinks based on that
+% variable — no hyperref config needed here.
+% ---------------------------------------------------------------------------
+
+% ---------------------------------------------------------------------------
+% Images — required for \includegraphics in title page template
+% ---------------------------------------------------------------------------
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{fvextra}
+\usepackage{etoolbox}
+\usepackage[most]{tcolorbox}
+
+% ---------------------------------------------------------------------------
+% p10k colours (xterm-256 exact hex)
+% ---------------------------------------------------------------------------
+\definecolor{termbg} {HTML}{262626}
+\definecolor{termfg} {HTML}{bcbcbc}
+
+% ---------------------------------------------------------------------------
+% Fix ␣ bug: patch the Highlighting environment that pandoc defines via
+% \DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=...}
+% fvextra's \fvset doesn't reach it because the options on DefineVerbatimEnvironment
+% take precedence. We redefine it after \begin{document} to inject breaklines.
+% ---------------------------------------------------------------------------
+\AtBeginDocument{%
+  % Redefine Highlighting to add fvextra breaklines + correct foreground colour.
+  % Preserve the commandchars option pandoc requires for token coloring.
+  \DefineVerbatimEnvironment{Highlighting}{Verbatim}{%
+    commandchars=\\\{\},%
+    breaklines=true,%
+    breakanywhere=false,%
+    breaksymbolleft={},%
+    fontsize=\small,%
+  }%
+  % Suppress hyphenation at font level — prevents TeX inserting hyphens on line breaks.
+  \BeforeBeginEnvironment{Verbatim}{\hyphenchar\font=-1\relax}%
+  \AfterEndEnvironment{Verbatim}{\hyphenchar\font=`\-\relax}%
+}
+
+% ---------------------------------------------------------------------------
+% Redefine Shaded using tcolorbox — completely independent of framed/snugshade.
+% \AtBeginDocument so it fires after pandoc defines Shaded at line ~47.
+% ---------------------------------------------------------------------------
+\AtBeginDocument{%
+  \ifdef{\Shaded}{}{\newenvironment{Shaded}{}{}}%
+  \renewenvironment{Shaded}{%
+    \begin{tcolorbox}[%
+      enhanced,%
+      arc=3pt,%
+      boxrule=0.5pt,%
+      colback=termbg,%
+      colframe=termbg!60!black,%
+      coltext=termfg,%
+      left=6pt, right=6pt, top=4pt, bottom=4pt,%
+      before skip=8pt, after skip=8pt,%
+      fontupper=\color{termfg}\small,%
+    ]%
+  }{%
+    \end{tcolorbox}%
+  }%
+}
+
+% ---------------------------------------------------------------------------
+% Inline code styling
+% Use \scalerel to allow the text to shrink when inside narrow table columns.
+% \texttt globally uses \footnotesize so long identifiers fit in pandoc's
+% hardcoded longtable column proportions.
+% ---------------------------------------------------------------------------
+\usepackage{relsize}
+\let\oldtexttt\texttt
+\renewcommand{\texttt}[1]{%
+  \colorbox{termbg}{{\ttfamily\relsize{-1}\color{termfg}#1}}%
+}
+
+% ---------------------------------------------------------------------------
+% Suppress all hyphenation in prose.
+% \pretolerance=10000 makes TeX accept slightly loose lines before trying
+% hyphenation. Combined with \hyphenpenalty=10000 it effectively disables
+% hyphenation without breaking the layout engine entirely.
+% ---------------------------------------------------------------------------
+\pretolerance=10000
+\hyphenpenalty=10000
+\exhyphenpenalty=10000
+
+% ---------------------------------------------------------------------------
+% Table row colours — alternating light grey / white body rows, medium grey
+% header. Applies to all longtables pandoc generates.
+%
+% \rowcolors{<start row>}{<odd colour>}{<even colour>}
+% Start row 1 so the header row is row 0 (styled separately via \rowcolor).
+% \arrayrulecolor keeps the rule lines visible against the light background.
+% ---------------------------------------------------------------------------
+\usepackage{colortbl}
+\definecolor{tableheader}{HTML}{cccccc}
+\definecolor{tablerowodd}{HTML}{f5f5f5}
+\definecolor{tableroweven}{HTML}{ffffff}
+
+\AtBeginDocument{%
+  \rowcolors{2}{tablerowodd}{tableroweven}%
+}
+
+% Style the header row — pandoc wraps it in \endfirsthead / \endhead blocks.
+% Redefine \toprule and \midrule to inject \rowcolor on the header row.
+% \arrayrulecolor darkens the rule lines so they remain visible on light bg.
+\arrayrulecolor{gray!50}
+
+% Colour the header row by patching longtable's first-head block.
+% \pretocmd injects \rowcolor{tableheader} immediately after \toprule,
+% which is where pandoc places the header row.
+\usepackage{longtable}
+\AtBeginDocument{%
+  \pretocmd{\toprule}{\rowcolor{tableheader}}{}{}%
+}
