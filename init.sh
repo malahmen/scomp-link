@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# common.sh — Interactive script launcher powered by gum
-# Lists all .sh files in the same directory (excluding itself and setup.sh)
-# and lets the user pick one to run. Loops until the user quits.
+# init.sh — Interactive script launcher powered by gum
+# Discovers .sh files one level deep (one per subdirectory) and lets the user
+# pick one to run. Loops until the user quits.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SELF="$(basename "${BASH_SOURCE[0]}")"
 
 # ── gum check ─────────────────────────────────────────────────────────────────
 if ! command -v gum > /dev/null 2>&1; then
@@ -17,24 +16,15 @@ if ! command -v gum > /dev/null 2>&1; then
 fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-EXCLUDED="common.sh setup.sh"
 
-is_excluded() {
-    local name="$1"
-    for ex in $EXCLUDED; do
-        [ "$name" = "$ex" ] && return 0
-    done
-    return 1
-}
-
+# Returns "folder/script.sh" relative paths, one per line, sorted.
 get_scripts() {
     local scripts=()
     while IFS= read -r -d '' f; do
-        local name
-        name="$(basename "$f")"
-        is_excluded "$name" && continue
-        scripts+=("$name")
-    done < <(find "$SCRIPT_DIR" -maxdepth 1 -name "*.sh" -print0 | sort -z)
+        # Strip the SCRIPT_DIR prefix to get e.g. "argo/argo.sh"
+        local rel="${f#"$SCRIPT_DIR/"}"
+        scripts+=("$rel")
+    done < <(find "$SCRIPT_DIR" -mindepth 2 -maxdepth 2 -name "*.sh" -print0 | sort -z)
     printf '%s\n' "${scripts[@]}"
 }
 
