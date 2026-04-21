@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # setup.sh — Bootstrap script for gum-based tooling on Linux/macOS
 # Detects OS, installs curl if missing, installs mise, installs gum,
-# optionally installs Node.js/npm (LTS via mise), runs common.sh
+# optionally installs Node.js/npm (LTS via mise), runs init.sh
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -332,14 +332,14 @@ ensure_vim
 ensure_tree
 ensure_node
 
-COMMON_SH="$SCRIPT_DIR/common.sh"
+COMMON_SH="$SCRIPT_DIR/init.sh"
 if [ ! -f "$COMMON_SH" ]; then
-    fatal "common.sh not found next to setup.sh (expected: $COMMON_SH)"
+    fatal "init.sh not found next to setup.sh (expected: $COMMON_SH)"
 fi
 
 if [ ! -x "$COMMON_SH" ]; then
     chmod +x "$COMMON_SH"
 fi
 
-info "Launching common.sh..."
+info "Launching init.sh..."
 exec "$COMMON_SH"
