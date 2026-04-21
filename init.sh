@@ -17,12 +17,27 @@ fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+# Folders that contain shared utilities (sourced by other scripts), not
+# interactive TUIs. They are excluded from the script picker.
+EXCLUDED_DIRS="cluster"
+
+_dir_excluded() {
+    local dir="$1"
+    for ex in $EXCLUDED_DIRS; do
+        [ "$dir" = "$ex" ] && return 0
+    done
+    return 1
+}
+
 # Returns "folder/script.sh" relative paths, one per line, sorted.
+# Skips any folder listed in EXCLUDED_DIRS.
 get_scripts() {
     local scripts=()
     while IFS= read -r -d '' f; do
         # Strip the SCRIPT_DIR prefix to get e.g. "argo/argo.sh"
         local rel="${f#"$SCRIPT_DIR/"}"
+        local dir="${rel%%/*}"
+        _dir_excluded "$dir" && continue
         scripts+=("$rel")
     done < <(find "$SCRIPT_DIR" -mindepth 2 -maxdepth 2 -name "*.sh" -print0 | sort -z)
     printf '%s\n' "${scripts[@]}"
