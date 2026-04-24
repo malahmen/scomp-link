@@ -548,7 +548,7 @@ qdrant_port_forward_k8s() {
 
     # kubectl can only port-forward one port pair per command — run two in background
     # and wait on the REST one (primary) in foreground.
-    kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${grpc_port}:6334" &
+    kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${grpc_port}:6334" >/dev/null 2>&1 &
     local grpc_pf_pid=$!
     kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${rest_port}:6333" || true
 
@@ -572,7 +572,7 @@ qdrant_health_check_k8s() {
     local port="${port_input:-$QD_DEFAULT_REST_PORT}"
 
     info "Starting REST port-forward in background..."
-    kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${port}:6333" &
+    kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${port}:6333" >/dev/null 2>&1 &
     local pf_pid=$!
 
     local attempts=0

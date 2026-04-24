@@ -526,7 +526,7 @@ postgres_connect_k8s() {
     db="${db:-$PG_DEFAULT_DB}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" &
+    kubectl -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
     local pf_pid=$!
 
     # Wait for the port-forward to bind before handing off to psql.

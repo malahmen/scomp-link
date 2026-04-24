@@ -547,7 +547,7 @@ mysql_connect_k8s() {
     db="${db:-$MY_DEFAULT_DB}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" &
+    kubectl -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
     local pf_pid=$!
 
     local attempts=0
