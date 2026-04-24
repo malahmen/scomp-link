@@ -8,6 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPTS_DIR="${SCRIPT_DIR}/scripts"
 
 # ── gum check ─────────────────────────────────────────────────────────────────
 if ! command -v gum > /dev/null 2>&1; then
@@ -34,12 +35,11 @@ _dir_excluded() {
 get_scripts() {
     local scripts=()
     while IFS= read -r -d '' f; do
-        # Strip the SCRIPT_DIR prefix to get e.g. "argo/argo.sh"
-        local rel="${f#"$SCRIPT_DIR/"}"
+        local rel="${f#"$SCRIPTS_DIR/"}"
         local dir="${rel%%/*}"
         _dir_excluded "$dir" && continue
         scripts+=("$rel")
-    done < <(find "$SCRIPT_DIR" -mindepth 2 -maxdepth 2 -name "*.sh" -print0 | sort -z)
+    done < <(find "$SCRIPTS_DIR" -mindepth 2 -maxdepth 2 -name "*.sh" -print0 | sort -z)
     printf '%s\n' "${scripts[@]}"
 }
 
@@ -54,7 +54,7 @@ while true; do
     available=$(get_scripts)
 
     if [ -z "$available" ]; then
-        gum style --foreground 196 "No runnable scripts found in $SCRIPT_DIR."
+        gum style --foreground 196 "No runnable scripts found in $SCRIPTS_DIR."
         exit 1
     fi
 
@@ -69,7 +69,7 @@ while true; do
         exit 0
     fi
 
-    script_path="$SCRIPT_DIR/$choice"
+    script_path="$SCRIPTS_DIR/$choice"
 
     if [ ! -f "$script_path" ]; then
         gum style --foreground 196 "Script not found: $script_path"
