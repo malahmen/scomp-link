@@ -2,8 +2,8 @@
 # -----------------------------------------------------------------------------
 # starlight.sh
 # Interactive TUI for creating and managing Astro Starlight documentation projects.
-# Called by common.sh — expects gum to already be available.
-# Dependencies: gum (managed by common.sh), npm, vim
+# Called by init.sh — expects gum to already be available.
+# Dependencies: gum (managed by init.sh), npm, vim
 # Optional: tree (site structure view)
 # -----------------------------------------------------------------------------
 

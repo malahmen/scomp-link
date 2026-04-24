@@ -2,11 +2,13 @@
 # -----------------------------------------------------------------------------
 # karpenter.sh
 # Interactive TUI for installing and managing Karpenter locally (dev/testing).
-# Uses KWOK as the simulated cloud provider for kind-based local clusters.
-# Called by common.sh — expects gum to be available.
-# Hard dependencies (abort if missing): docker, kind, go  — install via their
+# Uses KWOK as the simulated cloud provider.
+# Works with kind clusters or any existing kubectl-reachable cluster.
+# Called by init.sh - expects gum to be available.
+# Hard dependencies (abort if missing): docker, go  - install via their
 #   dedicated scripts first.
 # Soft dependencies (offer to install): ko, make, kubectl.
+# kind is only required when choosing to use/create a kind cluster.
 # Sources: karpenter (kubernetes-sigs/karpenter) + KWOK (kubernetes-sigs/kwok).
 # -----------------------------------------------------------------------------
 
@@ -29,7 +31,7 @@ GREEN=82
 YELLOW=220
 BLUE=39
 
-# Script-level globals — updated by setup_work_dir()
+# Script-level globals - updated by setup_work_dir()
 WORK_DIR="${DEFAULT_WORK_DIR}"
 KARPENTER_DIR="${DEFAULT_WORK_DIR}/karpenter"
 KWOK_DIR="${DEFAULT_WORK_DIR}/kwok"
@@ -60,7 +62,7 @@ check_gum() {
     command -v gum &>/dev/null || _fatal "gum not found. Run setup.sh first."
 }
 
-# docker — hard dependency, abort if missing
+# docker - hard dependency, abort if missing
 _check_docker() {
     if ! command -v docker &>/dev/null; then
         gum log --level error "docker is not installed or not in PATH."
@@ -74,7 +76,7 @@ _check_docker() {
     info "docker: $(docker --version 2>/dev/null | head -1)"
 }
 
-# kind — hard dependency, abort if missing
+# kind - hard dependency, abort if missing
 _check_kind() {
     if ! command -v kind &>/dev/null; then
         gum log --level error "kind is not installed or not in PATH."
@@ -84,7 +86,7 @@ _check_kind() {
     info "kind: $(kind version 2>/dev/null)"
 }
 
-# go — hard dependency, abort if missing
+# go - hard dependency, abort if missing
 _check_go() {
     if ! command -v go &>/dev/null; then
         gum log --level error "Go is not installed or not in PATH."
@@ -94,7 +96,7 @@ _check_go() {
     info "go: $(go version 2>/dev/null)"
 }
 
-# ko — soft dependency, offer to install via go install
+# ko - soft dependency, offer to install via go install
 ensure_ko() {
     if command -v ko &>/dev/null; then
         info "ko: $(ko version 2>/dev/null || echo 'installed')"
@@ -127,7 +129,7 @@ ensure_ko() {
     success "ko installed: $(ko version 2>/dev/null || echo 'ok')"
 }
 
-# make — soft dependency, offer to install via system package manager
+# make - soft dependency, offer to install via system package manager
 ensure_make() {
     if command -v make &>/dev/null; then
         info "make: $(make --version 2>/dev/null | head -1)"
@@ -176,7 +178,7 @@ ensure_make() {
     success "make installed: $(make --version 2>/dev/null | head -1)"
 }
 
-# kubectl — soft dependency, offer to install via mise
+# kubectl - soft dependency, offer to install via mise
 ensure_kubectl() {
     if command -v kubectl &>/dev/null; then
         info "kubectl: $(kubectl version --client 2>/dev/null | head -1)"
@@ -214,7 +216,6 @@ check_dependencies() {
     info "Checking required dependencies..."
 
     _check_docker
-    _check_kind
     _check_go
 
     ensure_ko
@@ -257,7 +258,7 @@ clone_or_update_repo() {
     local target_dir="$3"
 
     if [[ -d "${target_dir}/.git" ]]; then
-        info "${label} source found at ${target_dir} — pulling latest..."
+        info "${label} source found at ${target_dir} - pulling latest..."
         if ! gum spin --spinner dot --title "Updating ${label}..." -- \
             git -C "${target_dir}" pull --ff-only; then
             warn "Could not fast-forward ${label}. The repository may have local changes."
@@ -280,7 +281,7 @@ prepare_sources() {
 }
 
 # -----------------------------------------------------------------------------
-# Cluster — ensure a kind cluster is active
+# Cluster - ensure a kind cluster is active
 # -----------------------------------------------------------------------------
 
 # Prints all kind cluster names, one per line (empty if none).
@@ -293,7 +294,7 @@ _use_kind_cluster() {
     local cluster_name="$1"
     local context="kind-${cluster_name}"
     if ! kubectl config use-context "${context}" &>/dev/null; then
-        # kind may not have written the kubeconfig yet — fetch it
+        # kind may not have written the kubeconfig yet - fetch it
         kind export kubeconfig --name "${cluster_name}" 2>/dev/null || true
         kubectl config use-context "${context}" &>/dev/null \
             || error_exit "Could not switch to context '${context}'."
@@ -312,31 +313,33 @@ _create_kind_cluster() {
     success "Kind cluster '${cluster_name}' created."
 }
 
-# Ensures an active kind cluster context is set.
-# - If the current context is already a kind cluster, use it.
-# - Otherwise list existing kind clusters and let the user pick one,
-#   or create a new one.
-check_cluster() {
-    info "Checking for a kind cluster..."
+# Switches to an existing kubectl context chosen from the list.
+_select_existing_context() {
+    local contexts
+    contexts=$(kubectl config get-contexts -o name 2>/dev/null || true)
 
-    # Is the current context already a kind cluster?
-    local current_ctx
-    current_ctx=$(kubectl config current-context 2>/dev/null || true)
-    if [[ "$current_ctx" == kind-* ]]; then
-        local cluster_name="${current_ctx#kind-}"
-        if kind get clusters 2>/dev/null | grep -qx "${cluster_name}"; then
-            info "Already using kind cluster '${cluster_name}' (context: ${current_ctx})."
-            if ! gum spin --spinner dot --title "Connecting to cluster..." -- \
-                kubectl cluster-info &>/dev/null; then
-                gum log --level error "Cannot reach cluster '${cluster_name}'. Is Docker running?"
-                exit 1
-            fi
-            info "Cluster reachable."
-            return
-        fi
+    if [[ -z "$contexts" ]]; then
+        error_exit "No kubectl contexts found. Configure your kubeconfig and retry."
     fi
 
-    # List available kind clusters
+    local chosen
+    chosen=$(echo "$contexts" | gum choose \
+        --header "Select a kubectl context:" \
+        --height 15) || true
+
+    if [[ -z "$chosen" ]]; then
+        error_exit "No context selected. Aborting."
+    fi
+
+    kubectl config use-context "$chosen" \
+        || error_exit "Could not switch to context '${chosen}'."
+    info "Switched to context: ${chosen}"
+}
+
+# Selects an existing kind cluster or creates a new one, then switches context.
+_select_or_create_kind_cluster() {
+    _check_kind
+
     local clusters
     clusters=$(_list_kind_clusters)
 
@@ -346,10 +349,10 @@ check_cluster() {
             --align center --width 60 --margin "1 2" --padding "1 4" \
             "No kind clusters found." \
             "" \
-            "A local kind cluster is required to run Karpenter."
+            "A local kind cluster is required to run Karpenter with kind."
 
         if ! gum confirm "Create a new kind cluster now?"; then
-            error_exit "A kind cluster is required. Use kind.sh to manage clusters."
+            error_exit "No kind cluster selected. Aborting."
         fi
 
         local new_name
@@ -361,51 +364,83 @@ check_cluster() {
 
         _create_kind_cluster "${new_name}"
         _use_kind_cluster "${new_name}"
+        return
+    fi
+
+    local cluster_count
+    cluster_count=$(echo "$clusters" | wc -l | tr -d ' ')
+
+    local chosen
+    if [[ "$cluster_count" -eq 1 ]]; then
+        chosen="${clusters}"
+        if ! gum confirm "Use kind cluster '${chosen}'?"; then
+            error_exit "No kind cluster selected. Aborting."
+        fi
     else
-        local cluster_count
-        cluster_count=$(echo "$clusters" | wc -l | tr -d ' ')
+        chosen=$(echo "$clusters" | gum choose \
+            --header "Select a kind cluster to use:" \
+            --height 10) || true
 
-        local chosen
-        if [[ "$cluster_count" -eq 1 ]]; then
-            chosen="${clusters}"
-            gum style \
-                --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-                --align center --width 60 --margin "1 2" --padding "1 4" \
-                "Current context is not a kind cluster." \
-                "" \
-                "Found kind cluster: ${chosen}"
-
-            if ! gum confirm "Switch to kind cluster '${chosen}'?"; then
-                error_exit "A kind cluster context is required. Aborting."
-            fi
-        else
-            gum log --level warn "Current context is not a kind cluster."
-            chosen=$(echo "$clusters" | gum choose \
-                --header "Select a kind cluster to use:" \
-                --height 10) || true
-
-            if [[ -z "$chosen" ]]; then
-                if gum confirm "No cluster selected. Create a new one?"; then
-                    local new_name
-                    new_name=$(gum input \
-                        --placeholder "karpenter" \
-                        --char-limit 40 \
-                        --header "Cluster name (leave empty for 'karpenter'):") || true
-                    new_name="${new_name:-karpenter}"
-                    _create_kind_cluster "${new_name}"
-                    chosen="${new_name}"
-                else
-                    error_exit "A kind cluster context is required. Aborting."
-                fi
+        if [[ -z "$chosen" ]]; then
+            if gum confirm "No cluster selected. Create a new one?"; then
+                local new_name
+                new_name=$(gum input \
+                    --placeholder "karpenter" \
+                    --char-limit 40 \
+                    --header "Cluster name (leave empty for 'karpenter'):") || true
+                new_name="${new_name:-karpenter}"
+                _create_kind_cluster "${new_name}"
+                chosen="${new_name}"
+            else
+                error_exit "No kind cluster selected. Aborting."
             fi
         fi
-
-        _use_kind_cluster "${chosen}"
     fi
+
+    _use_kind_cluster "${chosen}"
+}
+
+# Ensures an active cluster context is set.
+# Accepts any reachable kubectl context, or offers to use/create a kind cluster.
+check_cluster() {
+    info "Checking for an active Kubernetes cluster..."
+
+    # If the current context is already reachable, offer to use it as-is.
+    local current_ctx
+    current_ctx=$(kubectl config current-context 2>/dev/null || true)
+
+    if [[ -n "$current_ctx" ]]; then
+        if gum spin --spinner dot --title "Testing current context '${current_ctx}'..." -- \
+            kubectl cluster-info &>/dev/null; then
+            info "Current context '${current_ctx}' is reachable."
+            if gum confirm "Use current context '${current_ctx}'?"; then
+                return
+            fi
+        fi
+    fi
+
+    # Let the user decide how to select a cluster.
+    local choice
+    choice=$(gum choose \
+        "use an existing kubectl context" \
+        "use / create a kind cluster" \
+        --header "How would you like to select a cluster?") || true
+
+    case "$choice" in
+        "use an existing kubectl context")
+            _select_existing_context
+            ;;
+        "use / create a kind cluster")
+            _select_or_create_kind_cluster
+            ;;
+        *)
+            error_exit "No cluster selected. Aborting."
+            ;;
+    esac
 
     if ! gum spin --spinner dot --title "Connecting to cluster..." -- \
         kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster. Is Docker running?"
+        gum log --level error "Cannot reach cluster. Check your kubeconfig and retry."
         exit 1
     fi
     info "Cluster reachable."
@@ -419,7 +454,7 @@ install_cert_manager() {
     info "Checking cert-manager..."
 
     if kubectl get namespace cert-manager &>/dev/null 2>&1; then
-        info "cert-manager namespace already exists — skipping install."
+        info "cert-manager namespace already exists - skipping install."
         return
     fi
 
@@ -469,7 +504,7 @@ install_kwok_in_cluster() {
     gum spin --spinner dot --title "Applying KWOK default stages..." -- \
         kubectl apply -f \
         "https://github.com/kubernetes-sigs/kwok/releases/download/${kwok_ver}/stage-fast.yaml" \
-        2>/dev/null || warn "Could not apply KWOK stage-fast.yaml — nodes may not simulate properly."
+        2>/dev/null || warn "Could not apply KWOK stage-fast.yaml - nodes may not simulate properly."
 
     if ! gum spin --spinner dot --title "Waiting for KWOK controller (up to 90 s)..." -- \
         kubectl rollout status deployment/kwok-controller \
@@ -488,21 +523,37 @@ build_and_deploy_karpenter() {
         error_exit "Karpenter source not found at ${KARPENTER_DIR}. Clone sources first."
     fi
 
+    # Default to ko.local only for kind clusters; other clusters need a real registry.
+    local _ctx _default_repo _placeholder _hint
+    _ctx=$(kubectl config current-context 2>/dev/null || true)
+    if [[ "$_ctx" == kind-* ]]; then
+        _default_repo="ko.local"
+        _placeholder="ko.local"
+        _hint="kind cluster detected - 'ko.local' loads images directly into the cluster."
+    else
+        _default_repo=""
+        _placeholder="registry.example.com/karpenter"
+        _hint="Provide a registry reachable by your cluster (e.g. ECR, GCR, GHCR, or a local registry)."
+    fi
+
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
         --align left --width 66 --margin "1 2" --padding "1 4" \
         "Build & Deploy Karpenter" \
         "" \
         "ko will build the controller image and deploy it to your cluster." \
-        "For kind clusters, use 'ko.local' as the registry." \
-        "For a local registry, use 'localhost:5001' (or your registry address)."
+        "${_hint}"
 
     local ko_docker_repo
     ko_docker_repo=$(gum input \
-        --placeholder "ko.local" \
+        --placeholder "${_placeholder}" \
         --char-limit 120 \
-        --header "KO_DOCKER_REPO (ko.local for kind, or your registry):") || true
-    ko_docker_repo="${ko_docker_repo:-ko.local}"
+        --header "KO_DOCKER_REPO:") || true
+    ko_docker_repo="${ko_docker_repo:-${_default_repo}}"
+
+    if [[ -z "$ko_docker_repo" ]]; then
+        error_exit "KO_DOCKER_REPO is required. Provide a container registry address."
+    fi
 
     info "Building Karpenter with KO_DOCKER_REPO=${ko_docker_repo}..."
     info "This may take several minutes on first build."
@@ -574,7 +625,7 @@ karpenter_status() {
 
     gum style --foreground "$CYAN" --bold "── Karpenter pods ──"
     kubectl get pods -n "${KARPENTER_NAMESPACE}" 2>/dev/null \
-        || warn "Namespace '${KARPENTER_NAMESPACE}' not found — Karpenter may not be installed."
+        || warn "Namespace '${KARPENTER_NAMESPACE}' not found - Karpenter may not be installed."
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Karpenter CRDs ──"
@@ -782,8 +833,8 @@ main() {
         --foreground "$BLUE" --border-foreground "$BLUE" --border double \
         --align center --width 66 --margin "1 2" --padding "1 4" \
         "Karpenter Local" \
-        "Kubernetes Node Autoscaler — Local Dev Setup" \
-        "(kind + KWOK)"
+        "Kubernetes Node Autoscaler - Local Dev Setup" \
+        "(KWOK - kind or bring your own cluster)"
 
     check_dependencies
 
