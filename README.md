@@ -87,17 +87,18 @@ Or re-run setup to bootstrap dependencies:
 
 ## Adding Your Own Scripts
 
-Simply drop any `.sh` file into the scomp-link directory:
+Create a folder under `scripts/` and drop your `.sh` file inside it:
 
 ```bash
 # Example: add your custom script
-cp ~/my-scripts/deploy.sh ./
+mkdir -p scripts/deploy
+cp ~/my-scripts/deploy.sh scripts/deploy/
 
 # It will appear in the menu next time you run init.sh
 ./init.sh
 ```
 
-**That's it.** The launcher auto-discovers all `.sh` files (excluding `setup.sh` and `init.sh`).
+**That's it.** The launcher auto-discovers all `.sh` files one level deep inside `scripts/` (excluding folders listed in `EXCLUDED_DIRS`, such as `cluster`).
 
 ### Script Guidelines
 
@@ -203,24 +204,33 @@ Convert documents between formats with extensive customization:
 
 ```
 scomp-link/
-├── setup.sh              # Bootstrap installer (core)
-├── init.sh             # Main TUI launcher (core)
-├── wsl-setup.ps1         # Windows WSL bootstrap (core)
+├── setup.sh                        # Bootstrap installer (core)
+├── init.sh                         # Main TUI launcher (core)
+├── wsl-setup.ps1                   # Windows WSL bootstrap (core)
 │
-├── kind.sh               # [Included] Kind cluster manager
-├── argo.sh               # [Included] Argo Workflows & CD manager
-├── starlight_astro.sh    # [Included] Starlight documentation manager
-├── file_conversion.sh    # [Included] Document format converter
-├── your-script.sh        # [Custom] Add your own scripts here!
-│
-├── converter/            # Assets for file_conversion.sh
-│   └── convert.sh
-└── .fcc/                 # File conversion config assets
-    ├── title-pages/
-    └── pdf/
+└── scripts/                        # All runnable scripts live here
+    ├── argo/
+    │   └── argo.sh                 # [Included] Argo Workflows & CD manager
+    ├── cluster/
+    │   └── cluster.sh              # [Shared] Deployment target helper (sourced, not run directly)
+    ├── file_conversion/
+    │   └── file_conversion.sh      # [Included] Document format converter
+    ├── karpenter/
+    │   └── karpenter.sh            # [Included] Karpenter local dev setup
+    ├── kind/
+    │   └── kind.sh                 # [Included] Kind cluster manager
+    ├── starlight/
+    │   ├── starlight_astro.sh      # [Included] Starlight documentation manager
+    │   ├── converter/              # Assets for document conversion
+    │   │   └── convert.sh
+    │   └── .fcc/                   # File conversion config assets
+    │       ├── title-pages/
+    │       └── pdf/
+    └── your-script/
+        └── your-script.sh          # [Custom] Add your own scripts here!
 ```
 
-**Core files** (`setup.sh`, `init.sh`) are the framework. Everything else is a script that gets discovered and shown in the menu.
+**Core files** (`setup.sh`, `init.sh`) are the framework. Scripts placed under `scripts/<folder>/` are auto-discovered and shown in the menu.
 
 ## Configuration
 
@@ -291,7 +301,7 @@ Some operations require sudo. On systems without passwordless sudo, you may need
 
 Scomp-Link is evolving into a comprehensive shell scripting framework:
 
-- **Shared Library** - Common functions (`lib/init.sh`) for logging, prompts, validation
+- **Shared Library** - Common functions (`lib/shared.sh`) for logging, prompts, validation
 - **Gum Helpers** - Reusable TUI patterns (`lib/gum-helpers.sh`)
 - **Plugin System** - Auto-discover scripts from `~/.config/scomp-link/plugins/`
 - **Tool Management** - Unified TUI for managing development tools via mise
@@ -312,7 +322,7 @@ See the full improvements list in the repository discussions or issues.
 - Use `set -euo pipefail` at the start of scripts
 - Follow existing patterns for error handling and user interaction
 - Use gum for all user prompts and selections
-- Add new scripts to the root directory (auto-discovered by `init.sh`)
+- Add new scripts under `scripts/<folder>/` (auto-discovered by `init.sh`)
 
 ### Contributing Scripts
 
