@@ -587,7 +587,7 @@ mongodb_connect_k8s() {
     db="${db:-$MNG_DEFAULT_DB}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" &
+    kubectl -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" >/dev/null 2>&1 &
     local pf_pid=$!
 
     local attempts=0
