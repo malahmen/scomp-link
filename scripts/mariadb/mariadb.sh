@@ -572,7 +572,7 @@ mariadb_connect_k8s() {
     db="${db:-$MDB_DEFAULT_DB}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" &
+    kubectl -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
     local pf_pid=$!
 
     local attempts=0
