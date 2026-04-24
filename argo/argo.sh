@@ -2,8 +2,8 @@
 # -----------------------------------------------------------------------------
 # argo.sh
 # Interactive TUI for installing and managing Argo Workflows and Argo CD.
-# Called by common.sh — expects gum and kubectl to already be available.
-# Dependencies: gum (managed by common.sh), kubectl, curl
+# Called by init.sh — expects gum and kubectl to already be available.
+# Dependencies: gum (managed by init.sh), kubectl, curl
 # -----------------------------------------------------------------------------
 
 set -euo pipefail

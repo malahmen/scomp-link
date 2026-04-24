@@ -76,7 +76,7 @@ The setup script will:
 After setup, run the main launcher:
 
 ```bash
-./common.sh
+./init.sh
 ```
 
 Or re-run setup to bootstrap dependencies:
@@ -93,11 +93,11 @@ Simply drop any `.sh` file into the scomp-link directory:
 # Example: add your custom script
 cp ~/my-scripts/deploy.sh ./
 
-# It will appear in the menu next time you run common.sh
-./common.sh
+# It will appear in the menu next time you run init.sh
+./init.sh
 ```
 
-**That's it.** The launcher auto-discovers all `.sh` files (excluding `setup.sh` and `common.sh`).
+**That's it.** The launcher auto-discovers all `.sh` files (excluding `setup.sh` and `init.sh`).
 
 ### Script Guidelines
 
@@ -204,7 +204,7 @@ Convert documents between formats with extensive customization:
 ```
 scomp-link/
 ├── setup.sh              # Bootstrap installer (core)
-├── common.sh             # Main TUI launcher (core)
+├── init.sh             # Main TUI launcher (core)
 ├── wsl-setup.ps1         # Windows WSL bootstrap (core)
 │
 ├── kind.sh               # [Included] Kind cluster manager
@@ -220,7 +220,7 @@ scomp-link/
     └── pdf/
 ```
 
-**Core files** (`setup.sh`, `common.sh`) are the framework. Everything else is a script that gets discovered and shown in the menu.
+**Core files** (`setup.sh`, `init.sh`) are the framework. Everything else is a script that gets discovered and shown in the menu.
 
 ## Configuration
 
@@ -291,7 +291,7 @@ Some operations require sudo. On systems without passwordless sudo, you may need
 
 Scomp-Link is evolving into a comprehensive shell scripting framework:
 
-- **Shared Library** - Common functions (`lib/common.sh`) for logging, prompts, validation
+- **Shared Library** - Common functions (`lib/init.sh`) for logging, prompts, validation
 - **Gum Helpers** - Reusable TUI patterns (`lib/gum-helpers.sh`)
 - **Plugin System** - Auto-discover scripts from `~/.config/scomp-link/plugins/`
 - **Tool Management** - Unified TUI for managing development tools via mise
@@ -312,7 +312,7 @@ See the full improvements list in the repository discussions or issues.
 - Use `set -euo pipefail` at the start of scripts
 - Follow existing patterns for error handling and user interaction
 - Use gum for all user prompts and selections
-- Add new scripts to the root directory (auto-discovered by `common.sh`)
+- Add new scripts to the root directory (auto-discovered by `init.sh`)
 
 ### Contributing Scripts
 
