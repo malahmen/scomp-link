@@ -2,8 +2,8 @@
 # -----------------------------------------------------------------------------
 # kind.sh
 # Interactive TUI for creating and managing kind Kubernetes clusters.
-# Called by common.sh — expects gum to already be available.
-# Dependencies: gum (managed by common.sh), mise, docker
+# Called by init.sh — expects gum to already be available.
+# Dependencies: gum (managed by init.sh), mise, docker
 #               kind and kubectl are installed automatically via mise if missing.
 # -----------------------------------------------------------------------------
 

@@ -3,8 +3,8 @@
 # file_conversion.sh
 # Interactive TUI for converting files between formats.
 # Supported: Markdown → PDF, Markdown → DOCX, DOCX → Markdown
-# Called by common.sh — expects gum to already be available.
-# Dependencies: gum (managed by common.sh), pandoc + PDF engine (checked at runtime)
+# Called by init.sh — expects gum to already be available.
+# Dependencies: gum (managed by init.sh), pandoc + PDF engine (checked at runtime)
 # Config: .fcc/pdf/header.tex (created on first run if missing)
 #         .fcc/title-pages/<name>.yaml + <name>.md (optional title page templates)
 # -----------------------------------------------------------------------------
