@@ -15,7 +15,7 @@ set -euo pipefail
 
 GH_KIND_API="https://api.github.com/repos/kubernetes-sigs/kind/releases"
 DEFAULT_CLUSTER_NAME="kind"
-WORKER_COUNT=1      # Fixed — more workers consume significant memory for no POC benefit
+WORKER_COUNT=0 # Fixed - more workers consume significant memory for no POC benefit
 LOG_DEFAULT_BASE="./kind-logs"
 
 # Suggested port mappings: "label|host_port|container_port"
@@ -563,6 +563,12 @@ action_load_image() {
     gum log --level info "Image '${image}' loaded into cluster '${cluster}'."
 }
 
+action_use_context() {
+    local cluster="$1"
+    kubectl config use-context "kind-${cluster}"
+    gum log --level info "Active context set to: kind-${cluster}"
+}
+
 action_delete_cluster() {
     local cluster="$1"
 
@@ -714,13 +720,22 @@ single_cluster_menu() {
     local cluster="$1"
 
     while true; do
+        local current_ctx active_marker
+        current_ctx=$(kubectl config current-context 2>/dev/null || true)
+        if [[ "$current_ctx" == "kind-${cluster}" ]]; then
+            active_marker=" (active)"
+        else
+            active_marker=""
+        fi
+
         gum style \
             --foreground 99 --border-foreground 99 --border normal \
             --width 60 --margin "0 2" --padding "0 2" \
-            "Cluster: ${cluster}"
+            "Cluster: ${cluster}${active_marker}"
 
         local action
         action=$(gum choose \
+            "set as active context" \
             "get nodes" \
             "get kubeconfig" \
             "export kubeconfig" \
@@ -731,11 +746,12 @@ single_cluster_menu() {
             --header "Select action:") || true
 
         case "$action" in
-            "get nodes")         action_get_nodes         "${cluster}" ;;
-            "get kubeconfig")    action_get_kubeconfig    "${cluster}" ;;
-            "export kubeconfig") action_export_kubeconfig "${cluster}" ;;
-            "export logs")       action_export_logs       "${cluster}" ;;
-            "load image")        action_load_image        "${cluster}" ;;
+            "set as active context") action_use_context       "${cluster}" ;;
+            "get nodes")             action_get_nodes         "${cluster}" ;;
+            "get kubeconfig")        action_get_kubeconfig    "${cluster}" ;;
+            "export kubeconfig")     action_export_kubeconfig "${cluster}" ;;
+            "export logs")           action_export_logs       "${cluster}" ;;
+            "load image")            action_load_image        "${cluster}" ;;
             "delete cluster")
                 action_delete_cluster "${cluster}"
                 return  # Cluster may no longer exist — back to main
