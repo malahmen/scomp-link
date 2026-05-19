@@ -38,6 +38,8 @@ QD_HELM_CHART="qdrant/qdrant"
 QD_DEFAULT_REST_PORT=6333
 QD_DEFAULT_GRPC_PORT=6334
 QD_DEFAULT_IMAGE_TAG="latest"
+_QD_REST_PF_PID="/tmp/scomp-pf-qdrant-rest.pid"
+_QD_GRPC_PF_PID="/tmp/scomp-pf-qdrant-grpc.pid"
 
 # Colours
 CYAN=212
@@ -520,12 +522,40 @@ qdrant_status_k8s() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_qd_rest_pf_is_running() { [[ -f "$_QD_REST_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_QD_REST_PF_PID")" 2>/dev/null; }
+_qd_rest_pf_port()       { cut -d: -f2 < "$_QD_REST_PF_PID" 2>/dev/null; }
+_qd_rest_pf_stop()       { kill "$(cut -d: -f1 < "$_QD_REST_PF_PID")" 2>/dev/null || true; rm -f "$_QD_REST_PF_PID"; }
+_qd_grpc_pf_is_running() { [[ -f "$_QD_GRPC_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_QD_GRPC_PF_PID")" 2>/dev/null; }
+_qd_grpc_pf_port()       { cut -d: -f2 < "$_QD_GRPC_PF_PID" 2>/dev/null; }
+_qd_grpc_pf_stop()       { kill "$(cut -d: -f1 < "$_QD_GRPC_PF_PID")" 2>/dev/null || true; rm -f "$_QD_GRPC_PF_PID"; }
+
 qdrant_port_forward_k8s() {
     header "Qdrant — Port Forward"
     _k8s_check_cluster || return 0
 
     if ! _k8s_detect_installed; then
         warn "Release '${QD_HELM_RELEASE}' not found in namespace '${QD_NAMESPACE}'."
+        return
+    fi
+
+    if _qd_rest_pf_is_running || _qd_grpc_pf_is_running; then
+        local rest_info grpc_info
+        _qd_rest_pf_is_running \
+            && rest_info="REST  http://localhost:$(_qd_rest_pf_port)" \
+            || rest_info="REST  stopped"
+        _qd_grpc_pf_is_running \
+            && grpc_info="gRPC  localhost:$(_qd_grpc_pf_port)" \
+            || grpc_info="gRPC  stopped"
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forwards are running" \
+            "$rest_info" \
+            "$grpc_info"
+        if gum confirm "Stop port-forwards?"; then
+            _qd_rest_pf_stop
+            _qd_grpc_pf_stop
+            success "Port-forwards stopped."
+        fi
         return
     fi
 
@@ -540,20 +570,27 @@ qdrant_port_forward_k8s() {
         --header "Local gRPC port (leave empty for ${QD_DEFAULT_GRPC_PORT}):") || true
     local grpc_port="${grpc_input:-$QD_DEFAULT_GRPC_PORT}"
 
-    info "Forwarding REST  localhost:${rest_port} → ${QD_HELM_RELEASE}:6333"
-    info "Forwarding gRPC  localhost:${grpc_port} → ${QD_HELM_RELEASE}:6334"
-    info "REST API: http://127.0.0.1:${rest_port}"
-    info "Press Ctrl+C to stop."
-    echo ""
-
-    # kubectl can only port-forward one port pair per command — run two in background
-    # and wait on the REST one (primary) in foreground.
     kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${grpc_port}:6334" >/dev/null 2>&1 &
-    local grpc_pf_pid=$!
-    kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${rest_port}:6333" || true
+    echo "${!}:${grpc_port}" > "$_QD_GRPC_PF_PID"
 
-    kill "$grpc_pf_pid" 2>/dev/null || true
-    wait "$grpc_pf_pid" 2>/dev/null || true
+    kubectl -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${rest_port}:6333" >/dev/null 2>&1 &
+    echo "${!}:${rest_port}" > "$_QD_REST_PF_PID"
+
+    local attempts=0
+    until nc -z 127.0.0.1 "$rest_port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _qd_rest_pf_is_running; then
+        warn "REST port-forward failed to start. Check kubectl connectivity."
+        _qd_grpc_pf_stop
+        rm -f "$_QD_REST_PF_PID"
+        return
+    fi
+
+    success "Port-forwards started:"
+    success "  REST  http://localhost:${rest_port}"
+    success "  gRPC  localhost:${grpc_port}"
 }
 
 qdrant_health_check_k8s() {
@@ -677,23 +714,33 @@ _k8s_menu() {
     while true; do
         header "Qdrant — Kubernetes  (${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${QD_NAMESPACE} / release: ${QD_HELM_RELEASE})"
 
+        local pf_label
+        if _qd_rest_pf_is_running || _qd_grpc_pf_is_running; then
+            local rest_part grpc_part
+            _qd_rest_pf_is_running && rest_part="REST:$(_qd_rest_pf_port)" || rest_part="REST:stopped"
+            _qd_grpc_pf_is_running && grpc_part="gRPC:$(_qd_grpc_pf_port)" || grpc_part="gRPC:stopped"
+            pf_label="port-forward  [● ${rest_part} ${grpc_part}]"
+        else
+            pf_label="port-forward  [○ stopped]"
+        fi
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "health-check" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
 
         case "$action" in
-            "install")      qdrant_install_k8s ;;
-            "status")       qdrant_status_k8s ;;
-            "port-forward") qdrant_port_forward_k8s ;;
-            "health-check") qdrant_health_check_k8s ;;
-            "uninstall")    qdrant_uninstall_k8s ;;
-            "← back"|"")   return ;;
+            "install")       qdrant_install_k8s ;;
+            "status")        qdrant_status_k8s ;;
+            "port-forward"*) qdrant_port_forward_k8s ;;
+            "health-check")  qdrant_health_check_k8s ;;
+            "uninstall")     qdrant_uninstall_k8s ;;
+            "← back"|"")    return ;;
         esac
     done
 }

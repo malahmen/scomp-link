@@ -35,6 +35,7 @@ GRF_HELM_REPO_NAME="grafana"
 GRF_HELM_REPO_URL="https://grafana.github.io/helm-charts"
 GRF_HELM_CHART="grafana/grafana"
 GRF_DEFAULT_PORT=3000
+_GRF_PF_PID="/tmp/scomp-pf-grafana.pid"
 GRF_SVC_PORT=80        # Grafana chart service listens on 80 → pod :3000
 GRF_DEFAULT_IMAGE_TAG="latest"
 GRF_DEFAULT_ADMIN_USER="admin"
@@ -768,6 +769,10 @@ grafana_status_k8s() {
     kubectl get pvc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
+_grf_pf_is_running() { [[ -f "$_GRF_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_GRF_PF_PID")" 2>/dev/null; }
+_grf_pf_port()       { cut -d: -f2 < "$_GRF_PF_PID" 2>/dev/null; }
+_grf_pf_stop()       { kill "$(cut -d: -f1 < "$_GRF_PF_PID")" 2>/dev/null || true; rm -f "$_GRF_PF_PID"; success "Port-forward stopped."; }
+
 grafana_connect_k8s() {
     header "Connect — Grafana Kubernetes"
     _k8s_check_cluster || return 0
@@ -777,28 +782,43 @@ grafana_connect_k8s() {
         return
     fi
 
+    if _grf_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "http://localhost:$(_grf_pf_port)" \
+            "" \
+            "Username: ${GRF_ADMIN_USER}"
+        gum confirm "Stop port-forward?" && _grf_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$GRF_DEFAULT_PORT" \
-        --header "Local port for port-forward (leave empty for ${GRF_DEFAULT_PORT}):") || true
+        --header "Local port (leave empty for ${GRF_DEFAULT_PORT}):") || true
     local port="${port_input:-$GRF_DEFAULT_PORT}"
 
-    # Grafana chart names the service <release>-grafana; fall back to <release>
     local svc="${GRF_HELM_RELEASE}-grafana"
     if ! kubectl get svc "$svc" -n "$GRF_NAMESPACE" &>/dev/null 2>&1; then
         svc="$GRF_HELM_RELEASE"
     fi
 
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --width 60 --margin "0 2" --padding "1 2" \
-        "Grafana Web UI → http://localhost:${port}" \
-        "" \
-        "Username: ${GRF_ADMIN_USER}" \
-        "" \
-        "Press Ctrl+C to stop the port-forward."
+    kubectl -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_GRF_PF_PID"
 
-    kubectl -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}"
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _grf_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_GRF_PF_PID"; return
+    fi
+
+    success "Port-forward started: http://localhost:${port}"
+    info "Username: ${GRF_ADMIN_USER}"
 }
 
 grafana_uninstall_k8s() {
@@ -886,11 +906,16 @@ _k8s_menu() {
     while true; do
         header "Grafana — ${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${GRF_NAMESPACE} / release: ${GRF_HELM_RELEASE}"
 
+        local pf_label
+        _grf_pf_is_running \
+            && pf_label="connect  [● localhost:$(_grf_pf_port)]" \
+            || pf_label="connect  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "connect" \
+            "$pf_label" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
@@ -898,7 +923,7 @@ _k8s_menu() {
         case "$action" in
             "install")   grafana_install_k8s ;;
             "status")    grafana_status_k8s ;;
-            "connect")   grafana_connect_k8s ;;
+            "connect"*)  grafana_connect_k8s ;;
             "uninstall") grafana_uninstall_k8s ;;
             "← back"|"") return ;;
         esac

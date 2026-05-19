@@ -37,6 +37,7 @@ N8N_HELM_REPO_NAME="community-charts"
 N8N_HELM_REPO_URL="https://community-charts.github.io/helm-charts"
 N8N_HELM_CHART="community-charts/n8n"
 N8N_DEFAULT_PORT=5678
+_N8N_PF_PID="/tmp/scomp-pf-n8n.pid"
 N8N_DEFAULT_IMAGE_TAG="latest"
 N8N_DEFAULT_TIMEZONE="UTC"
 
@@ -597,6 +598,10 @@ n8n_status_k8s() {
     kubectl get pvc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
+_n8n_pf_is_running() { [[ -f "$_N8N_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_N8N_PF_PID")" 2>/dev/null; }
+_n8n_pf_port()       { cut -d: -f2 < "$_N8N_PF_PID" 2>/dev/null; }
+_n8n_pf_stop()       { kill "$(cut -d: -f1 < "$_N8N_PF_PID")" 2>/dev/null || true; rm -f "$_N8N_PF_PID"; success "Port-forward stopped."; }
+
 n8n_connect_k8s() {
     header "Connect — n8n Kubernetes"
     _k8s_check_cluster || return 0
@@ -606,28 +611,41 @@ n8n_connect_k8s() {
         return
     fi
 
+    if _n8n_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "http://localhost:$(_n8n_pf_port)"
+        gum confirm "Stop port-forward?" && _n8n_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$N8N_DEFAULT_PORT" \
-        --header "Local port for port-forward (leave empty for ${N8N_DEFAULT_PORT}):") || true
+        --header "Local port (leave empty for ${N8N_DEFAULT_PORT}):") || true
     local port="${port_input:-$N8N_DEFAULT_PORT}"
 
-    # Chart typically names the service <release>-n8n; fall back to <release>
     local svc="${N8N_HELM_RELEASE}-n8n"
     if ! kubectl get svc "$svc" -n "$N8N_NAMESPACE" &>/dev/null 2>&1; then
         svc="$N8N_HELM_RELEASE"
     fi
 
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --width 60 --margin "0 2" --padding "1 2" \
-        "n8n Web UI → http://localhost:${port}" \
-        "" \
-        "First login creates your admin account." \
-        "" \
-        "Press Ctrl+C to stop the port-forward."
+    kubectl -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_N8N_PF_PID"
 
-    kubectl -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678"
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _n8n_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_N8N_PF_PID"; return
+    fi
+
+    success "Port-forward started: http://localhost:${port}"
+    info "First login creates your admin account."
 }
 
 n8n_uninstall_k8s() {
@@ -717,10 +735,15 @@ _k8s_menu() {
         header "n8n — ${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${N8N_NAMESPACE} / release: ${N8N_HELM_RELEASE}"
 
         local action
+        local pf_label
+        _n8n_pf_is_running \
+            && pf_label="connect  [● localhost:$(_n8n_pf_port)]" \
+            || pf_label="connect  [○ stopped]"
+
         action=$(gum choose \
             "install" \
             "status" \
-            "connect" \
+            "$pf_label" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
@@ -728,7 +751,7 @@ _k8s_menu() {
         case "$action" in
             "install")   n8n_install_k8s ;;
             "status")    n8n_status_k8s ;;
-            "connect")   n8n_connect_k8s ;;
+            "connect"*)  n8n_connect_k8s ;;
             "uninstall") n8n_uninstall_k8s ;;
             "← back"|"") return ;;
         esac

@@ -29,6 +29,7 @@ MY_NAMESPACE="mysql"
 MY_HELM_RELEASE="mysql"
 MY_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/mysql"
 MY_DEFAULT_PORT=3306
+_MY_PF_PID="/tmp/scomp-pf-mysql.pid"
 MY_DEFAULT_DB="app"
 MY_DEFAULT_USER="app"
 MY_DEFAULT_IMAGE_TAG="8.4"
@@ -491,6 +492,10 @@ mysql_status_k8s() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_my_pf_is_running() { [[ -f "$_MY_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_MY_PF_PID")" 2>/dev/null; }
+_my_pf_port()       { cut -d: -f2 < "$_MY_PF_PID" 2>/dev/null; }
+_my_pf_stop()       { kill "$(cut -d: -f1 < "$_MY_PF_PID")" 2>/dev/null || true; rm -f "$_MY_PF_PID"; success "Port-forward stopped."; }
+
 mysql_port_forward_k8s() {
     header "MySQL — Port Forward"
     _k8s_check_cluster || return 0
@@ -500,18 +505,38 @@ mysql_port_forward_k8s() {
         return
     fi
 
+    if _my_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "localhost:$(_my_pf_port) → ${MY_HELM_RELEASE}:3306" \
+            "" \
+            "Connect: mysql -h 127.0.0.1 -P $(_my_pf_port) -u <user> -p"
+        gum confirm "Stop port-forward?" && _my_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$MY_DEFAULT_PORT" \
         --header "Local port (leave empty for ${MY_DEFAULT_PORT}):") || true
     local port="${port_input:-$MY_DEFAULT_PORT}"
 
-    info "Forwarding localhost:${port} → ${MY_HELM_RELEASE}:3306"
-    info "Connect with: mysql -h 127.0.0.1 -P ${port} -u <user> -p <db>"
-    info "Press Ctrl+C to stop."
-    echo ""
+    kubectl -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_MY_PF_PID"
 
-    kubectl -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" || true
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _my_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_MY_PF_PID"; return
+    fi
+
+    success "Port-forward started: localhost:${port} → ${MY_HELM_RELEASE}:3306"
+    info "Connect: mysql -h 127.0.0.1 -P ${port} -u <user> -p"
 }
 
 mysql_connect_k8s() {
@@ -656,22 +681,27 @@ _k8s_menu() {
     while true; do
         header "MySQL — Kubernetes  (${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${MY_NAMESPACE} / release: ${MY_HELM_RELEASE})"
 
+        local pf_label
+        _my_pf_is_running \
+            && pf_label="port-forward  [● localhost:$(_my_pf_port)]" \
+            || pf_label="port-forward  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "connect" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
 
         case "$action" in
-            "install")      mysql_install_k8s ;;
-            "status")       mysql_status_k8s ;;
-            "port-forward") mysql_port_forward_k8s ;;
-            "connect")      mysql_connect_k8s ;;
-            "uninstall")    mysql_uninstall_k8s ;;
+            "install")       mysql_install_k8s ;;
+            "status")        mysql_status_k8s ;;
+            "port-forward"*) mysql_port_forward_k8s ;;
+            "connect")       mysql_connect_k8s ;;
+            "uninstall")     mysql_uninstall_k8s ;;
             "← back"|"")   return ;;
         esac
     done

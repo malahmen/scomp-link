@@ -38,6 +38,7 @@ HARBOR_HELM_REPO_NAME="harbor"
 HARBOR_HELM_REPO_URL="https://helm.goharbor.io"
 HARBOR_HELM_CHART="harbor/harbor"
 HARBOR_DEFAULT_PORT=8080
+_HARBOR_PF_PID="/tmp/scomp-pf-harbor.pid"
 HARBOR_ADMIN_PASSWORD=""
 
 # Component PVC sizes — registry is the only user-configurable one.
@@ -455,6 +456,10 @@ harbor_status_k8s() {
     kubectl get pvc -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
+_harbor_pf_is_running() { [[ -f "$_HARBOR_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_HARBOR_PF_PID")" 2>/dev/null; }
+_harbor_pf_port()       { cut -d: -f2 < "$_HARBOR_PF_PID" 2>/dev/null; }
+_harbor_pf_stop()       { kill "$(cut -d: -f1 < "$_HARBOR_PF_PID")" 2>/dev/null || true; rm -f "$_HARBOR_PF_PID"; success "Port-forward stopped."; }
+
 harbor_connect_k8s() {
     header "Connect — Harbor Web UI"
     _k8s_check_cluster || return 0
@@ -464,31 +469,45 @@ harbor_connect_k8s() {
         return
     fi
 
+    if _harbor_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "http://localhost:$(_harbor_pf_port)" \
+            "" \
+            "Username: admin"
+        gum confirm "Stop port-forward?" && _harbor_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$HARBOR_DEFAULT_PORT" \
         --header "Local port (must match externalURL set at install — leave empty for ${HARBOR_DEFAULT_PORT}):") || true
     local port="${port_input:-$HARBOR_DEFAULT_PORT}"
 
-    # Harbor chart names the main clusterIP service after expose.clusterIP.name
     local svc="$HARBOR_HELM_RELEASE"
     if ! kubectl get svc "$svc" -n "$HARBOR_NAMESPACE" &>/dev/null 2>&1; then
-        # Fallback: find the first ClusterIP service that isn't headless
         svc=$(kubectl get svc -n "$HARBOR_NAMESPACE" \
             --field-selector spec.type=ClusterIP \
             -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "$HARBOR_HELM_RELEASE")
     fi
 
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --width 60 --margin "0 2" --padding "1 2" \
-        "Harbor Web UI → http://localhost:${port}" \
-        "" \
-        "Username: admin" \
-        "" \
-        "Press Ctrl+C to stop the port-forward."
+    kubectl -n "$HARBOR_NAMESPACE" port-forward "svc/${svc}" "${port}:80" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_HARBOR_PF_PID"
 
-    kubectl -n "$HARBOR_NAMESPACE" port-forward "svc/${svc}" "${port}:80"
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _harbor_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_HARBOR_PF_PID"; return
+    fi
+
+    success "Port-forward started: http://localhost:${port}"
+    info "Username: admin"
 }
 
 harbor_uninstall_k8s() {
@@ -555,11 +574,16 @@ _k8s_menu() {
     while true; do
         header "Harbor — ${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${HARBOR_NAMESPACE} / release: ${HARBOR_HELM_RELEASE}"
 
+        local pf_label
+        _harbor_pf_is_running \
+            && pf_label="connect  [● localhost:$(_harbor_pf_port)]" \
+            || pf_label="connect  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "connect" \
+            "$pf_label" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
@@ -567,7 +591,7 @@ _k8s_menu() {
         case "$action" in
             "install")   harbor_install_k8s ;;
             "status")    harbor_status_k8s ;;
-            "connect")   harbor_connect_k8s ;;
+            "connect"*)  harbor_connect_k8s ;;
             "uninstall") harbor_uninstall_k8s ;;
             "← back"|"") return ;;
         esac
