@@ -29,6 +29,7 @@ MDB_NAMESPACE="mariadb"
 MDB_HELM_RELEASE="mariadb"
 MDB_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/mariadb"
 MDB_DEFAULT_PORT=3306
+_MDB_PF_PID="/tmp/scomp-pf-mariadb.pid"
 MDB_DEFAULT_DB="app"
 MDB_DEFAULT_USER="app"
 MDB_DEFAULT_IMAGE_TAG="11"
@@ -516,6 +517,10 @@ mariadb_status_k8s() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_mdb_pf_is_running() { [[ -f "$_MDB_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_MDB_PF_PID")" 2>/dev/null; }
+_mdb_pf_port()       { cut -d: -f2 < "$_MDB_PF_PID" 2>/dev/null; }
+_mdb_pf_stop()       { kill "$(cut -d: -f1 < "$_MDB_PF_PID")" 2>/dev/null || true; rm -f "$_MDB_PF_PID"; success "Port-forward stopped."; }
+
 mariadb_port_forward_k8s() {
     header "MariaDB — Port Forward"
     _k8s_check_cluster || return 0
@@ -525,18 +530,38 @@ mariadb_port_forward_k8s() {
         return
     fi
 
+    if _mdb_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "localhost:$(_mdb_pf_port) → ${MDB_HELM_RELEASE}:3306" \
+            "" \
+            "Connect: mariadb -h 127.0.0.1 -P $(_mdb_pf_port) -u <user> -p"
+        gum confirm "Stop port-forward?" && _mdb_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$MDB_DEFAULT_PORT" \
         --header "Local port (leave empty for ${MDB_DEFAULT_PORT}):") || true
     local port="${port_input:-$MDB_DEFAULT_PORT}"
 
-    info "Forwarding localhost:${port} → ${MDB_HELM_RELEASE}:3306"
-    info "Connect with: mariadb -h 127.0.0.1 -P ${port} -u <user> -p <db>"
-    info "Press Ctrl+C to stop."
-    echo ""
+    kubectl -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_MDB_PF_PID"
 
-    kubectl -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" || true
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _mdb_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_MDB_PF_PID"; return
+    fi
+
+    success "Port-forward started: localhost:${port} → ${MDB_HELM_RELEASE}:3306"
+    info "Connect: mariadb -h 127.0.0.1 -P ${port} -u <user> -p"
 }
 
 mariadb_connect_k8s() {
@@ -684,22 +709,27 @@ _k8s_menu() {
     while true; do
         header "MariaDB — Kubernetes  (${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${MDB_NAMESPACE} / release: ${MDB_HELM_RELEASE})"
 
+        local pf_label
+        _mdb_pf_is_running \
+            && pf_label="port-forward  [● localhost:$(_mdb_pf_port)]" \
+            || pf_label="port-forward  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "connect" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
 
         case "$action" in
-            "install")      mariadb_install_k8s ;;
-            "status")       mariadb_status_k8s ;;
-            "port-forward") mariadb_port_forward_k8s ;;
-            "connect")      mariadb_connect_k8s ;;
-            "uninstall")    mariadb_uninstall_k8s ;;
+            "install")       mariadb_install_k8s ;;
+            "status")        mariadb_status_k8s ;;
+            "port-forward"*) mariadb_port_forward_k8s ;;
+            "connect")       mariadb_connect_k8s ;;
+            "uninstall")     mariadb_uninstall_k8s ;;
             "← back"|"")   return ;;
         esac
     done

@@ -29,6 +29,7 @@ MNG_NAMESPACE="mongodb"
 MNG_HELM_RELEASE="mongodb"
 MNG_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/mongodb"
 MNG_DEFAULT_PORT=27017
+_MNG_PF_PID="/tmp/scomp-pf-mongodb.pid"
 MNG_DEFAULT_DB="app"
 MNG_DEFAULT_USER="app"
 MNG_DEFAULT_ROOT_USER="root"
@@ -531,6 +532,10 @@ mongodb_status_k8s() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_mng_pf_is_running() { [[ -f "$_MNG_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_MNG_PF_PID")" 2>/dev/null; }
+_mng_pf_port()       { cut -d: -f2 < "$_MNG_PF_PID" 2>/dev/null; }
+_mng_pf_stop()       { kill "$(cut -d: -f1 < "$_MNG_PF_PID")" 2>/dev/null || true; rm -f "$_MNG_PF_PID"; success "Port-forward stopped."; }
+
 mongodb_port_forward_k8s() {
     header "MongoDB — Port Forward"
     _k8s_check_cluster || return 0
@@ -540,18 +545,38 @@ mongodb_port_forward_k8s() {
         return
     fi
 
+    if _mng_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "localhost:$(_mng_pf_port) → ${MNG_HELM_RELEASE}:27017" \
+            "" \
+            "Connect: mongosh --port $(_mng_pf_port) -u <user> --authenticationDatabase admin"
+        gum confirm "Stop port-forward?" && _mng_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$MNG_DEFAULT_PORT" \
         --header "Local port (leave empty for ${MNG_DEFAULT_PORT}):") || true
     local port="${port_input:-$MNG_DEFAULT_PORT}"
 
-    info "Forwarding localhost:${port} → ${MNG_HELM_RELEASE}:27017"
-    info "Connect with: mongosh --port ${port} -u <user> --authenticationDatabase admin"
-    info "Press Ctrl+C to stop."
-    echo ""
+    kubectl -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_MNG_PF_PID"
 
-    kubectl -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" || true
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _mng_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_MNG_PF_PID"; return
+    fi
+
+    success "Port-forward started: localhost:${port} → ${MNG_HELM_RELEASE}:27017"
+    info "Connect: mongosh --port ${port} -u <user> --authenticationDatabase admin"
 }
 
 mongodb_connect_k8s() {
@@ -699,22 +724,27 @@ _k8s_menu() {
     while true; do
         header "MongoDB — Kubernetes  (${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${MNG_NAMESPACE} / release: ${MNG_HELM_RELEASE})"
 
+        local pf_label
+        _mng_pf_is_running \
+            && pf_label="port-forward  [● localhost:$(_mng_pf_port)]" \
+            || pf_label="port-forward  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "connect" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
 
         case "$action" in
-            "install")      mongodb_install_k8s ;;
-            "status")       mongodb_status_k8s ;;
-            "port-forward") mongodb_port_forward_k8s ;;
-            "connect")      mongodb_connect_k8s ;;
-            "uninstall")    mongodb_uninstall_k8s ;;
+            "install")       mongodb_install_k8s ;;
+            "status")        mongodb_status_k8s ;;
+            "port-forward"*) mongodb_port_forward_k8s ;;
+            "connect")       mongodb_connect_k8s ;;
+            "uninstall")     mongodb_uninstall_k8s ;;
             "← back"|"")   return ;;
         esac
     done

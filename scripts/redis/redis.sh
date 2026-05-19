@@ -33,6 +33,7 @@ RD_NAMESPACE="redis"
 RD_HELM_RELEASE="redis"
 RD_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/redis"
 RD_DEFAULT_PORT=6379
+_RD_PF_PID="/tmp/scomp-pf-redis.pid"
 RD_DEFAULT_IMAGE_TAG="7"
 RD_QUEUE_SCAN_LIMIT=500     # max keys to inspect during queue listing
 
@@ -657,6 +658,10 @@ redis_status_k8s() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_rd_pf_is_running() { [[ -f "$_RD_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_RD_PF_PID")" 2>/dev/null; }
+_rd_pf_port()       { cut -d: -f2 < "$_RD_PF_PID" 2>/dev/null; }
+_rd_pf_stop()       { kill "$(cut -d: -f1 < "$_RD_PF_PID")" 2>/dev/null || true; rm -f "$_RD_PF_PID"; success "Port-forward stopped."; }
+
 redis_port_forward_k8s() {
     header "Redis — Port Forward"
     _k8s_check_cluster || return 0
@@ -666,20 +671,39 @@ redis_port_forward_k8s() {
         return
     fi
 
+    if _rd_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "localhost:$(_rd_pf_port) → ${RD_HELM_RELEASE}:6379" \
+            "" \
+            "Connect: redis-cli -h 127.0.0.1 -p $(_rd_pf_port)"
+        gum confirm "Stop port-forward?" && _rd_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$RD_DEFAULT_PORT" \
         --header "Local port (leave empty for ${RD_DEFAULT_PORT}):") || true
     local port="${port_input:-$RD_DEFAULT_PORT}"
 
-    info "Forwarding localhost:${port} → ${RD_HELM_RELEASE}:6379"
-    info "Connect with: redis-cli -h 127.0.0.1 -p ${port}"
-    info "Press Ctrl+C to stop."
-    echo ""
-
     local pf_pid
     pf_pid=$(_k8s_start_port_forward "$port")
-    wait "$pf_pid" 2>/dev/null || true
+    echo "${pf_pid}:${port}" > "$_RD_PF_PID"
+
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _rd_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_RD_PF_PID"; return
+    fi
+
+    success "Port-forward started: localhost:${port} → ${RD_HELM_RELEASE}:6379"
+    info "Connect: redis-cli -h 127.0.0.1 -p ${port}"
 }
 
 redis_connect_k8s() {
@@ -860,11 +884,16 @@ _k8s_menu() {
     while true; do
         header "Redis — Kubernetes  (${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${RD_NAMESPACE} / release: ${RD_HELM_RELEASE})"
 
+        local pf_label
+        _rd_pf_is_running \
+            && pf_label="port-forward  [● localhost:$(_rd_pf_port)]" \
+            || pf_label="port-forward  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "connect" \
             "list-queues" \
             "uninstall" \
@@ -872,13 +901,13 @@ _k8s_menu() {
             --header "Select action:") || true
 
         case "$action" in
-            "install")      redis_install_k8s ;;
-            "status")       redis_status_k8s ;;
-            "port-forward") redis_port_forward_k8s ;;
-            "connect")      redis_connect_k8s ;;
-            "list-queues")  redis_list_queues_k8s ;;
-            "uninstall")    redis_uninstall_k8s ;;
-            "← back"|"")   return ;;
+            "install")       redis_install_k8s ;;
+            "status")        redis_status_k8s ;;
+            "port-forward"*) redis_port_forward_k8s ;;
+            "connect")       redis_connect_k8s ;;
+            "list-queues")   redis_list_queues_k8s ;;
+            "uninstall")     redis_uninstall_k8s ;;
+            "← back"|"")    return ;;
         esac
     done
 }

@@ -36,6 +36,7 @@ PROM_HELM_REPO_NAME="prometheus-community"
 PROM_HELM_REPO_URL="https://prometheus-community.github.io/helm-charts"
 PROM_HELM_CHART="prometheus-community/prometheus"
 PROM_DEFAULT_PORT=9090
+_PROM_PF_PID="/tmp/scomp-pf-prometheus.pid"
 # Service created by the chart: <release>-server, exposed on port 80 → pod :9090
 PROM_SVC_PORT=80
 
@@ -337,6 +338,10 @@ prometheus_status_k8s() {
     kubectl get pvc -n "$PROM_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
+_prom_pf_is_running() { [[ -f "$_PROM_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_PROM_PF_PID")" 2>/dev/null; }
+_prom_pf_port()       { cut -d: -f2 < "$_PROM_PF_PID" 2>/dev/null; }
+_prom_pf_stop()       { kill "$(cut -d: -f1 < "$_PROM_PF_PID")" 2>/dev/null || true; rm -f "$_PROM_PF_PID"; success "Port-forward stopped."; }
+
 prometheus_connect_k8s() {
     header "Connect — Prometheus Web UI"
     _k8s_check_cluster || return 0
@@ -346,22 +351,37 @@ prometheus_connect_k8s() {
         return
     fi
 
+    if _prom_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "http://localhost:$(_prom_pf_port)"
+        gum confirm "Stop port-forward?" && _prom_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$PROM_DEFAULT_PORT" \
-        --header "Local port for port-forward (leave empty for ${PROM_DEFAULT_PORT}):") || true
+        --header "Local port (leave empty for ${PROM_DEFAULT_PORT}):") || true
     local port="${port_input:-$PROM_DEFAULT_PORT}"
 
     local svc="${PROM_HELM_RELEASE}-server"
 
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --width 60 --margin "0 2" --padding "1 2" \
-        "Prometheus UI → http://localhost:${port}" \
-        "" \
-        "Press Ctrl+C to stop the port-forward."
+    kubectl -n "$PROM_NAMESPACE" port-forward "svc/${svc}" "${port}:${PROM_SVC_PORT}" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_PROM_PF_PID"
 
-    kubectl -n "$PROM_NAMESPACE" port-forward "svc/${svc}" "${port}:${PROM_SVC_PORT}"
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _prom_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_PROM_PF_PID"; return
+    fi
+
+    success "Port-forward started: http://localhost:${port}"
 }
 
 prometheus_uninstall_k8s() {
@@ -420,11 +440,16 @@ _k8s_menu() {
     while true; do
         header "Prometheus — ${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${PROM_NAMESPACE} / release: ${PROM_HELM_RELEASE}"
 
+        local pf_label
+        _prom_pf_is_running \
+            && pf_label="connect  [● localhost:$(_prom_pf_port)]" \
+            || pf_label="connect  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "connect" \
+            "$pf_label" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
@@ -432,7 +457,7 @@ _k8s_menu() {
         case "$action" in
             "install")   prometheus_install_k8s ;;
             "status")    prometheus_status_k8s ;;
-            "connect")   prometheus_connect_k8s ;;
+            "connect"*)  prometheus_connect_k8s ;;
             "uninstall") prometheus_uninstall_k8s ;;
             "← back"|"") return ;;
         esac

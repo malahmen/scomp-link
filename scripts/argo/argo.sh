@@ -17,12 +17,14 @@ WORKFLOWS_NAMESPACE="argo"
 WORKFLOWS_GH_API="https://api.github.com/repos/argoproj/argo-workflows/releases"
 WORKFLOWS_INSTALL_BASE="https://github.com/argoproj/argo-workflows/releases/download"
 WORKFLOWS_PORT=2746
+_WORKFLOWS_PF_PID="/tmp/scomp-pf-argo-workflows.pid"
 
 # Argo CD
 ARGOCD_NAMESPACE="argocd"
 ARGOCD_GH_API="https://api.github.com/repos/argoproj/argo-cd/releases"
 ARGOCD_INSTALL_BASE="https://raw.githubusercontent.com/argoproj/argo-cd"
 ARGOCD_PORT=8080
+_ARGOCD_PF_PID="/tmp/scomp-pf-argocd.pid"
 
 # Colours
 CYAN=212
@@ -243,6 +245,10 @@ workflows_status() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_wf_pf_is_running() { [[ -f "$_WORKFLOWS_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_WORKFLOWS_PF_PID")" 2>/dev/null; }
+_wf_pf_port()       { cut -d: -f2 < "$_WORKFLOWS_PF_PID" 2>/dev/null; }
+_wf_pf_stop()       { kill "$(cut -d: -f1 < "$_WORKFLOWS_PF_PID")" 2>/dev/null || true; rm -f "$_WORKFLOWS_PF_PID"; success "Port-forward stopped."; }
+
 workflows_port_forward() {
     header "Argo Workflows — Port Forward"
 
@@ -254,18 +260,35 @@ workflows_port_forward() {
         return
     fi
 
+    if _wf_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "http://localhost:$(_wf_pf_port)"
+        gum confirm "Stop port-forward?" && _wf_pf_stop || true
+        return
+    fi
+
     local port
     port=$(gum input \
         --placeholder "${WORKFLOWS_PORT}" \
         --header "Local port (leave empty for default ${WORKFLOWS_PORT}):") || true
     port="${port:-${WORKFLOWS_PORT}}"
 
-    info "Forwarding localhost:${port} → argo-server:2746"
-    info "Open: http://localhost:${port}"
-    info "Press Ctrl+C to stop."
-    echo ""
+    kubectl -n "${WORKFLOWS_NAMESPACE}" port-forward deployment/argo-server "${port}:2746" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_WORKFLOWS_PF_PID"
 
-    kubectl -n "${WORKFLOWS_NAMESPACE}" port-forward deployment/argo-server "${port}:2746" || true
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _wf_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_WORKFLOWS_PF_PID"; return
+    fi
+
+    success "Port-forward started: http://localhost:${port}"
 }
 
 workflows_uninstall() {
@@ -312,21 +335,26 @@ workflows_menu() {
     while true; do
         header "Argo Workflows"
 
+        local pf_label
+        _wf_pf_is_running \
+            && pf_label="port-forward  [● localhost:$(_wf_pf_port)]" \
+            || pf_label="port-forward  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
 
         case "$action" in
-            "install")      workflows_install ;;
-            "status")       workflows_status ;;
-            "port-forward") workflows_port_forward ;;
-            "uninstall")    workflows_uninstall ;;
-            "← back"|"")   return ;;
+            "install")       workflows_install ;;
+            "status")        workflows_status ;;
+            "port-forward"*) workflows_port_forward ;;
+            "uninstall")     workflows_uninstall ;;
+            "← back"|"")    return ;;
         esac
     done
 }
@@ -444,6 +472,10 @@ argocd_status() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_acd_pf_is_running() { [[ -f "$_ARGOCD_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_ARGOCD_PF_PID")" 2>/dev/null; }
+_acd_pf_port()       { cut -d: -f2 < "$_ARGOCD_PF_PID" 2>/dev/null; }
+_acd_pf_stop()       { kill "$(cut -d: -f1 < "$_ARGOCD_PF_PID")" 2>/dev/null || true; rm -f "$_ARGOCD_PF_PID"; success "Port-forward stopped."; }
+
 argocd_port_forward() {
     header "Argo CD — Port Forward"
 
@@ -455,19 +487,36 @@ argocd_port_forward() {
         return
     fi
 
+    if _acd_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "https://localhost:$(_acd_pf_port)  (self-signed cert expected)"
+        gum confirm "Stop port-forward?" && _acd_pf_stop || true
+        return
+    fi
+
     local port
     port=$(gum input \
         --placeholder "${ARGOCD_PORT}" \
         --header "Local port (leave empty for default ${ARGOCD_PORT}):") || true
     port="${port:-${ARGOCD_PORT}}"
 
-    info "Forwarding localhost:${port} → argocd-server:443"
-    info "Open: https://localhost:${port}"
-    warn "Argo CD uses HTTPS with a self-signed cert — your browser will warn you, this is expected for local use."
-    info "Press Ctrl+C to stop."
-    echo ""
+    kubectl -n "${ARGOCD_NAMESPACE}" port-forward svc/argocd-server "${port}:443" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_ARGOCD_PF_PID"
 
-    kubectl -n "${ARGOCD_NAMESPACE}" port-forward svc/argocd-server "${port}:443" || true
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _acd_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_ARGOCD_PF_PID"; return
+    fi
+
+    success "Port-forward started: https://localhost:${port}"
+    warn "Self-signed cert — browser warning is expected for local use."
 }
 
 argocd_get_admin_password() {
@@ -557,11 +606,16 @@ argocd_menu() {
     while true; do
         header "Argo CD"
 
+        local pf_label
+        _acd_pf_is_running \
+            && pf_label="port-forward  [● localhost:$(_acd_pf_port)]" \
+            || pf_label="port-forward  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "get admin password" \
             "uninstall" \
             "← back" \
@@ -570,7 +624,7 @@ argocd_menu() {
         case "$action" in
             "install")             argocd_install ;;
             "status")              argocd_status ;;
-            "port-forward")        argocd_port_forward ;;
+            "port-forward"*)       argocd_port_forward ;;
             "get admin password")  argocd_get_admin_password ;;
             "uninstall")           argocd_uninstall ;;
             "← back"|"")          return ;;

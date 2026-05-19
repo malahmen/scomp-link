@@ -33,6 +33,7 @@ IDB_NAMESPACE="influxdb"
 IDB_HELM_RELEASE="influxdb"
 IDB_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/influxdb"
 IDB_DEFAULT_PORT=8086
+_IDB_PF_PID="/tmp/scomp-pf-influxdb.pid"
 IDB_DEFAULT_IMAGE_TAG="2"
 IDB_DEFAULT_ADMIN_USER="admin"
 IDB_DEFAULT_ORG="myorg"
@@ -565,6 +566,10 @@ influxdb_status_k8s() {
     kubectl get pvc -n "$IDB_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
+_idb_pf_is_running() { [[ -f "$_IDB_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_IDB_PF_PID")" 2>/dev/null; }
+_idb_pf_port()       { cut -d: -f2 < "$_IDB_PF_PID" 2>/dev/null; }
+_idb_pf_stop()       { kill "$(cut -d: -f1 < "$_IDB_PF_PID")" 2>/dev/null || true; rm -f "$_IDB_PF_PID"; success "Port-forward stopped."; }
+
 influxdb_connect_k8s() {
     header "Connect — InfluxDB Kubernetes"
     _k8s_check_cluster || return 0
@@ -574,25 +579,40 @@ influxdb_connect_k8s() {
         return
     fi
 
+    if _idb_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "http://localhost:$(_idb_pf_port)"
+        gum confirm "Stop port-forward?" && _idb_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$IDB_DEFAULT_PORT" \
-        --header "Local port for port-forward (leave empty for ${IDB_DEFAULT_PORT}):") || true
+        --header "Local port (leave empty for ${IDB_DEFAULT_PORT}):") || true
     local port="${port_input:-$IDB_DEFAULT_PORT}"
-
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --width 60 --margin "0 2" --padding "1 2" \
-        "InfluxDB Web UI → http://localhost:${port}" \
-        "" \
-        "Press Ctrl+C to stop the port-forward."
 
     local svc="${IDB_HELM_RELEASE}-influxdb"
     if ! kubectl get svc "$svc" -n "$IDB_NAMESPACE" &>/dev/null 2>&1; then
         svc="$IDB_HELM_RELEASE"
     fi
 
-    kubectl -n "$IDB_NAMESPACE" port-forward "svc/${svc}" "${port}:8086"
+    kubectl -n "$IDB_NAMESPACE" port-forward "svc/${svc}" "${port}:8086" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_IDB_PF_PID"
+
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _idb_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_IDB_PF_PID"; return
+    fi
+
+    success "Port-forward started: http://localhost:${port}"
 }
 
 influxdb_uninstall_k8s() {
@@ -680,11 +700,16 @@ _k8s_menu() {
     while true; do
         header "InfluxDB — ${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${IDB_NAMESPACE} / release: ${IDB_HELM_RELEASE}"
 
+        local pf_label
+        _idb_pf_is_running \
+            && pf_label="connect  [● localhost:$(_idb_pf_port)]" \
+            || pf_label="connect  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "connect" \
+            "$pf_label" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
@@ -692,7 +717,7 @@ _k8s_menu() {
         case "$action" in
             "install")   influxdb_install_k8s ;;
             "status")    influxdb_status_k8s ;;
-            "connect")   influxdb_connect_k8s ;;
+            "connect"*)  influxdb_connect_k8s ;;
             "uninstall") influxdb_uninstall_k8s ;;
             "← back"|"") return ;;
         esac

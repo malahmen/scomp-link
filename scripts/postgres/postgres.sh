@@ -29,6 +29,7 @@ PG_NAMESPACE="postgres"
 PG_HELM_RELEASE="postgresql"
 PG_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/postgresql"
 PG_DEFAULT_PORT=5432
+_PG_PF_PID="/tmp/scomp-pf-postgres.pid"
 PG_DEFAULT_DB="app"
 PG_DEFAULT_USER="app"
 PG_DEFAULT_IMAGE_TAG="16"
@@ -470,6 +471,10 @@ postgres_status_k8s() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
+_pg_pf_is_running() { [[ -f "$_PG_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_PG_PF_PID")" 2>/dev/null; }
+_pg_pf_port()       { cut -d: -f2 < "$_PG_PF_PID" 2>/dev/null; }
+_pg_pf_stop()       { kill "$(cut -d: -f1 < "$_PG_PF_PID")" 2>/dev/null || true; rm -f "$_PG_PF_PID"; success "Port-forward stopped."; }
+
 postgres_port_forward_k8s() {
     header "PostgreSQL — Port Forward"
     _k8s_check_cluster || return 0
@@ -479,18 +484,38 @@ postgres_port_forward_k8s() {
         return
     fi
 
+    if _pg_pf_is_running; then
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "Port-forward is running" \
+            "localhost:$(_pg_pf_port) → ${PG_HELM_RELEASE}:5432" \
+            "" \
+            "Connect: psql -h localhost -p $(_pg_pf_port) -U <user> -d <db>"
+        gum confirm "Stop port-forward?" && _pg_pf_stop || true
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$PG_DEFAULT_PORT" \
         --header "Local port (leave empty for ${PG_DEFAULT_PORT}):") || true
     local port="${port_input:-$PG_DEFAULT_PORT}"
 
-    info "Forwarding localhost:${port} → ${PG_HELM_RELEASE}:5432"
-    info "Connect with: psql -h localhost -p ${port} -U <user> -d <db>"
-    info "Press Ctrl+C to stop."
-    echo ""
+    kubectl -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_PG_PF_PID"
 
-    kubectl -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" || true
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _pg_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_PG_PF_PID"; return
+    fi
+
+    success "Port-forward started: localhost:${port} → ${PG_HELM_RELEASE}:5432"
+    info "Connect: psql -h localhost -p ${port} -U <user> -d <db>"
 }
 
 postgres_connect_k8s() {
@@ -635,23 +660,28 @@ _k8s_menu() {
     while true; do
         header "PostgreSQL — Kubernetes  (${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${PG_NAMESPACE} / release: ${PG_HELM_RELEASE})"
 
+        local pf_label
+        _pg_pf_is_running \
+            && pf_label="port-forward  [● localhost:$(_pg_pf_port)]" \
+            || pf_label="port-forward  [○ stopped]"
+
         local action
         action=$(gum choose \
             "install" \
             "status" \
-            "port-forward" \
+            "$pf_label" \
             "connect" \
             "uninstall" \
             "← back" \
             --header "Select action:") || true
 
         case "$action" in
-            "install")      postgres_install_k8s ;;
-            "status")       postgres_status_k8s ;;
-            "port-forward") postgres_port_forward_k8s ;;
-            "connect")      postgres_connect_k8s ;;
-            "uninstall")    postgres_uninstall_k8s ;;
-            "← back"|"")   return ;;
+            "install")       postgres_install_k8s ;;
+            "status")        postgres_status_k8s ;;
+            "port-forward"*) postgres_port_forward_k8s ;;
+            "connect")       postgres_connect_k8s ;;
+            "uninstall")     postgres_uninstall_k8s ;;
+            "← back"|"")    return ;;
         esac
     done
 }
