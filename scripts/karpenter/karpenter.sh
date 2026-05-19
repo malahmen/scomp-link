@@ -21,7 +21,7 @@ set -euo pipefail
 KARPENTER_REPO="https://github.com/kubernetes-sigs/karpenter"
 KWOK_REPO="https://github.com/kubernetes-sigs/kwok"
 DEFAULT_WORK_DIR="${HOME}/karpenter-local"
-KARPENTER_NAMESPACE="karpenter"
+KARPENTER_NAMESPACE="kube-system"
 CERT_MANAGER_VERSION="v1.16.1"
 
 # Colours
@@ -523,44 +523,70 @@ build_and_deploy_karpenter() {
         error_exit "Karpenter source not found at ${KARPENTER_DIR}. Clone sources first."
     fi
 
-    # Default to ko.local only for kind clusters; other clusters need a real registry.
-    local _ctx _default_repo _placeholder _hint
+    local _ctx
     _ctx=$(kubectl config current-context 2>/dev/null || true)
+
+    local make_cmd
     if [[ "$_ctx" == kind-* ]]; then
-        _default_repo="ko.local"
-        _placeholder="ko.local"
-        _hint="kind cluster detected - 'ko.local' loads images directly into the cluster."
+        # kind clusters: use apply-with-kind which loads the image directly into the cluster
+        # via kind.local — no external registry needed. The Makefile's `build` target
+        # hardcodes KWOK_REPO internally, so passing KO_DOCKER_REPO via env has no effect.
+        local kind_cluster_name="${_ctx#kind-}"
+
+        gum style \
+            --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
+            --align left --width 66 --margin "1 2" --padding "1 4" \
+            "Build & Deploy Karpenter" \
+            "" \
+            "kind cluster detected — building and loading image directly into '${kind_cluster_name}'." \
+            "No external registry required."
+
+        make_cmd="KWOK_REPO=kind.local KIND_CLUSTER_NAME='${kind_cluster_name}' make apply-with-kind"
     else
-        _default_repo=""
-        _placeholder="registry.example.com/karpenter"
-        _hint="Provide a registry reachable by your cluster (e.g. ECR, GCR, GHCR, or a local registry)."
+        gum style \
+            --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
+            --align left --width 66 --margin "1 2" --padding "1 4" \
+            "Build & Deploy Karpenter" \
+            "" \
+            "Provide a registry reachable by your cluster (e.g. ECR, GCR, GHCR, or a local registry)."
+
+        local kwok_repo
+        kwok_repo=$(gum input \
+            --placeholder "registry.example.com/karpenter" \
+            --char-limit 120 \
+            --header "KWOK_REPO (container registry):") || true
+
+        if [[ -z "$kwok_repo" ]]; then
+            error_exit "KWOK_REPO is required. Provide a container registry address."
+        fi
+
+        make_cmd="KWOK_REPO='${kwok_repo}' make apply"
     fi
 
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --align left --width 66 --margin "1 2" --padding "1 4" \
-        "Build & Deploy Karpenter" \
-        "" \
-        "ko will build the controller image and deploy it to your cluster." \
-        "${_hint}"
-
-    local ko_docker_repo
-    ko_docker_repo=$(gum input \
-        --placeholder "${_placeholder}" \
-        --char-limit 120 \
-        --header "KO_DOCKER_REPO:") || true
-    ko_docker_repo="${ko_docker_repo:-${_default_repo}}"
-
-    if [[ -z "$ko_docker_repo" ]]; then
-        error_exit "KO_DOCKER_REPO is required. Provide a container registry address."
+    # The Makefile hardcodes --set serviceMonitor.enabled=true after $(HELM_OPTS),
+    # so it cannot be overridden via env. Patch it temporarily when the CRD is absent.
+    local makefile_patched=false
+    if ! kubectl get crd servicemonitors.monitoring.coreos.com &>/dev/null 2>&1; then
+        warn "ServiceMonitor CRD not found — disabling serviceMonitor for this install."
+        sed -i.sm_bak 's/--set serviceMonitor.enabled=true/--set serviceMonitor.enabled=false/' \
+            "${KARPENTER_DIR}/Makefile"
+        makefile_patched=true
     fi
 
-    info "Building Karpenter with KO_DOCKER_REPO=${ko_docker_repo}..."
-    info "This may take several minutes on first build."
+    info "Building Karpenter... this may take several minutes on first build."
 
+    local build_ok=true
     if ! gum spin --spinner dot \
         --title "Building and deploying Karpenter (this may take a few minutes)..." -- \
-        bash -c "cd '${KARPENTER_DIR}' && KO_DOCKER_REPO='${ko_docker_repo}' make apply"; then
+        bash -c "cd '${KARPENTER_DIR}' && ${make_cmd}"; then
+        build_ok=false
+    fi
+
+    if $makefile_patched; then
+        mv "${KARPENTER_DIR}/Makefile.sm_bak" "${KARPENTER_DIR}/Makefile"
+    fi
+
+    if ! $build_ok; then
         error_exit "Build/deploy failed. Review the error output above."
     fi
 
