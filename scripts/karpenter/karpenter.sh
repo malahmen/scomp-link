@@ -14,6 +14,18 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ ! -d "$COMMON_DIR" ]]; then
+    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+    exit 1
+fi
+# shellcheck source=../_common/ui.sh
+source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/deps.sh
+source "${COMMON_DIR}/deps.sh"
+
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
@@ -25,32 +37,12 @@ KARPENTER_NAMESPACE="kube-system"
 CERT_MANAGER_VERSION="v1.16.1"
 
 # Colours
-CYAN=212
-RED=196
-GREEN=82
-YELLOW=220
 BLUE=39
 
 # Script-level globals - updated by setup_work_dir()
 WORK_DIR="${DEFAULT_WORK_DIR}"
 KARPENTER_DIR="${DEFAULT_WORK_DIR}/karpenter"
 KWOK_DIR="${DEFAULT_WORK_DIR}/kwok"
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-header() {
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --align center --width 66 --padding "1 4" --margin "1 0" \
-        "$1"
-}
-
-info()       { gum log --level info "$1"; }
-success()    { gum style --foreground "$GREEN" "[ok] $1"; }
-warn()       { gum style --foreground "$YELLOW" "[warn] $1"; }
-error_exit() { gum style --foreground "$RED" "[error] $1"; exit 1; }
 
 # -----------------------------------------------------------------------------
 # Dependency checks
@@ -60,20 +52,6 @@ _fatal() { printf "\033[0;31m[ERROR] %s\033[0m\n" "$*" >&2; exit 1; }
 
 check_gum() {
     command -v gum &>/dev/null || _fatal "gum not found. Run setup.sh first."
-}
-
-# docker - hard dependency, abort if missing
-_check_docker() {
-    if ! command -v docker &>/dev/null; then
-        gum log --level error "docker is not installed or not in PATH."
-        gum log --level error "install Docker first."
-        exit 1
-    fi
-    if ! docker info &>/dev/null 2>&1; then
-        gum log --level error "Docker daemon is not running. Start Docker and retry."
-        exit 1
-    fi
-    info "docker: $(docker --version 2>/dev/null | head -1)"
 }
 
 # kind - hard dependency, abort if missing

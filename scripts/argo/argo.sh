@@ -8,6 +8,22 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ ! -d "$COMMON_DIR" ]]; then
+    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+    exit 1
+fi
+# shellcheck source=../_common/ui.sh
+source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/deps.sh
+source "${COMMON_DIR}/deps.sh"
+# shellcheck source=../_common/portforward.sh
+source "${COMMON_DIR}/portforward.sh"
+# shellcheck source=../_common/gh_releases.sh
+source "${COMMON_DIR}/gh_releases.sh"
+
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
@@ -34,27 +50,7 @@ ARGOEVENTS_DEFAULT_WEBHOOK_PORT=12000
 _ARGOEVENTS_PF_PID="/tmp/scomp-pf-argo-events.pid"
 
 # Colours
-CYAN=212
-RED=196
-GREEN=82
-YELLOW=220
 PURPLE=99
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-header() {
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --align center --width 60 --padding "1 4" --margin "1 0" \
-        "$1"
-}
-
-info()       { gum log --level info "$1"; }
-success()    { gum style --foreground "$GREEN" "[ok] $1"; }
-warn()       { gum style --foreground "$YELLOW" "[warn] $1"; }
-error_exit() { gum style --foreground "$RED" "[error] $1"; exit 1; }
 
 # -----------------------------------------------------------------------------
 # Shared dependency checks
@@ -101,52 +97,6 @@ check_cluster() {
     fi
 
     info "Cluster reachable."
-}
-
-# -----------------------------------------------------------------------------
-# Shared version fetcher
-# -----------------------------------------------------------------------------
-
-fetch_versions() {
-    local api_url="$1"
-    curl -fsSL "${api_url}?per_page=30" 2>/dev/null \
-        | grep '"tag_name"' \
-        | sed 's/.*"tag_name": *"\(.*\)".*/\1/' \
-        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'
-}
-
-select_version() {
-    local api_url="$1"
-    local label="$2"    # e.g. "Argo Workflows"
-
-    info "Fetching available ${label} versions from GitHub..."
-
-    local versions
-    if ! versions=$(gum spin --spinner dot --title "Fetching release list..." -- \
-        bash -c "curl -fsSL '${api_url}?per_page=30' 2>/dev/null \
-            | grep '\"tag_name\"' \
-            | sed 's/.*\"tag_name\": *\"\(.*\)\".*/\1/' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\$'"); then
-        gum log --level warn "Failed to fetch version list. Falling back to latest stable."
-        SELECTED_VERSION="latest"
-        return
-    fi
-
-    if [[ -z "$versions" ]]; then
-        gum log --level error "No stable releases found. Check your internet connection."
-        exit 1
-    fi
-
-    SELECTED_VERSION=$(echo "$versions" | gum choose \
-        --header "Select ${label} version (stable releases only):" \
-        --height 10) || true
-
-    if [[ -z "$SELECTED_VERSION" ]]; then
-        gum log --level warn "No version selected. Aborting."
-        exit 0
-    fi
-
-    info "Selected version: ${SELECTED_VERSION}"
 }
 
 # =============================================================================
@@ -252,10 +202,6 @@ workflows_status() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
-_wf_pf_is_running() { [[ -f "$_WORKFLOWS_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_WORKFLOWS_PF_PID")" 2>/dev/null; }
-_wf_pf_port()       { cut -d: -f2 < "$_WORKFLOWS_PF_PID" 2>/dev/null; }
-_wf_pf_stop()       { kill "$(cut -d: -f1 < "$_WORKFLOWS_PF_PID")" 2>/dev/null || true; rm -f "$_WORKFLOWS_PF_PID"; success "Port-forward stopped."; }
-
 workflows_port_forward() {
     header "Argo Workflows — Port Forward"
 
@@ -267,12 +213,12 @@ workflows_port_forward() {
         return
     fi
 
-    if _wf_pf_is_running; then
+    if pf_is_running "$_WORKFLOWS_PF_PID"; then
         gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
             --width 60 --margin "0 2" --padding "1 2" \
             "Port-forward is running" \
-            "http://localhost:$(_wf_pf_port)"
-        gum confirm "Stop port-forward?" && _wf_pf_stop || true
+            "http://localhost:$(pf_port "$_WORKFLOWS_PF_PID")"
+        gum confirm "Stop port-forward?" && pf_stop "$_WORKFLOWS_PF_PID" || true
         return
     fi
 
@@ -290,7 +236,7 @@ workflows_port_forward() {
         sleep 0.25; attempts=$((attempts + 1))
     done
 
-    if ! _wf_pf_is_running; then
+    if ! pf_is_running "$_WORKFLOWS_PF_PID"; then
         warn "Port-forward failed to start. Check kubectl connectivity."
         rm -f "$_WORKFLOWS_PF_PID"; return
     fi
@@ -343,8 +289,8 @@ workflows_menu() {
         header "Argo Workflows"
 
         local pf_label
-        _wf_pf_is_running \
-            && pf_label="port-forward  [● localhost:$(_wf_pf_port)]" \
+        pf_is_running "$_WORKFLOWS_PF_PID" \
+            && pf_label="port-forward  [● localhost:$(pf_port "$_WORKFLOWS_PF_PID")]" \
             || pf_label="port-forward  [○ stopped]"
 
         local action
@@ -479,10 +425,6 @@ argocd_status() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
-_acd_pf_is_running() { [[ -f "$_ARGOCD_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_ARGOCD_PF_PID")" 2>/dev/null; }
-_acd_pf_port()       { cut -d: -f2 < "$_ARGOCD_PF_PID" 2>/dev/null; }
-_acd_pf_stop()       { kill "$(cut -d: -f1 < "$_ARGOCD_PF_PID")" 2>/dev/null || true; rm -f "$_ARGOCD_PF_PID"; success "Port-forward stopped."; }
-
 argocd_port_forward() {
     header "Argo CD — Port Forward"
 
@@ -494,12 +436,12 @@ argocd_port_forward() {
         return
     fi
 
-    if _acd_pf_is_running; then
+    if pf_is_running "$_ARGOCD_PF_PID"; then
         gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
             --width 60 --margin "0 2" --padding "1 2" \
             "Port-forward is running" \
-            "https://localhost:$(_acd_pf_port)  (self-signed cert expected)"
-        gum confirm "Stop port-forward?" && _acd_pf_stop || true
+            "https://localhost:$(pf_port "$_ARGOCD_PF_PID")  (self-signed cert expected)"
+        gum confirm "Stop port-forward?" && pf_stop "$_ARGOCD_PF_PID" || true
         return
     fi
 
@@ -517,7 +459,7 @@ argocd_port_forward() {
         sleep 0.25; attempts=$((attempts + 1))
     done
 
-    if ! _acd_pf_is_running; then
+    if ! pf_is_running "$_ARGOCD_PF_PID"; then
         warn "Port-forward failed to start. Check kubectl connectivity."
         rm -f "$_ARGOCD_PF_PID"; return
     fi
@@ -614,8 +556,8 @@ argocd_menu() {
         header "Argo CD"
 
         local pf_label
-        _acd_pf_is_running \
-            && pf_label="port-forward  [● localhost:$(_acd_pf_port)]" \
+        pf_is_running "$_ARGOCD_PF_PID" \
+            && pf_label="port-forward  [● localhost:$(pf_port "$_ARGOCD_PF_PID")]" \
             || pf_label="port-forward  [○ stopped]"
 
         local action
@@ -771,10 +713,6 @@ argoevents_status() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
-_ae_pf_is_running() { [[ -f "$_ARGOEVENTS_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_ARGOEVENTS_PF_PID")" 2>/dev/null; }
-_ae_pf_port()       { cut -d: -f2 < "$_ARGOEVENTS_PF_PID" 2>/dev/null; }
-_ae_pf_stop()       { kill "$(cut -d: -f1 < "$_ARGOEVENTS_PF_PID")" 2>/dev/null || true; rm -f "$_ARGOEVENTS_PF_PID"; success "Port-forward stopped."; }
-
 argoevents_list_sources() {
     header "Argo Events — EventSources"
 
@@ -823,9 +761,9 @@ argoevents_list_sources() {
     fi
 
     # Service exists — this is a webhook/HTTP source; handle port-forward
-    if _ae_pf_is_running; then
+    if pf_is_running "$_ARGOEVENTS_PF_PID"; then
         local current_port
-        current_port=$(_ae_pf_port)
+        current_port=$(pf_port "$_ARGOEVENTS_PF_PID")
         gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
             --width 60 --margin "0 2" --padding "1 2" \
             "EventSource: ${selected}" \
@@ -840,7 +778,7 @@ argoevents_list_sources() {
             --header "Port-forward is running:") || true
 
         case "$action" in
-            "stop"*) _ae_pf_stop ;;
+            "stop"*) pf_stop "$_ARGOEVENTS_PF_PID" ;;
             *) return ;;
         esac
         return
@@ -865,7 +803,7 @@ argoevents_list_sources() {
         sleep 0.25; attempts=$((attempts + 1))
     done
 
-    if ! _ae_pf_is_running; then
+    if ! pf_is_running "$_ARGOEVENTS_PF_PID"; then
         warn "Port-forward failed to start. Check kubectl connectivity."
         rm -f "$_ARGOEVENTS_PF_PID"; return
     fi
@@ -901,7 +839,7 @@ argoevents_uninstall() {
         return
     fi
 
-    _ae_pf_is_running && _ae_pf_stop || true
+    pf_is_running "$_ARGOEVENTS_PF_PID" && pf_stop "$_ARGOEVENTS_PF_PID" || true
 
     gum spin --spinner dot --title "Deleting namespace '${ARGOEVENTS_NAMESPACE}'..." -- \
         kubectl delete namespace "${ARGOEVENTS_NAMESPACE}" --ignore-not-found
@@ -920,8 +858,8 @@ argoevents_menu() {
         header "Argo Events"
 
         local sources_label
-        _ae_pf_is_running \
-            && sources_label="event sources  [● pf: localhost:$(_ae_pf_port)]" \
+        pf_is_running "$_ARGOEVENTS_PF_PID" \
+            && sources_label="event sources  [● pf: localhost:$(pf_port "$_ARGOEVENTS_PF_PID")]" \
             || sources_label="event sources"
 
         local action
