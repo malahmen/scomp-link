@@ -26,6 +26,13 @@ ARGOCD_INSTALL_BASE="https://raw.githubusercontent.com/argoproj/argo-cd"
 ARGOCD_PORT=8080
 _ARGOCD_PF_PID="/tmp/scomp-pf-argocd.pid"
 
+# Argo Events
+ARGOEVENTS_NAMESPACE="argo-events"
+ARGOEVENTS_GH_API="https://api.github.com/repos/argoproj/argo-events/releases"
+ARGOEVENTS_INSTALL_BASE="https://github.com/argoproj/argo-events/releases/download"
+ARGOEVENTS_DEFAULT_WEBHOOK_PORT=12000
+_ARGOEVENTS_PF_PID="/tmp/scomp-pf-argo-events.pid"
+
 # Colours
 CYAN=212
 RED=196
@@ -633,6 +640,310 @@ argocd_menu() {
 }
 
 # =============================================================================
+# ARGO EVENTS
+# =============================================================================
+
+argoevents_detect_installed() {
+    kubectl get deployment controller-manager -n "${ARGOEVENTS_NAMESPACE}" \
+        -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null \
+        | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || true
+}
+
+argoevents_install() {
+    header "Install Argo Events"
+    check_cluster
+    select_version "$ARGOEVENTS_GH_API" "Argo Events"
+
+    local installed
+    installed=$(argoevents_detect_installed)
+
+    if [[ -n "$installed" ]]; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Argo Events already installed" \
+            "Detected version: ${installed}" \
+            "Target version:   ${SELECTED_VERSION}"
+
+        local action
+        action=$(gum choose \
+            "Upgrade / Reinstall (apply selected version)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade / Reinstall"*) info "Proceeding with reinstall to ${SELECTED_VERSION}..." ;;
+            *) warn "Cancelled."; return ;;
+        esac
+    fi
+
+    if kubectl get namespace "${ARGOEVENTS_NAMESPACE}" &>/dev/null; then
+        info "Namespace '${ARGOEVENTS_NAMESPACE}' already exists."
+    else
+        info "Creating namespace '${ARGOEVENTS_NAMESPACE}'..."
+        kubectl create namespace "${ARGOEVENTS_NAMESPACE}"
+    fi
+
+    local install_url="${ARGOEVENTS_INSTALL_BASE}/${SELECTED_VERSION}/install.yaml"
+    info "Manifest URL: ${install_url}"
+
+    if ! gum spin --spinner dot \
+        --title "Applying Argo Events manifests..." -- \
+        kubectl apply -n "${ARGOEVENTS_NAMESPACE}" -f "${install_url}"; then
+        gum log --level error "kubectl apply failed. Check the URL and cluster permissions."
+        exit 1
+    fi
+
+    info "Manifests applied. Waiting for rollout..."
+
+    if ! gum spin --spinner dot \
+        --title "Waiting for controller-manager..." -- \
+        kubectl rollout status deployment/controller-manager \
+            -n "${ARGOEVENTS_NAMESPACE}" --timeout=120s; then
+        warn "controller-manager rollout did not complete within 120s."
+        warn "Check: kubectl get pods -n ${ARGOEVENTS_NAMESPACE}"
+    else
+        info "controller-manager is ready."
+    fi
+
+    gum style \
+        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
+        --align center --width 60 --margin "1 2" --padding "1 4" \
+        "Argo Events ${SELECTED_VERSION} installed" \
+        "Namespace: ${ARGOEVENTS_NAMESPACE}" \
+        "" \
+        "An EventBus is required before EventSources and Sensors can work." \
+        "A default native-NATS EventBus is recommended for Kind clusters."
+
+    if gum confirm "Create default EventBus (native NATS, no auth)?"; then
+        kubectl apply -n "${ARGOEVENTS_NAMESPACE}" -f - <<'EOF'
+apiVersion: argoproj.io/v1alpha1
+kind: EventBus
+metadata:
+  name: default
+spec:
+  nats:
+    native:
+      auth: none
+EOF
+        info "Default EventBus created."
+        kubectl get eventbus -n "${ARGOEVENTS_NAMESPACE}" 2>/dev/null || true
+    fi
+
+    success "Argo Events installed."
+    info "Next: create an EventSource and a Sensor from your manifests."
+}
+
+argoevents_status() {
+    header "Argo Events — Status"
+
+    local installed
+    installed=$(argoevents_detect_installed)
+
+    if [[ -z "$installed" ]]; then
+        warn "Argo Events does not appear to be installed in namespace '${ARGOEVENTS_NAMESPACE}'."
+        return
+    fi
+
+    info "Installed version: ${installed}"
+
+    echo ""
+    gum style --foreground "$CYAN" --bold "── Deployments ──"
+    kubectl get deployments -n "${ARGOEVENTS_NAMESPACE}" 2>/dev/null || warn "Could not retrieve deployments."
+
+    echo ""
+    gum style --foreground "$CYAN" --bold "── Pods ──"
+    kubectl get pods -n "${ARGOEVENTS_NAMESPACE}" 2>/dev/null || warn "Could not retrieve pods."
+
+    echo ""
+    gum style --foreground "$CYAN" --bold "── EventBuses ──"
+    kubectl get eventbus -n "${ARGOEVENTS_NAMESPACE}" 2>/dev/null || warn "No EventBuses found (required — run install to create one)."
+
+    echo ""
+    gum style --foreground "$CYAN" --bold "── EventSources ──"
+    kubectl get eventsource -n "${ARGOEVENTS_NAMESPACE}" 2>/dev/null || warn "No EventSources found."
+
+    echo ""
+    gum style --foreground "$CYAN" --bold "── Sensors ──"
+    kubectl get sensor -n "${ARGOEVENTS_NAMESPACE}" 2>/dev/null || warn "No Sensors found."
+
+    echo ""
+    gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
+}
+
+_ae_pf_is_running() { [[ -f "$_ARGOEVENTS_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_ARGOEVENTS_PF_PID")" 2>/dev/null; }
+_ae_pf_port()       { cut -d: -f2 < "$_ARGOEVENTS_PF_PID" 2>/dev/null; }
+_ae_pf_stop()       { kill "$(cut -d: -f1 < "$_ARGOEVENTS_PF_PID")" 2>/dev/null || true; rm -f "$_ARGOEVENTS_PF_PID"; success "Port-forward stopped."; }
+
+argoevents_list_sources() {
+    header "Argo Events — EventSources"
+
+    local installed
+    installed=$(argoevents_detect_installed)
+
+    if [[ -z "$installed" ]]; then
+        warn "Argo Events does not appear to be installed."
+        return
+    fi
+
+    local sources
+    sources=$(kubectl get eventsource -n "${ARGOEVENTS_NAMESPACE}" \
+        --no-headers -o custom-columns="NAME:.metadata.name" 2>/dev/null || true)
+
+    if [[ -z "$sources" ]]; then
+        warn "No EventSources found in namespace '${ARGOEVENTS_NAMESPACE}'."
+        info "Apply an EventSource manifest to get started."
+        echo ""
+        gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
+        return
+    fi
+
+    local selected
+    selected=$(echo "$sources" | gum choose \
+        --header "Select EventSource:") || true
+
+    [[ -z "$selected" ]] && return
+
+    # Argo Events names the service <eventsource-name>-eventsource-svc for HTTP-based sources
+    local svc_name="${selected}-eventsource-svc"
+    local svc_port
+    svc_port=$(kubectl get svc "$svc_name" -n "${ARGOEVENTS_NAMESPACE}" \
+        -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)
+
+    if [[ -z "$svc_port" ]]; then
+        gum style --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "EventSource: ${selected}" \
+            "" \
+            "No service found — this EventSource type does not expose an HTTP endpoint." \
+            "(calendar, resource, S3, and similar sources are internal-only)"
+        echo ""
+        gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
+        return
+    fi
+
+    # Service exists — this is a webhook/HTTP source; handle port-forward
+    if _ae_pf_is_running; then
+        local current_port
+        current_port=$(_ae_pf_port)
+        gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --width 60 --margin "0 2" --padding "1 2" \
+            "EventSource: ${selected}" \
+            "Service:     ${svc_name}  (cluster port ${svc_port})" \
+            "" \
+            "Port-forward active: http://localhost:${current_port}"
+
+        local action
+        action=$(gum choose \
+            "stop port-forward" \
+            "← back" \
+            --header "Port-forward is running:") || true
+
+        case "$action" in
+            "stop"*) _ae_pf_stop ;;
+            *) return ;;
+        esac
+        return
+    fi
+
+    gum style --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
+        --width 60 --margin "0 2" --padding "1 2" \
+        "EventSource: ${selected}" \
+        "Service:     ${svc_name}  (cluster port ${svc_port})"
+
+    local port_input
+    port_input=$(gum input \
+        --placeholder "${ARGOEVENTS_DEFAULT_WEBHOOK_PORT}" \
+        --header "Local port (leave empty for default ${ARGOEVENTS_DEFAULT_WEBHOOK_PORT}):") || true
+    local port="${port_input:-${ARGOEVENTS_DEFAULT_WEBHOOK_PORT}}"
+
+    kubectl -n "${ARGOEVENTS_NAMESPACE}" port-forward "svc/${svc_name}" "${port}:${svc_port}" >/dev/null 2>&1 &
+    echo "${!}:${port}" > "$_ARGOEVENTS_PF_PID"
+
+    local attempts=0
+    until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
+        sleep 0.25; attempts=$((attempts + 1))
+    done
+
+    if ! _ae_pf_is_running; then
+        warn "Port-forward failed to start. Check kubectl connectivity."
+        rm -f "$_ARGOEVENTS_PF_PID"; return
+    fi
+
+    success "Port-forward started: http://localhost:${port}"
+    info "POST events to: http://localhost:${port}/<event-name>"
+}
+
+argoevents_uninstall() {
+    header "Uninstall Argo Events"
+
+    local installed
+    installed=$(argoevents_detect_installed)
+
+    if [[ -z "$installed" ]]; then
+        warn "Argo Events does not appear to be installed in namespace '${ARGOEVENTS_NAMESPACE}'."
+        return
+    fi
+
+    gum style \
+        --foreground "$RED" --border-foreground "$RED" --border rounded \
+        --width 60 --margin "0 2" --padding "1 2" \
+        "You are about to uninstall Argo Events ${installed}." \
+        "" \
+        "This will delete namespace '${ARGOEVENTS_NAMESPACE}' and all its resources," \
+        "including EventBuses, EventSources, and Sensors." \
+        "" \
+        "CRDs installed by Argo Events will also be removed." \
+        "This cannot be undone."
+
+    if ! gum confirm "Uninstall Argo Events?"; then
+        warn "Cancelled."
+        return
+    fi
+
+    _ae_pf_is_running && _ae_pf_stop || true
+
+    gum spin --spinner dot --title "Deleting namespace '${ARGOEVENTS_NAMESPACE}'..." -- \
+        kubectl delete namespace "${ARGOEVENTS_NAMESPACE}" --ignore-not-found
+
+    info "Removing Argo Events CRDs..."
+    for crd in eventbus.argoproj.io eventsources.argoproj.io sensors.argoproj.io; do
+        kubectl delete crd "$crd" --ignore-not-found 2>/dev/null \
+            && info "  Removed CRD: ${crd}" || true
+    done
+
+    success "Argo Events uninstalled."
+}
+
+argoevents_menu() {
+    while true; do
+        header "Argo Events"
+
+        local sources_label
+        _ae_pf_is_running \
+            && sources_label="event sources  [● pf: localhost:$(_ae_pf_port)]" \
+            || sources_label="event sources"
+
+        local action
+        action=$(gum choose \
+            "install" \
+            "status" \
+            "$sources_label" \
+            "uninstall" \
+            "← back" \
+            --header "Select action:") || true
+
+        case "$action" in
+            "install")        argoevents_install ;;
+            "status")         argoevents_status ;;
+            "event sources"*) argoevents_list_sources ;;
+            "uninstall")      argoevents_uninstall ;;
+            "← back"|"")     return ;;
+        esac
+    done
+}
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -649,12 +960,14 @@ main() {
         tool=$(gum choose \
             "Argo Workflows" \
             "Argo CD" \
+            "Argo Events" \
             "── quit ──" \
             --header "Select Argo tool:") || true
 
         case "$tool" in
             "Argo Workflows") workflows_menu ;;
             "Argo CD")        argocd_menu ;;
+            "Argo Events")    argoevents_menu ;;
             "── quit ──"|"")  break ;;
         esac
     done
