@@ -9,6 +9,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ ! -d "$COMMON_DIR" ]]; then
+    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+    exit 1
+fi
+# shellcheck source=../_common/ui.sh
+source "${COMMON_DIR}/ui.sh"
+
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------

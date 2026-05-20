@@ -20,7 +20,7 @@ fi
 
 # Folders that contain shared utilities (sourced by other scripts), not
 # interactive TUIs. They are excluded from the script picker.
-EXCLUDED_DIRS="cluster"
+EXCLUDED_DIRS="cluster _common"
 
 _dir_excluded() {
     local dir="$1"
