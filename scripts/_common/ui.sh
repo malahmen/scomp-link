@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Common gum-based display helpers.  Sourced by app scripts — do NOT run directly.
-# Callers must define CYAN, GREEN, YELLOW, RED before sourcing (or defaults apply).
+# Callers may override these before sourcing; otherwise the defaults below apply.
+
+: "${CYAN:=212}"
+: "${GREEN:=82}"
+: "${YELLOW:=220}"
+: "${RED:=196}"
 
 header() {
     gum style \
