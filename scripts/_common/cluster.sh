@@ -158,12 +158,22 @@ select_target() {
         "Target: ${TARGET_TYPE}${TARGET_CONTEXT:+  /  ${TARGET_CONTEXT}}"
 }
 
-# Returns the --kube-context flag value for helm/kubectl commands.
+# Returns the --kube-context flag for helm commands.
 # Empty string if TARGET_TYPE is docker.
 helm_context_flag() {
     case "$TARGET_TYPE" in
-        kind)  echo "--kube-context kind-${TARGET_CONTEXT}" ;;
-        k8s)   echo "--kube-context ${TARGET_CONTEXT}" ;;
+        kind)   echo "--kube-context kind-${TARGET_CONTEXT}" ;;
+        k8s)    echo "--kube-context ${TARGET_CONTEXT}" ;;
+        docker) echo "" ;;
+    esac
+}
+
+# Returns the --context flag for kubectl commands.
+# kubectl uses --context; helm uses --kube-context — they are not interchangeable.
+kubectl_context_flag() {
+    case "$TARGET_TYPE" in
+        kind)   echo "--context kind-${TARGET_CONTEXT}" ;;
+        k8s)    echo "--context ${TARGET_CONTEXT}" ;;
         docker) echo "" ;;
     esac
 }
