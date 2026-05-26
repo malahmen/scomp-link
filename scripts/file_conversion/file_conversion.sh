@@ -11,6 +11,16 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ ! -d "$COMMON_DIR" ]]; then
+    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+    exit 1
+fi
+# shellcheck source=../_common/ui.sh
+source "${COMMON_DIR}/ui.sh"
+
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
@@ -20,11 +30,6 @@ TITLE_PAGES_DIR=".fcc/title-pages"
 OUTPUT_DIR="./output"
 DEFAULT_DEPTH=3
 
-# Colour palette
-CYAN=212
-RED=196
-GREEN=82
-YELLOW=220
 
 # Title page state (set by select_title_page)
 USE_TITLE_PAGE=false
@@ -41,22 +46,6 @@ PDF_FONT=""
 AVAILABLE_ENGINES=()
 MONOFONT_TEX=""
 HEADER_TEX=""
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-header() {
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --align center --width 60 --padding "1 4" --margin "1 0" \
-        "$1"
-}
-
-info()       { gum log --level info "$1"; }
-success()    { gum style --foreground "$GREEN" "[ok] $1"; }
-warn()       { gum style --foreground "$YELLOW" "[warn] $1"; }
-error_exit() { gum style --foreground "$RED" "[error] $1"; exit 1; }
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 

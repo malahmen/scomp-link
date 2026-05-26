@@ -9,6 +9,8 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # -----------------------------------------------------------------------------
 # Bash version guard — requires bash 4+ (associative arrays, nameref, etc.)
 # macOS ships bash 3.2; install via brew and ensure it's first on PATH.
@@ -20,14 +22,17 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
     exit 1
 fi
 
+COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ ! -d "$COMMON_DIR" ]]; then
+    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+    exit 1
+fi
+# shellcheck source=../_common/ui.sh
+source "${COMMON_DIR}/ui.sh"
+
 # -----------------------------------------------------------------------------
 # Constants & colours
 # -----------------------------------------------------------------------------
-
-CYAN=212
-RED=196
-GREEN=82
-YELLOW=220
 
 # Script-level globals
 ORIGIN_DIR="$(pwd)"        # Directory the script was launched from
@@ -45,22 +50,6 @@ ENABLE_MERMAID=false
 # Globals used by management
 DOCS_DIR="src/content/docs"
 CONFIG_FILE="astro.config.mjs"
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-header() {
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --align center --width 60 --padding "1 4" --margin "1 0" \
-        "$1"
-}
-
-info()       { gum log --level info "$1"; }
-success()    { gum style --foreground "$GREEN" "[ok] $1"; }
-warn()       { gum style --foreground "$YELLOW" "[warn] $1"; }
-error_exit() { gum style --foreground "$RED" "[error] $1"; exit 1; }
 
 slugify() {
     echo "$1" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-_'
