@@ -47,10 +47,11 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 
 ### Observability
 
-| Script          | Targets      | Description                          |
-| --------------- | ------------ | ------------------------------------ |
-| `prometheus.sh` | K8s          | Prometheus with optional components  |
-| `grafana.sh`    | Docker · K8s | Grafana with datasource provisioning |
+| Script          | Targets      | Description                                         |
+| --------------- | ------------ | --------------------------------------------------- |
+| `lgtm.sh`       | Docker · K8s | Full LGTM stack (Loki, Grafana, Tempo, Mimir, OTel) |
+| `prometheus.sh` | K8s          | Prometheus with optional components                 |
+| `grafana.sh`    | Docker · K8s | Grafana with datasource provisioning                |
 
 ### Platform
 
@@ -143,7 +144,7 @@ cp ~/my-scripts/deploy.sh scripts/deploy/
 ./init.sh
 ```
 
-**That's it.** The launcher auto-discovers all `.sh` files one level deep inside `scripts/` (excluding folders listed in `EXCLUDED_DIRS`, such as `cluster`).
+**That's it.** The launcher auto-discovers all `.sh` files one level deep inside `scripts/` (excluding folders listed in `EXCLUDED_DIRS`, such as `_common`).
 
 ### Script Guidelines
 
@@ -152,7 +153,7 @@ For best results, your scripts should:
 1. **Use gum for interaction** - Provides consistent UX across all scripts
 2. **Start with the shebang** - `#!/usr/bin/env bash`
 3. **Use strict mode** - `set -euo pipefail`
-4. **Handle errors gracefully** - Provide meaningful error messages
+4. **Source `_common/`** - Use the shared helpers instead of duplicating them
 
 Example script template:
 
@@ -160,14 +161,14 @@ Example script template:
 #!/usr/bin/env bash
 set -euo pipefail
 
-# my-script.sh - Description of what this script does
-
-# Helper functions (will be moved to shared lib in the future)
-info()  { printf "\033[0;36m[INFO]  %s\033[0m\n" "$*"; }
-error() { printf "\033[0;31m[ERROR] %s\033[0m\n" "$*" >&2; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../_common/ui.sh"
+source "${SCRIPT_DIR}/../_common/cluster.sh"
 
 # Check dependencies
-command -v gum &>/dev/null || error "gum is required. Run setup.sh first."
+command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
+
+header "My Script"
 
 # Your script logic here
 ACTION=$(gum choose "Option 1" "Option 2" "Quit")
@@ -286,6 +287,19 @@ Kubernetes only.
 - **Custom `prometheus.yml`**: uploaded as a ConfigMap and wired via `server.configMapOverrideName`, honoured on upgrades
 - Connect: foreground port-forward to the web UI (Ctrl+C to stop)
 
+#### LGTM Stack (`lgtm/lgtm.sh`)
+
+Installs and manages the full Grafana observability stack in a single script:
+
+- **Components**: Loki (logs), Grafana (dashboards), Tempo (traces), Mimir (metrics), OpenTelemetry Collector
+- **Targets**: kind/k8s (Helm) or Docker Compose
+- **Resource profiles**: minimal (kind/local) or standard (production clusters), fully customisable
+- **Grafana datasources** auto-provisioned at install: Mimir, Loki, Tempo with trace-to-log correlation
+- **Port-forward toggle**: start/stop per-component tunnels interactively
+- **Test command**: pushes a sample log, trace, and metric through the stack and prints the exact Grafana Explore queries to find them
+- **metrics-server**: offered for install from the status view when `kubectl top` is unavailable
+- **Purge**: removes all Helm releases and waits for namespace termination before allowing reinstall
+
 #### Grafana (`grafana/grafana.sh`)
 
 - Docker image: `grafana/grafana` · Port: `3000`
@@ -373,10 +387,14 @@ scomp-link/
 │
 └── scripts/                          # All runnable scripts live here
     │
-    ├── cluster/
-    │   └── cluster.sh                # [Shared] Deployment target helper (sourced, not run directly)
+    ├── _common/                       # [Shared] Sourced by app scripts — not run directly
+    │   ├── cluster.sh                 # Deployment target detection (docker/kind/k8s)
+    │   ├── ui.sh                      # gum display helpers (header, info, warn, …)
+    │   ├── deps.sh                    # helm/kubectl checks and repo management
+    │   ├── portforward.sh             # Port-forward pid-file helpers
+    │   └── gh_releases.sh             # GitHub release fetching helpers
     │
-    ├── # ── Infrastructure ──────────────────────────────────────────
+    ├── # Infrastructure
     ├── argo/
     │   └── argo.sh                   # Argo Workflows & CD manager
     ├── karpenter/
@@ -384,7 +402,7 @@ scomp-link/
     ├── kind/
     │   └── kind.sh                   # Kind cluster manager
     │
-    ├── # ── Databases ───────────────────────────────────────────────
+    ├── # Databases
     ├── postgres/
     │   └── postgres.sh               # PostgreSQL (Docker · K8s)
     ├── mariadb/
@@ -400,19 +418,21 @@ scomp-link/
     ├── influxdb/
     │   └── influxdb.sh               # InfluxDB 2.x (Docker · K8s)
     │
-    ├── # ── Observability ───────────────────────────────────────────
+    ├── # Observability
+    ├── lgtm/
+    │   └── lgtm.sh                   # LGTM stack: Loki, Grafana, Tempo, Mimir, OTel
     ├── prometheus/
     │   └── prometheus.sh             # Prometheus (K8s only)
     ├── grafana/
     │   └── grafana.sh                # Grafana + datasource provisioning (Docker · K8s)
     │
-    ├── # ── Platform ────────────────────────────────────────────────
+    ├── # Platform
     ├── harbor/
     │   └── harbor.sh                 # Harbor container registry (K8s only)
     ├── n8n/
     │   └── n8n.sh                    # n8n workflow automation (Docker · K8s)
     │
-    ├── # ── Utilities ───────────────────────────────────────────────
+    ├── # Utilities
     ├── starlight/
     │   ├── starlight_astro.sh        # Starlight documentation manager
     │   └── converter/
@@ -424,7 +444,7 @@ scomp-link/
         └── your-script.sh            # Add your own scripts here
 ```
 
-**Core files** (`setup.sh`, `init.sh`) are the framework. Scripts placed under `scripts/<folder>/` are auto-discovered and shown in the menu. The `cluster/` folder is excluded from the menu since it's a shared library sourced by other scripts.
+**Core files** (`setup.sh`, `init.sh`) are the framework. Scripts placed under `scripts/<folder>/` are auto-discovered and shown in the menu. The `_common/` folder is excluded from the menu since it contains shared libraries sourced by other scripts.
 
 ---
 
@@ -518,8 +538,7 @@ Some operations require sudo. On systems without passwordless sudo, you may need
 
 Scomp-Link is evolving into a comprehensive shell scripting framework:
 
-- **Shared Library** - Common functions (`lib/shared.sh`) for logging, prompts, validation
-- **Gum Helpers** - Reusable TUI patterns (`lib/gum-helpers.sh`)
+- ~~**Shared Library** - Common functions for logging, prompts, validation~~ ✓ done (`scripts/_common/`)
 - **Plugin System** - Auto-discover scripts from `~/.config/scomp-link/plugins/`
 - **Tool Management** - Unified TUI for managing development tools via mise
 - **Script Templates** - Generators for new scripts with boilerplate
@@ -540,7 +559,8 @@ Scomp-Link is evolving into a comprehensive shell scripting framework:
 - Follow existing patterns for error handling and user interaction
 - Use gum for all user prompts and selections
 - Add new scripts under `scripts/<folder>/` (auto-discovered by `init.sh`)
-- Source `scripts/cluster/cluster.sh` for deployment target selection (`select_target`)
+- Source `scripts/_common/cluster.sh` for deployment target selection (`select_target`)
+- Source `scripts/_common/ui.sh` for consistent gum-based display helpers
 
 ### Contributing Scripts
 
