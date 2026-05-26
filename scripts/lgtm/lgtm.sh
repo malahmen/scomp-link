@@ -39,6 +39,10 @@ HELM_REPO_URL="https://grafana.github.io/helm-charts"
 OTEL_HELM_REPO_NAME="open-telemetry"
 OTEL_HELM_REPO_URL="https://open-telemetry.github.io/opentelemetry-helm-charts"
 
+METRICS_SERVER_HELM_REPO_NAME="metrics-server"
+METRICS_SERVER_HELM_REPO_URL="https://kubernetes-sigs.github.io/metrics-server/"
+METRICS_SERVER_CHART_VERSION="3.12.2"
+
 NAMESPACE="monitoring"
 
 # XDG config
@@ -68,6 +72,16 @@ declare -A COMP_PORT=(
     [tempo]="3200"
     [mimir]="9009"
     [otelcol]="4317"   # gRPC; HTTP is 4318
+)
+
+# Actual service ports exposed by each Helm chart (remote side of kubectl port-forward).
+# These differ from COMP_PORT when the chart fronts traffic through a gateway/nginx on port 80.
+declare -A COMP_SVC_PORT=(
+    [grafana]="80"     # grafana chart service listens on 80, proxies to container 3000
+    [loki]="3100"
+    [tempo]="3100"
+    [mimir]="80"       # mimir-nginx gateway listens on 80
+    [otelcol]="4317"
 )
 
 # Known Kubernetes service names produced by each Helm chart.
@@ -131,10 +145,10 @@ cfg_load() {
 # resource profiles─
 
 # Minimal (kind / local dev)
-declare -A MINIMAL_CPU_REQ=([grafana]="50m"  [loki]="50m"  [tempo]="50m"  [mimir]="100m" [otelcol]="50m")
-declare -A MINIMAL_CPU_LIM=([grafana]="200m" [loki]="200m" [tempo]="200m" [mimir]="500m" [otelcol]="200m")
-declare -A MINIMAL_MEM_REQ=([grafana]="64Mi"  [loki]="64Mi"  [tempo]="64Mi"  [mimir]="256Mi" [otelcol]="64Mi")
-declare -A MINIMAL_MEM_LIM=([grafana]="256Mi" [loki]="256Mi" [tempo]="256Mi" [mimir]="1Gi"   [otelcol]="256Mi")
+declare -A MINIMAL_CPU_REQ=([grafana]="50m"  [loki]="50m"  [tempo]="50m"  [mimir]="100m" [otelcol]="100m")
+declare -A MINIMAL_CPU_LIM=([grafana]="200m" [loki]="200m" [tempo]="200m" [mimir]="500m" [otelcol]="500m")
+declare -A MINIMAL_MEM_REQ=([grafana]="64Mi"  [loki]="64Mi"  [tempo]="64Mi"  [mimir]="256Mi" [otelcol]="128Mi")
+declare -A MINIMAL_MEM_LIM=([grafana]="256Mi" [loki]="256Mi" [tempo]="256Mi" [mimir]="1Gi"   [otelcol]="512Mi")
 declare -A MINIMAL_REPLICAS=([grafana]=1 [loki]=1 [tempo]=1 [mimir]=1 [otelcol]=1)
 declare -A MINIMAL_PVC=([grafana]="1Gi" [loki]="5Gi" [tempo]="5Gi" [mimir]="10Gi" [otelcol]="1Gi")
 declare -A MINIMAL_RETENTION=([loki]="24h" [tempo]="24h" [mimir]="24h")
@@ -336,6 +350,33 @@ adminPassword: "admin"
 grafana.ini:
   server:
     domain: localhost
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Mimir
+        type: prometheus
+        uid: mimir
+        url: http://mimir-nginx.${NAMESPACE}.svc.cluster.local/prometheus
+        isDefault: true
+        jsonData:
+          timeInterval: 15s
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki.${NAMESPACE}.svc.cluster.local:3100
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo.${NAMESPACE}.svc.cluster.local:3100
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: "-1h"
+            spanEndTimeShift: "1h"
+            tags:
+              - key: service.name
+                value: app
 EOF
 }
 
@@ -465,6 +506,24 @@ resources:
   limits:
     cpu: "${PROF_CPU_LIM[otelcol]}"
     memory: "${PROF_MEM_LIM[otelcol]}"
+# The contrib image is heavier than the core image; give the Go runtime time to
+# settle before the probes start and tolerate brief GC-induced stalls.
+livenessProbe:
+  httpGet:
+    path: /
+    port: 13133
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 5
+readinessProbe:
+  httpGet:
+    path: /
+    port: 13133
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
 config:
   receivers:
     otlp:
@@ -732,6 +791,30 @@ _helm_install_component() {
         echo "$helm_out"
         return 1
     fi
+}
+
+_install_metrics_server() {
+    local helm_flags="$1"
+    # kind uses self-signed kubelet certs — insecure TLS is required.
+    # On real clusters the flag is harmless but unnecessary; helm values handle it.
+    local extra_args=""
+    [[ "$TARGET_TYPE" == "kind" ]] && extra_args="--set args={--kubelet-insecure-tls}"
+
+    _ensure_helm_repo "$METRICS_SERVER_HELM_REPO_NAME" "$METRICS_SERVER_HELM_REPO_URL"
+
+    local out
+    # shellcheck disable=SC2086
+    if ! out=$(helm upgrade --install metrics-server \
+            "${METRICS_SERVER_HELM_REPO_NAME}/metrics-server" \
+            --version "${METRICS_SERVER_CHART_VERSION}" \
+            --namespace kube-system \
+            $extra_args \
+            $helm_flags 2>&1); then
+        warn "metrics-server install failed:"
+        echo "$out"
+        return 1
+    fi
+    success "metrics-server installed."
 }
 
 _install_k8s() {
@@ -1033,8 +1116,15 @@ cmd_status() {
 
     gum style --foreground "${CYAN}" --bold "── Resource Usage (top)"
     # shellcheck disable=SC2086
-    kubectl $kctl_flags top pods -n "${NAMESPACE}" 2>/dev/null || \
-        warn "kubectl top unavailable (metrics-server not installed?)."
+    if ! kubectl $kctl_flags top pods -n "${NAMESPACE}" 2>/dev/null; then
+        warn "kubectl top unavailable — metrics-server not installed."
+        if gum confirm "Install metrics-server now?"; then
+            _install_metrics_server "$helm_flags" "$kctl_flags"
+            # shellcheck disable=SC2086
+            kubectl $kctl_flags top pods -n "${NAMESPACE}" 2>/dev/null || \
+                info "metrics-server is starting — re-run status in ~30 s."
+        fi
+    fi
 
     gum style --foreground "${CYAN}" --bold "── PersistentVolumeClaims"
     # shellcheck disable=SC2086
@@ -1136,8 +1226,8 @@ cmd_port_forward() {
                 --header "Local port for ${COMP_LABEL[$selected_c]} (default: ${default_port}):") || true
             [[ -z "$local_port" ]] && local_port="$default_port"
 
-            # Determine remote port (service port)
-            local remote_port="$default_port"
+            # Determine remote port (actual service port, may differ from local)
+            local remote_port="${COMP_SVC_PORT[$selected_c]}"
 
             # Use the known service name from the COMP_SVC map rather than
             # grepping, since chart-generated names don't always match the release name.
@@ -1298,6 +1388,119 @@ cmd_update() {
     info "Note: chart versions in this script are pinned. Bumping them requires explicit edits."
 }
 
+# cmd: test ───────────────────────────────────────────────────────────────────
+# Pushes one log (Loki), one trace (Tempo via OTel), one metric (Mimir via OTel)
+# and prints where to find them in Grafana.
+
+cmd_test() {
+    header "LGTM — Send Test Data"
+
+    cfg_load
+    local target_type
+    target_type=$(cfg_get "TARGET_TYPE")
+    [[ -z "$target_type" ]] && error_exit "No saved config found. Run install first."
+    [[ "$target_type" == "docker" ]] && error_exit "Test command requires k8s or kind."
+
+    command -v curl &>/dev/null || error_exit "curl is required for this command."
+
+    local helm_flags kctl_flags
+    helm_flags="$(helm_context_flag)"
+    kctl_flags="$(kubectl_context_flag)"
+
+    # Ensure PROF_* arrays are populated so _helm_values_grafana can render properly
+    _apply_profile "$(cfg_get "RESOURCE_PROFILE")"
+
+    # Upgrade grafana to provision datasources if they are not yet configured
+    # shellcheck disable=SC2086
+    if ! helm get values grafana -n "${NAMESPACE}" $helm_flags 2>/dev/null \
+            | grep -q "datasources:"; then
+        info "Provisioning Grafana datasources (first-time setup)..."
+        _helm_install_component "grafana" "$helm_flags" "$kctl_flags" || \
+            warn "Grafana upgrade failed — datasources may not be configured yet."
+    fi
+
+    # Temporary port-forwards on high ports to avoid colliding with active ones
+    local loki_port=13100 otel_port=14318
+    local loki_pf_pid otel_pf_pid
+
+    info "Starting temporary port-forwards..."
+    # shellcheck disable=SC2086
+    kubectl $kctl_flags port-forward svc/loki \
+        -n "${NAMESPACE}" "${loki_port}:3100" &>/dev/null &
+    loki_pf_pid=$!
+    # shellcheck disable=SC2086
+    kubectl $kctl_flags port-forward \
+        svc/otelcol-opentelemetry-collector \
+        -n "${NAMESPACE}" "${otel_port}:4318" &>/dev/null &
+    otel_pf_pid=$!
+    # Use INT/TERM only — RETURN fires on every function return within this function,
+    # which would kill the port-forwards before curl can use them.
+    # shellcheck disable=SC2064
+    trap "kill ${loki_pf_pid} ${otel_pf_pid} 2>/dev/null || true" INT TERM
+
+    sleep 2  # give port-forwards time to establish
+
+    local ts_ns
+    ts_ns=$(date +%s%N)
+    local trace_id span_id
+    trace_id=$(openssl rand -hex 16 2>/dev/null \
+        || printf '%08x%08x%08x%08x' $RANDOM $RANDOM $RANDOM $RANDOM)
+    span_id=$(openssl rand -hex 8 2>/dev/null \
+        || printf '%08x%08x' $RANDOM $RANDOM)
+    local end_ns=$(( ts_ns + 500000000 ))
+
+    # ── Loki: push log directly via push API ──────────────────────────────────
+    info "Pushing test log to Loki..."
+    if curl -sf -X POST "http://localhost:${loki_port}/loki/api/v1/push" \
+            -H "Content-Type: application/json" \
+            -d "{\"streams\":[{\"stream\":{\"app\":\"lgtm-test\",\"env\":\"${TARGET_TYPE}\"},\
+\"values\":[[\"${ts_ns}\",\"[lgtm-test] hello from cmd_test trace_id=${trace_id}\"]]}]}" \
+            &>/dev/null; then
+        success "Log sent to Loki."
+    else
+        warn "Loki push failed — check: kubectl get pods -n ${NAMESPACE}"
+    fi
+
+    # ── Tempo: OTLP HTTP via OTel collector ───────────────────────────────────
+    info "Pushing test trace to Tempo via OTel collector..."
+    if curl -sf -X POST "http://localhost:${otel_port}/v1/traces" \
+            -H "Content-Type: application/json" \
+            -d "{\"resourceSpans\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\
+\"value\":{\"stringValue\":\"lgtm-test\"}}]},\"scopeSpans\":[{\"scope\":{\"name\":\
+\"lgtm-test\"},\"spans\":[{\"traceId\":\"${trace_id}\",\"spanId\":\"${span_id}\",\
+\"name\":\"test-span\",\"kind\":1,\"startTimeUnixNano\":\"${ts_ns}\",\
+\"endTimeUnixNano\":\"${end_ns}\",\"status\":{}}]}]}]}" \
+            &>/dev/null; then
+        success "Trace sent to Tempo."
+    else
+        warn "OTel push failed — check: kubectl get pods -n ${NAMESPACE}"
+    fi
+
+    # ── Mimir: OTLP HTTP via OTel collector ───────────────────────────────────
+    info "Pushing test metric to Mimir via OTel collector..."
+    if curl -sf -X POST "http://localhost:${otel_port}/v1/metrics" \
+            -H "Content-Type: application/json" \
+            -d "{\"resourceMetrics\":[{\"resource\":{\"attributes\":[{\"key\":\
+\"service.name\",\"value\":{\"stringValue\":\"lgtm-test\"}}]},\"scopeMetrics\":\
+[{\"metrics\":[{\"name\":\"lgtm_test_requests_total\",\"sum\":{\"dataPoints\":\
+[{\"attributes\":[{\"key\":\"env\",\"value\":{\"stringValue\":\"${TARGET_TYPE}\"}}],\
+\"startTimeUnixNano\":\"${ts_ns}\",\"timeUnixNano\":\"${ts_ns}\",\"asInt\":\"1\"}],\
+\"aggregationTemporality\":2,\"isMonotonic\":true}}]}]}]}" \
+            &>/dev/null; then
+        success "Metric sent to Mimir."
+    else
+        warn "OTel push failed — check: kubectl get pods -n ${NAMESPACE}"
+    fi
+
+    kill "$loki_pf_pid" "$otel_pf_pid" 2>/dev/null || true
+    trap - INT TERM
+
+    gum style \
+        --foreground "${CYAN}" --border-foreground "${CYAN}" --border rounded \
+        --align left --width 70 --margin "1 2" --padding "1 2" \
+        "$(printf 'Open Grafana → localhost:3000  (admin / admin)\n\nLogs    Explore → Loki  → {app="lgtm-test"}\nTraces  Explore → Tempo → Trace ID:\n        %s\nMetrics Explore → Mimir → lgtm_test_requests_total' "$trace_id")"
+}
+
 # main TUI
 
 main() {
@@ -1317,9 +1520,10 @@ main() {
             start)        cmd_start        ;;
             stop)         cmd_stop         ;;
             update)       cmd_update       ;;
+            test)         cmd_test         ;;
             *)
                 error_exit "Unknown subcommand: $1
-Usage: lgtm.sh [install|uninstall|purge|status|port-forward|start|stop|update]"
+Usage: lgtm.sh [install|uninstall|purge|status|port-forward|start|stop|update|test]"
                 ;;
         esac
         return
@@ -1341,6 +1545,7 @@ Usage: lgtm.sh [install|uninstall|purge|status|port-forward|start|stop|update]"
             "start         — start / scale-up components" \
             "stop          — stop / scale-down components" \
             "update        — refresh Helm repo cache" \
+            "test          — push sample log, trace, metric and print where to find them" \
             "── quit") || true
 
         [[ -z "$action" || "$action" == "── quit" ]] && {
@@ -1357,6 +1562,7 @@ Usage: lgtm.sh [install|uninstall|purge|status|port-forward|start|stop|update]"
             start*)        cmd_start        ;;
             stop*)         cmd_stop         ;;
             update*)       cmd_update       ;;
+            test*)         cmd_test         ;;
         esac
 
         echo ""
