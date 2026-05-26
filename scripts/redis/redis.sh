@@ -17,13 +17,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-CLUSTER_SH="${SCRIPT_DIR}/../cluster/cluster.sh"
-if [[ ! -f "$CLUSTER_SH" ]]; then
-    printf "\033[0;31m[ERROR] cluster.sh not found at %s\033[0m\n" "$CLUSTER_SH" >&2
+COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ ! -d "$COMMON_DIR" ]]; then
+    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
     exit 1
 fi
-# shellcheck source=../cluster/cluster.sh
-source "$CLUSTER_SH"
+# shellcheck source=../_common/ui.sh
+source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/deps.sh
+source "${COMMON_DIR}/deps.sh"
+# shellcheck source=../_common/portforward.sh
+source "${COMMON_DIR}/portforward.sh"
+# shellcheck source=../_common/cluster.sh
+source "${COMMON_DIR}/cluster.sh"
 
 # -----------------------------------------------------------------------------
 # Constants / defaults
@@ -38,10 +44,6 @@ RD_DEFAULT_IMAGE_TAG="7"
 RD_QUEUE_SCAN_LIMIT=500     # max keys to inspect during queue listing
 
 # Colours
-CYAN=212
-RED=196
-GREEN=82
-YELLOW=220
 BLUE=39
 
 # Session state — populated by _docker_menu / _k8s_menu
@@ -51,77 +53,8 @@ RD_PASSWORD=""
 RD_PORT=$RD_DEFAULT_PORT
 
 # -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-header() {
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --align center --width 60 --padding "1 4" --margin "1 0" \
-        "$1"
-}
-
-info()       { gum log --level info "$1"; }
-success()    { gum style --foreground "$GREEN" "[ok] $1"; }
-warn()       { gum style --foreground "$YELLOW" "[warn] $1"; }
-error_exit() { gum style --foreground "$RED" "[error] $1"; exit 1; }
-
-# -----------------------------------------------------------------------------
 # Dependency checks
 # -----------------------------------------------------------------------------
-
-_check_docker() {
-    if ! command -v docker &>/dev/null; then
-        gum log --level error "docker is not installed or not in PATH."
-        exit 1
-    fi
-    if ! docker info &>/dev/null 2>&1; then
-        gum log --level error "Docker daemon is not running. Start Docker and retry."
-        exit 1
-    fi
-    info "docker: $(docker --version 2>/dev/null | head -1)"
-}
-
-_check_kubectl() {
-    if ! command -v kubectl &>/dev/null; then
-        gum log --level error "kubectl is not installed or not in PATH."
-        gum log --level error "Install kubectl: https://kubernetes.io/docs/tasks/tools/"
-        exit 1
-    fi
-    info "kubectl: $(kubectl version --client 2>/dev/null | head -1)"
-}
-
-_ensure_helm() {
-    if command -v helm &>/dev/null; then
-        info "helm: $(helm version --short 2>/dev/null)"
-        return
-    fi
-
-    gum style \
-        --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-        --align center --width 60 --margin "1 2" --padding "1 4" \
-        "helm not found" \
-        "helm is required to install Redis on Kubernetes."
-
-    if ! gum confirm "Install helm via mise?"; then
-        error_exit "helm is required for Kubernetes installs. Aborting."
-    fi
-
-    if ! command -v mise &>/dev/null; then
-        error_exit "mise is not installed. Run setup.sh first, then retry."
-    fi
-
-    if ! gum spin --spinner dot --title "Installing helm via mise..." -- \
-        mise install helm@latest; then
-        error_exit "Failed to install helm. Check your mise configuration."
-    fi
-
-    export PATH="$HOME/.local/share/mise/shims:$PATH"
-
-    command -v helm &>/dev/null \
-        || error_exit "helm installed but not found in PATH. Check mise shims."
-    success "helm installed: $(helm version --short 2>/dev/null)"
-}
 
 _ensure_redis_cli() {
     if command -v redis-cli &>/dev/null; then
@@ -178,7 +111,7 @@ check_dependencies() {
     info "Checking dependencies..."
     case "$TARGET_TYPE" in
         docker)   _check_docker ;;
-        kind|k8s) _check_kubectl; _ensure_helm ;;
+        kind|k8s) _check_kubectl; _ensure_helm "Redis" ;;
     esac
 }
 
@@ -658,10 +591,6 @@ redis_status_k8s() {
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
 }
 
-_rd_pf_is_running() { [[ -f "$_RD_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_RD_PF_PID")" 2>/dev/null; }
-_rd_pf_port()       { cut -d: -f2 < "$_RD_PF_PID" 2>/dev/null; }
-_rd_pf_stop()       { kill "$(cut -d: -f1 < "$_RD_PF_PID")" 2>/dev/null || true; rm -f "$_RD_PF_PID"; success "Port-forward stopped."; }
-
 redis_port_forward_k8s() {
     header "Redis — Port Forward"
     _k8s_check_cluster || return 0
@@ -671,14 +600,14 @@ redis_port_forward_k8s() {
         return
     fi
 
-    if _rd_pf_is_running; then
+    if pf_is_running "$_RD_PF_PID"; then
         gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
             --width 60 --margin "0 2" --padding "1 2" \
             "Port-forward is running" \
-            "localhost:$(_rd_pf_port) → ${RD_HELM_RELEASE}:6379" \
+            "localhost:$(pf_port "$_RD_PF_PID") → ${RD_HELM_RELEASE}:6379" \
             "" \
-            "Connect: redis-cli -h 127.0.0.1 -p $(_rd_pf_port)"
-        gum confirm "Stop port-forward?" && _rd_pf_stop || true
+            "Connect: redis-cli -h 127.0.0.1 -p $(pf_port "$_RD_PF_PID")"
+        gum confirm "Stop port-forward?" && pf_stop "$_RD_PF_PID" || true
         return
     fi
 
@@ -697,7 +626,7 @@ redis_port_forward_k8s() {
         sleep 0.25; attempts=$((attempts + 1))
     done
 
-    if ! _rd_pf_is_running; then
+    if ! pf_is_running "$_RD_PF_PID"; then
         warn "Port-forward failed to start. Check kubectl connectivity."
         rm -f "$_RD_PF_PID"; return
     fi
@@ -885,8 +814,8 @@ _k8s_menu() {
         header "Redis — Kubernetes  (${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${RD_NAMESPACE} / release: ${RD_HELM_RELEASE})"
 
         local pf_label
-        _rd_pf_is_running \
-            && pf_label="port-forward  [● localhost:$(_rd_pf_port)]" \
+        pf_is_running "$_RD_PF_PID" \
+            && pf_label="port-forward  [● localhost:$(pf_port "$_RD_PF_PID")]" \
             || pf_label="port-forward  [○ stopped]"
 
         local action

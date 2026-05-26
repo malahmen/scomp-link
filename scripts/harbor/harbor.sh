@@ -20,13 +20,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-CLUSTER_SH="${SCRIPT_DIR}/../cluster/cluster.sh"
-if [[ ! -f "$CLUSTER_SH" ]]; then
-    printf "\033[0;31m[ERROR] cluster.sh not found at %s\033[0m\n" "$CLUSTER_SH" >&2
+COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ ! -d "$COMMON_DIR" ]]; then
+    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
     exit 1
 fi
-# shellcheck source=../cluster/cluster.sh
-source "$CLUSTER_SH"
+# shellcheck source=../_common/ui.sh
+source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/deps.sh
+source "${COMMON_DIR}/deps.sh"
+# shellcheck source=../_common/portforward.sh
+source "${COMMON_DIR}/portforward.sh"
+# shellcheck source=../_common/cluster.sh
+source "${COMMON_DIR}/cluster.sh"
 
 # -----------------------------------------------------------------------------
 # Constants / defaults
@@ -49,84 +55,12 @@ HARBOR_REDIS_SIZE="512Mi"
 HARBOR_TRIVY_SIZE="5Gi"
 
 # Colours
-CYAN=212
-RED=196
-GREEN=82
-YELLOW=220
 BLUE=39
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-header() {
-    gum style \
-        --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
-        --align center --width 60 --padding "1 4" --margin "1 0" \
-        "$1"
-}
-
-info()       { gum log --level info "$1"; }
-success()    { gum style --foreground "$GREEN" "[ok] $1"; }
-warn()       { gum style --foreground "$YELLOW" "[warn] $1"; }
-error_exit() { gum style --foreground "$RED" "[error] $1"; exit 1; }
-
-# -----------------------------------------------------------------------------
-# Dependency checks
-# -----------------------------------------------------------------------------
-
-_check_kubectl() {
-    if ! command -v kubectl &>/dev/null; then
-        gum log --level error "kubectl is not installed or not in PATH."
-        gum log --level error "Install kubectl: https://kubernetes.io/docs/tasks/tools/"
-        exit 1
-    fi
-    info "kubectl: $(kubectl version --client 2>/dev/null | head -1)"
-}
-
-_ensure_helm() {
-    if command -v helm &>/dev/null; then
-        info "helm: $(helm version --short 2>/dev/null)"
-        return
-    fi
-
-    gum style \
-        --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-        --align center --width 60 --margin "1 2" --padding "1 4" \
-        "helm not found" \
-        "helm is required to install Harbor on Kubernetes."
-
-    if ! gum confirm "Install helm via mise?"; then
-        error_exit "helm is required for Kubernetes installs. Aborting."
-    fi
-
-    if ! command -v mise &>/dev/null; then
-        error_exit "mise is not installed. Run setup.sh first, then retry."
-    fi
-
-    if ! gum spin --spinner dot --title "Installing helm via mise..." -- \
-        mise install helm@latest; then
-        error_exit "Failed to install helm. Check your mise configuration."
-    fi
-
-    export PATH="$HOME/.local/share/mise/shims:$PATH"
-
-    command -v helm &>/dev/null \
-        || error_exit "helm installed but not found in PATH. Check mise shims."
-    success "helm installed: $(helm version --short 2>/dev/null)"
-}
-
-_ensure_helm_repo() {
-    info "Adding/updating '${HARBOR_HELM_REPO_NAME}' helm repo..."
-    helm repo add "$HARBOR_HELM_REPO_NAME" "$HARBOR_HELM_REPO_URL" 2>/dev/null || true
-    gum spin --spinner dot --title "Updating helm repo..." -- \
-        helm repo update "$HARBOR_HELM_REPO_NAME"
-}
 
 check_dependencies() {
     info "Checking dependencies..."
     _check_kubectl
-    _ensure_helm
+    _ensure_helm "Harbor"
 }
 
 # -----------------------------------------------------------------------------
@@ -348,7 +282,7 @@ harbor_install_k8s() {
     header "Install Harbor — Kubernetes"
     _k8s_check_cluster || return 0
 
-    _ensure_helm_repo
+    _ensure_helm_repo "$HARBOR_HELM_REPO_NAME" "$HARBOR_HELM_REPO_URL"
 
     HARBOR_ADMIN_PASSWORD=$(gum input \
         --placeholder "leave empty to auto-generate" \
@@ -456,10 +390,6 @@ harbor_status_k8s() {
     kubectl get pvc -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
-_harbor_pf_is_running() { [[ -f "$_HARBOR_PF_PID" ]] && kill -0 "$(cut -d: -f1 < "$_HARBOR_PF_PID")" 2>/dev/null; }
-_harbor_pf_port()       { cut -d: -f2 < "$_HARBOR_PF_PID" 2>/dev/null; }
-_harbor_pf_stop()       { kill "$(cut -d: -f1 < "$_HARBOR_PF_PID")" 2>/dev/null || true; rm -f "$_HARBOR_PF_PID"; success "Port-forward stopped."; }
-
 harbor_connect_k8s() {
     header "Connect — Harbor Web UI"
     _k8s_check_cluster || return 0
@@ -469,14 +399,14 @@ harbor_connect_k8s() {
         return
     fi
 
-    if _harbor_pf_is_running; then
+    if pf_is_running "$_HARBOR_PF_PID"; then
         gum style --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
             --width 60 --margin "0 2" --padding "1 2" \
             "Port-forward is running" \
-            "http://localhost:$(_harbor_pf_port)" \
+            "http://localhost:$(pf_port "$_HARBOR_PF_PID")" \
             "" \
             "Username: admin"
-        gum confirm "Stop port-forward?" && _harbor_pf_stop || true
+        gum confirm "Stop port-forward?" && pf_stop "$_HARBOR_PF_PID" || true
         return
     fi
 
@@ -501,7 +431,7 @@ harbor_connect_k8s() {
         sleep 0.25; attempts=$((attempts + 1))
     done
 
-    if ! _harbor_pf_is_running; then
+    if ! pf_is_running "$_HARBOR_PF_PID"; then
         warn "Port-forward failed to start. Check kubectl connectivity."
         rm -f "$_HARBOR_PF_PID"; return
     fi
@@ -575,8 +505,8 @@ _k8s_menu() {
         header "Harbor — ${TARGET_TYPE}: ${TARGET_CONTEXT} / ns: ${HARBOR_NAMESPACE} / release: ${HARBOR_HELM_RELEASE}"
 
         local pf_label
-        _harbor_pf_is_running \
-            && pf_label="connect  [● localhost:$(_harbor_pf_port)]" \
+        pf_is_running "$_HARBOR_PF_PID" \
+            && pf_label="connect  [● localhost:$(pf_port "$_HARBOR_PF_PID")]" \
             || pf_label="connect  [○ stopped]"
 
         local action
