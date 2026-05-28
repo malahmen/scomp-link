@@ -178,10 +178,21 @@ cmd_add() {
 
     profile_name=$(gum input --placeholder "work, personal, github" \
         --header "Profile name:")
-    [[ -z "$profile_name" ]] && warn "Profile name required." && return 1
+    [[ -z "$profile_name" ]] && warn "Profile name required." >&2 && return 1
+
+    if load_profiles | jq -e --arg n "$profile_name" '.profiles[$n] != null' > /dev/null; then
+        warn "Profile '$profile_name' already exists. Use 'edit' to modify it." >&2
+        return 1
+    fi
 
     host=$(gum input --placeholder "github.com" --header "Host:")
-    [[ -z "$host" ]] && warn "Host required." && return 1
+    [[ -z "$host" ]] && warn "Host required." >&2 && return 1
+
+    if [[ -f "$SSH_DIR/config" ]] && \
+       awk '/^Host / { for(i=2;i<=NF;i++) print $i }' "$SSH_DIR/config" | grep -qx "$host"; then
+        warn "Host '$host' already exists in ~/.ssh/config. Use a different alias or edit the existing entry." >&2
+        return 1
+    fi
 
     hostname=$(gum input --placeholder "$host" \
         --header "HostName (leave blank to use Host):")
@@ -218,17 +229,6 @@ cmd_add() {
         esac
         chmod 600 "$key_path"
         success "Key generated: $key_path"
-
-        info "Public key:"
-        gum style --border rounded --padding "0 1" "$(cat "${key_path}.pub")"
-
-        if gum confirm "Copy public key to clipboard?"; then
-            if cat "${key_path}.pub" | _copy_to_clipboard; then
-                success "Public key copied to clipboard."
-            else
-                warn "No clipboard utility found (pbcopy / xclip / xsel)."
-            fi
-        fi
     else
         local existing_keys
         existing_keys=$(find "$SSH_DIR" -name "*.pub" -type f 2>/dev/null \
@@ -271,6 +271,18 @@ cmd_add() {
     save_profiles "$new_profiles"
 
     success "Profile '$profile_name' added."
+
+    if [[ -f "${key_path}.pub" ]]; then
+        info "Add this public key to your git hosting service before testing:"
+        gum style --border rounded --padding "0 1" "$(cat "${key_path}.pub")"
+        if gum confirm "Copy public key to clipboard?"; then
+            if cat "${key_path}.pub" | _copy_to_clipboard; then
+                success "Public key copied to clipboard."
+            else
+                warn "No clipboard utility found (pbcopy / xclip / xsel)." >&2
+            fi
+        fi
+    fi
 
     gum confirm "Test the connection now?" && ssh -T "$host" 2>&1 || true
 }
