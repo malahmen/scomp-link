@@ -244,14 +244,11 @@ cmd_add() {
     fi
 
     # Additional options ------------------------------------------------
-    local add_tmp additional=""
-    if gum confirm "Add additional SSH config options?"; then
-        add_tmp=$(mktemp)
-        printf '# One option per line, e.g.:\n#   ForwardAgent yes\n#   ProxyJump jump-host\n' > "$add_tmp"
-        ${VISUAL:-${EDITOR:-vi}} "$add_tmp"
-        additional=$(grep -v '^#' "$add_tmp" | grep -v '^[[:space:]]*$' || true)
-        rm -f "$add_tmp"
-    fi
+    info "Additional SSH config options (optional, ctrl+e to open in \$EDITOR):"
+    local additional=""
+    additional=$(gum write --placeholder "IdentitiesOnly yes
+ProxyJump jump-host
+ForwardAgent yes") || additional=""
 
     # Persist -----------------------------------------------------------
     local profiles new_profiles profile_json
@@ -371,36 +368,10 @@ cmd_edit() {
         --value "$(echo "$current" | jq -r '.key')")
 
     current_add=$(echo "$current" | jq -r '.additional // empty')
-    local new_additional="$current_add"
-    if [[ -n "$current_add" ]]; then
-        info "Current additional options:"
-        gum style --border rounded --padding "0 1" "$current_add"
-        local add_action
-        add_action=$(gum choose --header "Additional options:" \
-            "keep — no changes" \
-            "edit — open in \$EDITOR" \
-            "clear — remove all") || add_action="keep"
-        case "$add_action" in
-            edit*)
-                local add_tmp
-                add_tmp=$(mktemp)
-                printf '%s\n' "$current_add" > "$add_tmp"
-                ${VISUAL:-${EDITOR:-vi}} "$add_tmp"
-                new_additional=$(cat "$add_tmp")
-                rm -f "$add_tmp"
-                ;;
-            clear*) new_additional="" ;;
-        esac
-    else
-        if gum confirm "Add additional SSH config options?"; then
-            local add_tmp
-            add_tmp=$(mktemp)
-            printf '# One option per line, e.g.:\n#   ForwardAgent yes\n#   ProxyJump jump-host\n' > "$add_tmp"
-            ${VISUAL:-${EDITOR:-vi}} "$add_tmp"
-            new_additional=$(grep -v '^#' "$add_tmp" | grep -v '^[[:space:]]*$' || true)
-            rm -f "$add_tmp"
-        fi
-    fi
+    info "Additional SSH config options (ctrl+e to open in \$EDITOR):"
+    local new_additional=""
+    new_additional=$(gum write --placeholder "Additional SSH options..." \
+        ${current_add:+--value "$current_add"}) || new_additional="${current_add}"
 
     updated_json=$(jq -n \
         --arg host       "$new_host"       \

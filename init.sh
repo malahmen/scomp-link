@@ -58,9 +58,10 @@ while true; do
         exit 1
     fi
 
-    # Let user pick — ESC / q to quit
-    choice=$(echo "$available" | gum choose \
-        --header "Select a script to run (ESC to quit)" \
+    # Let user pick — type to filter, Enter to run, ESC to quit
+    choice=$(echo "$available" | gum filter \
+        --header "Select a script to run" \
+        --placeholder "type to filter..." \
         --height 15) || true
 
     # Empty means user cancelled
