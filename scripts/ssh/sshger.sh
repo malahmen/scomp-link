@@ -15,36 +15,79 @@ command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh firs
 command -v jq  &>/dev/null || error_exit "jq is required: brew install jq  /  apt install jq"
 
 SSH_DIR="$HOME/.ssh"
-PROFILES_FILE="$SSH_DIR/profiles.json"
 mkdir -p "$SSH_DIR"
 chmod 700 "$SSH_DIR"
 
-[[ -f "$PROFILES_FILE" ]] || echo '{"profiles": {}}' > "$PROFILES_FILE"
-
 # -----------------------------------------------------------------------------
-# Core helpers
+# Core helpers — ~/.ssh/config is the single source of truth.
+# The managed section (between BEGIN/END markers) holds all sshger profiles.
 # -----------------------------------------------------------------------------
 
-load_profiles() { cat "$PROFILES_FILE"; }
+# Called from load_profiles; accesses its locals via bash dynamic scoping.
+_profiles_flush() {
+    [[ -z "$host" ]] && return
+    local p
+    p=$(jq -n \
+        --arg host       "$host"            \
+        --arg hostname   "$hostname"        \
+        --arg user       "$user"            \
+        --arg port       "$port"            \
+        --arg key        "$key"             \
+        --arg additional "${addl%$'\n'}"    \
+        '{host:$host,hostname:$hostname,user:$user,port:$port,key:$key,additional:$additional}')
+    json=$(printf '%s' "$json" | jq --arg n "$host" --argjson p "$p" '.profiles[$n]=$p')
+    host=""; hostname=""; user=""; port="22"; key=""; addl=""
+}
 
-save_profiles() { echo "$1" > "$PROFILES_FILE"; }
+# Parse the managed section of ~/.ssh/config and return profiles as JSON.
+load_profiles() {
+    [[ ! -f "$SSH_DIR/config" ]] && printf '{"profiles": {}}\n' && return
+    grep -q '^# === BEGIN sshger ===$' "$SSH_DIR/config" \
+        || { printf '{"profiles": {}}\n'; return; }
 
-# Write only the sshger-managed section of ~/.ssh/config.
-# Entries outside the BEGIN/END markers are left untouched.
+    local json='{"profiles": {}}' host="" hostname="" user="" port="22" key="" addl="" in_managed=0
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            '# === BEGIN sshger ===') in_managed=1; continue ;;
+            '# === END sshger ===')   _profiles_flush; in_managed=0; continue ;;
+        esac
+        (( in_managed )) || continue
+        [[ "$line" == '# Profile:'* ]] && continue
+        if [[ "$line" =~ ^Host[[:space:]]+(.+)$ ]]; then
+            _profiles_flush
+            host="${BASH_REMATCH[1]}"; hostname="$host"; user=""; port="22"; key=""; addl=""
+        elif [[ "$line" =~ ^[[:space:]]+HostName[[:space:]]+(.+)$    ]]; then hostname="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]]+User[[:space:]]+(.+)$        ]]; then user="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]]+Port[[:space:]]+(.+)$        ]]; then port="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]]+IdentityFile[[:space:]]+(.+)$ ]]; then key="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ ^[[:space:]] && -n "${line// }"           ]]; then addl+="$line"$'\n'
+        fi
+    done < "$SSH_DIR/config"
+
+    printf '%s\n' "$json"
+}
+
+# Persist profiles by rewriting the managed section of ~/.ssh/config.
+save_profiles() { update_ssh_config "$1"; }
+
+# Rewrite only the sshger-managed section of ~/.ssh/config.
+# Accepts profiles JSON as first argument; reads from config if omitted.
 update_ssh_config() {
+    local profiles_json="${1:-$(load_profiles)}"
     local section_tmp
     section_tmp=$(mktemp)
 
     printf '# === BEGIN sshger ===\n' > "$section_tmp"
     while IFS= read -r entry; do
         local name host hostname user port key additional
-        name=$(echo "$entry"       | jq -r '.key')
-        host=$(echo "$entry"       | jq -r '.value.host')
-        hostname=$(echo "$entry"   | jq -r '.value.hostname')
-        user=$(echo "$entry"       | jq -r '.value.user')
-        port=$(echo "$entry"       | jq -r '.value.port')
-        key=$(echo "$entry"        | jq -r '.value.key')
-        additional=$(echo "$entry" | jq -r '.value.additional // empty')
+        name=$(printf '%s' "$entry"       | jq -r '.key')
+        host=$(printf '%s' "$entry"       | jq -r '.value.host')
+        hostname=$(printf '%s' "$entry"   | jq -r '.value.hostname')
+        user=$(printf '%s' "$entry"       | jq -r '.value.user')
+        port=$(printf '%s' "$entry"       | jq -r '.value.port')
+        key=$(printf '%s' "$entry"        | jq -r '.value.key')
+        additional=$(printf '%s' "$entry" | jq -r '.value.additional // empty')
 
         printf '# Profile: %s\nHost %s\n    HostName %s\n    User %s\n' \
             "$name" "$host" "$hostname" "$user" >> "$section_tmp"
@@ -52,7 +95,7 @@ update_ssh_config() {
         printf '    IdentityFile %s\n' "$key" >> "$section_tmp"
         [[ -n "$additional" ]] && printf '%s\n' "$additional" >> "$section_tmp"
         printf '\n' >> "$section_tmp"
-    done < <(load_profiles | jq -c '.profiles | to_entries[]')
+    done < <(printf '%s' "$profiles_json" | jq -c '.profiles | to_entries[]')
     printf '# === END sshger ===\n' >> "$section_tmp"
 
     local tmp
@@ -61,7 +104,6 @@ update_ssh_config() {
     if [[ ! -f "$SSH_DIR/config" ]]; then
         mv "$section_tmp" "$tmp"
     elif grep -q '^# === BEGIN sshger ===$' "$SSH_DIR/config"; then
-        # Replace the existing managed section in place
         awk -v sf="$section_tmp" '
             /^# === BEGIN sshger ===$/ {
                 while ((getline line < sf) > 0) print line
@@ -75,7 +117,6 @@ update_ssh_config() {
         # Old whole-file format — replace entirely with the sectioned format
         mv "$section_tmp" "$tmp"
     else
-        # First run on an existing config — append the managed section
         { cat "$SSH_DIR/config"; printf '\n'; cat "$section_tmp"; } > "$tmp"
         rm -f "$section_tmp"
     fi
@@ -203,10 +244,14 @@ cmd_add() {
     fi
 
     # Additional options ------------------------------------------------
-    info "Additional SSH config options (optional):"
-    additional=$(gum write --placeholder "IdentitiesOnly yes
-ProxyJump jump-host
-ForwardAgent yes") || additional=""
+    local add_tmp additional=""
+    if gum confirm "Add additional SSH config options?"; then
+        add_tmp=$(mktemp)
+        printf '# One option per line, e.g.:\n#   ForwardAgent yes\n#   ProxyJump jump-host\n' > "$add_tmp"
+        ${VISUAL:-${EDITOR:-vi}} "$add_tmp"
+        additional=$(grep -v '^#' "$add_tmp" | grep -v '^[[:space:]]*$' || true)
+        rm -f "$add_tmp"
+    fi
 
     # Persist -----------------------------------------------------------
     local profiles new_profiles profile_json
@@ -224,7 +269,6 @@ ForwardAgent yes") || additional=""
         | jq --arg name "$profile_name" --argjson p "$profile_json" \
              '.profiles[$name] = $p')
     save_profiles "$new_profiles"
-    update_ssh_config
 
     success "Profile '$profile_name' added."
 
@@ -251,7 +295,6 @@ cmd_remove() {
 
     new_profiles=$(echo "$profiles" | jq "del(.profiles[\"$selected\"])")
     save_profiles "$new_profiles"
-    update_ssh_config
 
     success "Profile '$selected' removed."
 }
@@ -316,8 +359,36 @@ cmd_edit() {
         --value "$(echo "$current" | jq -r '.key')")
 
     current_add=$(echo "$current" | jq -r '.additional // empty')
-    new_additional=$(gum write --value "$current_add" \
-        --placeholder "Additional SSH options...") || new_additional=""
+    local new_additional="$current_add"
+    if [[ -n "$current_add" ]]; then
+        info "Current additional options:"
+        gum style --border rounded --padding "0 1" "$current_add"
+        local add_action
+        add_action=$(gum choose --header "Additional options:" \
+            "keep — no changes" \
+            "edit — open in \$EDITOR" \
+            "clear — remove all") || add_action="keep"
+        case "$add_action" in
+            edit*)
+                local add_tmp
+                add_tmp=$(mktemp)
+                printf '%s\n' "$current_add" > "$add_tmp"
+                ${VISUAL:-${EDITOR:-vi}} "$add_tmp"
+                new_additional=$(cat "$add_tmp")
+                rm -f "$add_tmp"
+                ;;
+            clear*) new_additional="" ;;
+        esac
+    else
+        if gum confirm "Add additional SSH config options?"; then
+            local add_tmp
+            add_tmp=$(mktemp)
+            printf '# One option per line, e.g.:\n#   ForwardAgent yes\n#   ProxyJump jump-host\n' > "$add_tmp"
+            ${VISUAL:-${EDITOR:-vi}} "$add_tmp"
+            new_additional=$(grep -v '^#' "$add_tmp" | grep -v '^[[:space:]]*$' || true)
+            rm -f "$add_tmp"
+        fi
+    fi
 
     updated_json=$(jq -n \
         --arg host       "$new_host"       \
@@ -332,18 +403,29 @@ cmd_edit() {
         | jq --arg name "$selected" --argjson p "$updated_json" \
              '.profiles[$name] = $p')
     save_profiles "$new_profiles"
-    update_ssh_config
 
     success "Profile '$selected' updated."
 }
 
 cmd_use() {
-    header "SSH Profile Manager — Use Profile in Current Directory"
+    header "SSH Profile Manager — Wire Profile to a Repository"
 
-    if ! git rev-parse --git-dir > /dev/null 2>&1; then
-        warn "Not in a git repository."
-        gum confirm "Initialize a git repo here?" || return
-        git init
+    local target_dir
+    target_dir=$(gum input \
+        --header "Repository path:" \
+        --value "$(pwd)")
+    [[ -z "$target_dir" ]] && return
+
+    target_dir="${target_dir/#\~/$HOME}"
+    if [[ ! -d "$target_dir" ]]; then
+        warn "Directory not found: $target_dir" >&2
+        return 1
+    fi
+
+    if ! git -C "$target_dir" rev-parse --git-dir > /dev/null 2>&1; then
+        warn "Not a git repository: $target_dir" >&2
+        gum confirm "Initialize a git repo there?" || return
+        git -C "$target_dir" init
     fi
 
     local profile_names selected profile host user key_path
@@ -359,79 +441,89 @@ cmd_use() {
     key_path=$(echo "$profile" | jq -r '.key')
 
     local current_remote
-    current_remote=$(git config --get remote.origin.url 2>/dev/null || true)
+    current_remote=$(git -C "$target_dir" config --get remote.origin.url 2>/dev/null || true)
     if [[ -z "$current_remote" ]]; then
         local repo_name suggested_url new_remote
-        repo_name=$(basename "$(pwd)")
+        repo_name=$(basename "$target_dir")
         suggested_url="git@${host}:${user}/${repo_name}.git"
         new_remote=$(gum input --header "Remote URL:" --value "$suggested_url")
-        [[ -n "$new_remote" ]] && git remote add origin "$new_remote"
+        [[ -n "$new_remote" ]] && git -C "$target_dir" remote add origin "$new_remote"
     fi
 
     # IdentitiesOnly prevents the SSH agent from offering unrelated keys
-    git config core.sshCommand "ssh -i ${key_path} -o IdentitiesOnly=yes"
-    success "Profile '$selected' wired to this repository."
-    info "SSH command: $(git config core.sshCommand)"
+    git -C "$target_dir" config core.sshCommand "ssh -i ${key_path} -o IdentitiesOnly=yes"
+    success "Profile '$selected' wired to: $target_dir"
+    info "SSH command: $(git -C "$target_dir" config core.sshCommand)"
 
     if gum confirm "Set git user name/email for this repo?"; then
         local git_name git_email
         git_name=$(gum input --header "Git user name:")
         git_email=$(gum input --header "Git email:")
-        [[ -n "$git_name" ]]  && git config user.name  "$git_name"
-        [[ -n "$git_email" ]] && git config user.email "$git_email"
+        [[ -n "$git_name" ]]  && git -C "$target_dir" config user.name  "$git_name"
+        [[ -n "$git_email" ]] && git -C "$target_dir" config user.email "$git_email"
     fi
 
-    gum confirm "Test the connection?" && git fetch --dry-run 2>&1 || true
+    gum confirm "Test the connection?" && git -C "$target_dir" fetch --dry-run 2>&1 || true
 }
 
 cmd_test() {
     header "SSH Profile Manager — Test Connection"
 
-    local profile_names
-    profile_names=$(_require_profiles) || return
+    if [[ ! -f "$SSH_DIR/config" ]]; then
+        warn "No ~/.ssh/config found."
+        return 0
+    fi
+
+    local all_hosts
+    all_hosts=$(awk '/^Host / && $2 !~ /[*?]/ { print $2 }' "$SSH_DIR/config")
+
+    if [[ -z "$all_hosts" ]]; then
+        warn "No Host entries found in ~/.ssh/config." >&2
+        return 0
+    fi
 
     local scope
-    scope=$(gum choose --header "Test which profiles?" \
-        "selected — pick one" \
-        "all — test every profile")
-    [[ -z "$scope" ]] && return
+    scope=$(gum choose --header "Test which hosts?" \
+        "selected — pick one or more" \
+        "all — test every host")
+    [[ -z "$scope" ]] && return 0
 
     local targets
     if [[ "$scope" == all* ]]; then
-        targets="$profile_names"
+        targets="$all_hosts"
     else
-        targets=$(echo "$profile_names" | gum choose --header "Select profile to test:")
-        [[ -z "$targets" ]] && return
+        targets=$(echo "$all_hosts" | gum choose --no-limit \
+            --header "Select hosts to test (space to toggle, enter to confirm):")
+        [[ -z "$targets" ]] && return 0
     fi
 
-    local profiles
-    profiles=$(load_profiles)
+    while IFS= read -r host_alias; do
+        [[ -z "$host_alias" ]] && continue
 
-    while IFS= read -r name; do
-        [[ -z "$name" ]] && continue
-        local host user port key_path
-        host=$(echo "$profiles"     | jq -r ".profiles[\"$name\"].host")
-        user=$(echo "$profiles"     | jq -r ".profiles[\"$name\"].user")
-        port=$(echo "$profiles"     | jq -r ".profiles[\"$name\"].port")
-        key_path=$(echo "$profiles" | jq -r ".profiles[\"$name\"].key")
+        local effective_host target
+        effective_host=$(ssh -G "$host_alias" 2>/dev/null | awk '/^hostname / {print $2; exit}')
 
-        info "Testing '$name' → ${user}@${host}:${port} ..."
+        # Use git@<alias> only for known git hosting services — the User in
+        # the config may legitimately be an account name (e.g. malahmen), not
+        # the SSH username.  For everything else, pass just the alias and let
+        # the SSH config supply the User.
+        if printf '%s' "$effective_host" | grep -qiE "(github\.com|gitlab\.com|bitbucket\.org)$"; then
+            target="git@${host_alias}"
+        else
+            target="$host_alias"
+        fi
+
+        info "Testing '$host_alias' → ${target} ..."
         local output exit_code=0
         output=$(ssh -T \
-            -i "$key_path" \
-            -o IdentitiesOnly=yes \
-            -o BatchMode=yes \
             -o ConnectTimeout=10 \
             -o StrictHostKeyChecking=accept-new \
-            -p "$port" \
-            "${user}@${host}" 2>&1) || exit_code=$?
+            "$target" </dev/null 2>&1) || exit_code=$?
 
-        # ssh -T exits 1 on hosts like GitHub that reject PTY but confirm auth;
-        # treat any output containing an auth-success phrase as a pass.
         if [[ $exit_code -eq 0 ]] || echo "$output" | grep -qiE "(authenticated|welcome|success)"; then
-            success "[$name] OK${output:+  ($output)}"
+            success "[$host_alias] OK${output:+  ($output)}"
         else
-            warn "[$name] Failed (exit ${exit_code})${output:+  — $output}"
+            warn "[$host_alias] Failed (exit ${exit_code})${output:+  — $output}"
         fi
     done <<< "$targets"
 }
@@ -497,7 +589,6 @@ cmd_import() {
 
     if [[ $imported -gt 0 ]]; then
         save_profiles "$profiles"
-        update_ssh_config
         info "$imported profile(s) moved to managed section."
 
         if gum confirm "Remove the original unmanaged entries to avoid duplicates?"; then
