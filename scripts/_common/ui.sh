@@ -16,5 +16,7 @@ header() {
 
 info()       { gum log --level info "$1"; }
 success()    { gum style --foreground "${GREEN:-82}" "[ok] $1"; }
-warn()       { gum style --foreground "${YELLOW:-220}" "[warn] $1"; }
-error_exit() { gum style --foreground "${RED:-196}" "[error] $1"; exit 1; }
+# warn / error_exit go to stderr so they remain visible when callers capture
+# stdout via $() (e.g. `target_type=$(cfg_require)`).
+warn()       { gum style --foreground "${YELLOW:-220}" "[warn] $1" >&2; }
+error_exit() { gum style --foreground "${RED:-196}" "[error] $1" >&2; exit 1; }

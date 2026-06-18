@@ -1,0 +1,10 @@
+services:
+  dozzle:
+    container_name: dozzle
+    image: __DOZZLE_IMAGE__:__DOZZLE_VERSION__
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - __STORAGE_PATH__:/data
+    ports:
+      - "__SERVICE_PORT__:8080"
+__AUTH_ENV_BLOCK__

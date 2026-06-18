@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dozzle-pod-viewer
+  namespace: __RESTRICT_NAMESPACE__
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dozzle-pod-viewer-binding
+  namespace: __RESTRICT_NAMESPACE__
+subjects:
+  - kind: ServiceAccount
+    name: dozzle
+    namespace: __NAMESPACE__
+roleRef:
+  kind: Role
+  name: dozzle-pod-viewer
+  apiGroup: rbac.authorization.k8s.io

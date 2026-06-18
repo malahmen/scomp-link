@@ -7,6 +7,9 @@
 # Optional: tree (site structure view)
 # -----------------------------------------------------------------------------
 
+# Intentionally NOT using `set -e`: this script is an interactive TUI with many
+# gum prompts that return non-zero on cancel; -e would abort on every cancel.
+# Errors are checked explicitly where they matter.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

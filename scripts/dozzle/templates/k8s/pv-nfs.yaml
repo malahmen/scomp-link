@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: dozzle-data-pv
+spec:
+  capacity:
+    storage: __PVC_SIZE__
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: __STORAGE_CLASS__
+  nfs:
+    server: __NFS_SERVER__
+    path: __NFS_PATH__

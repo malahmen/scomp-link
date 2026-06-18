@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dozzle-pod-viewer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dozzle-pod-viewer-binding
+subjects:
+  - kind: ServiceAccount
+    name: dozzle
+    namespace: __NAMESPACE__
+roleRef:
+  kind: ClusterRole
+  name: dozzle-pod-viewer
+  apiGroup: rbac.authorization.k8s.io
