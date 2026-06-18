@@ -52,6 +52,7 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 | `lgtm.sh`       | Docker · K8s | Full LGTM stack (Loki, Grafana, Tempo, Mimir, OTel) |
 | `prometheus.sh` | K8s          | Prometheus with optional components                 |
 | `grafana.sh`    | Docker · K8s | Grafana with datasource provisioning                |
+| `dozzle.sh`     | Docker · K8s | Real-time container log viewer (no Helm required)   |
 
 ### Platform
 
@@ -310,6 +311,19 @@ Installs and manages the full Grafana observability stack in a single script:
 - **Plugins**: comma-separated list of plugins to pre-install
 - Connect: web UI (Docker: already mapped; K8s: foreground port-forward)
 
+#### Dozzle (`dozzle/dozzle.sh`)
+
+Lightweight real-time log viewer for Docker / Kubernetes / kind — installs from rendered manifests (no Helm dependency).
+
+- Docker image: `amir20/dozzle` · Port: `8080`
+- **Targets**: Docker (compose) or kind/k8s (rendered manifests applied directly)
+- **RBAC scope** (k8s/kind): cluster-wide (all namespaces) or restricted to a single namespace
+- **Storage** (k8s/kind): hostPath PV or NFS-backed PV; Docker uses a host bind-mount
+- **Auth**: optional bcrypt-hashed users via Dozzle's built-in `--auth-provider simple` (hash generation runs `docker run amir20/dozzle generate` so Docker must be reachable when enabling auth)
+- **Readiness / liveness probes** on `/healthz` to survive kind control-plane warm-up
+- **Port-forward** auto-reconnects across pod restarts; `stop` tears it down with the deployment
+- Commands: `install`, `uninstall`, `status`, `start`, `stop`, `port-forward`
+
 ---
 
 ### Platform
@@ -425,6 +439,9 @@ scomp-link/
     │   └── prometheus.sh             # Prometheus (K8s only)
     ├── grafana/
     │   └── grafana.sh                # Grafana + datasource provisioning (Docker · K8s)
+    ├── dozzle/
+    │   ├── dozzle.sh                 # Dozzle log viewer (Docker · K8s)
+    │   └── templates/                # docker-compose + k8s manifest templates
     │
     ├── # Platform
     ├── harbor/
@@ -584,6 +601,7 @@ Have a useful script? Contributions are welcome! Good candidates:
 - [Bitnami](https://bitnami.com/) for production-grade Helm charts (PostgreSQL, MariaDB, MySQL, MongoDB, Redis, InfluxDB)
 - [Prometheus Community](https://github.com/prometheus-community) for the Prometheus Helm chart
 - [Grafana](https://grafana.com/) for the Grafana Helm chart and observability tooling
+- [Dozzle](https://dozzle.dev/) for the real-time container log viewer
 - [Harbor](https://goharbor.io/) for the open-source container registry
 - [n8n](https://n8n.io/) for the workflow automation platform
 - [Qdrant](https://qdrant.tech/) for the vector database

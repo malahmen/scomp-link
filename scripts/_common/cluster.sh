@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# cluster/cluster.sh — Deployment target detection and selection
+# _common/cluster.sh — Deployment target detection and selection
 # Meant to be SOURCED by app scripts, not run directly.
 #
 # Usage in an app script:
-#   CLUSTER_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../cluster/cluster.sh"
-#   source "$CLUSTER_SH"
+#   COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_common"
+#   source "${COMMON_DIR}/cluster.sh"
 #   select_target          # prompts the user; sets TARGET_TYPE and TARGET_CONTEXT
 #
 # After select_target():

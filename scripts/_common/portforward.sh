@@ -7,7 +7,13 @@ pf_is_running() { local f="$1"; [[ -f "$f" ]] && kill -0 "$(cut -d: -f1 < "$f")"
 pf_port()       { cut -d: -f2 < "$1" 2>/dev/null; }
 pf_stop() {
     local f="$1"
-    kill "$(cut -d: -f1 < "$f")" 2>/dev/null || true
+    local pid
+    pid="$(cut -d: -f1 < "$f")"
+    # Kill direct children first (the inner `kubectl port-forward` when the
+    # caller wrapped it in a reconnect loop) before signalling the wrapper,
+    # so the child can't be orphaned by a faster-exiting parent.
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
     rm -f "$f"
     success "Port-forward stopped."
 }

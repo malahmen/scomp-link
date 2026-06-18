@@ -47,6 +47,9 @@ NAMESPACE="monitoring"
 
 # XDG config
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/lgtm"
+# Expand a literal leading '~' — happens when XDG_CONFIG_HOME is exported as
+# "~/.config" (tilde isn't expanded inside ${VAR:-…}).
+CONFIG_DIR="${CONFIG_DIR/#\~/$HOME}"
 CONFIG_FILE="${CONFIG_DIR}/lgtm.conf"
 PF_DIR="${CONFIG_DIR}/pf"          # PID files for port-forwards
 COMPOSE_DIR="${CONFIG_DIR}/compose" # generated compose file lives here
@@ -139,7 +142,23 @@ cfg_set() {
 }
 
 cfg_load() {
-    [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" || true
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    # shellcheck disable=SC1090
+    source "$CONFIG_FILE"
+}
+
+# cfg_require [error-message]
+# Loads config, validates TARGET_TYPE is set, echoes it for capture.
+# Use as: target_type=$(cfg_require "Nothing to uninstall.")
+cfg_require() {
+    local msg="${1:-No saved config found. Run install first.}"
+    cfg_load
+    local target_type
+    target_type=$(cfg_get "TARGET_TYPE")
+    if [[ -z "$target_type" ]]; then
+        error_exit "$msg"
+    fi
+    printf '%s\n' "$target_type"
 }
 
 # resource profiles─
@@ -951,10 +970,8 @@ cmd_install() {
 cmd_uninstall() {
     header "LGTM — Uninstall"
 
-    cfg_load
     local target_type ctx_flags
-    target_type=$(cfg_get "TARGET_TYPE")
-    [[ -z "$target_type" ]] && error_exit "No saved config found. Nothing to uninstall."
+    target_type=$(cfg_require "No saved config found. Nothing to uninstall.")
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1003,10 +1020,8 @@ cmd_uninstall() {
 cmd_purge() {
     header "LGTM — Purge"
 
-    cfg_load
     local target_type
-    target_type=$(cfg_get "TARGET_TYPE")
-    [[ -z "$target_type" ]] && error_exit "No saved config found. Nothing to purge."
+    target_type=$(cfg_require "No saved config found. Nothing to purge.")
 
     gum style --foreground "${RED}" --bold \
         "WARNING: Purge will remove ALL stack resources AND delete all data on disk."
@@ -1071,10 +1086,8 @@ cmd_purge() {
 cmd_status() {
     header "LGTM — Status"
 
-    cfg_load
     local target_type
-    target_type=$(cfg_get "TARGET_TYPE")
-    [[ -z "$target_type" ]] && error_exit "No saved config found. Run install first."
+    target_type=$(cfg_require)
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1163,10 +1176,8 @@ _print_compose_urls() {
 cmd_port_forward() {
     header "LGTM — Port Forward"
 
-    cfg_load
     local target_type
-    target_type=$(cfg_get "TARGET_TYPE")
-    [[ -z "$target_type" ]] && error_exit "No saved config found. Run install first."
+    target_type=$(cfg_require)
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1239,23 +1250,41 @@ cmd_port_forward() {
                 continue
             fi
 
-            # Start port-forward in background
-            # shellcheck disable=SC2086
-            kubectl $kctl_flags port-forward \
-                -n "${NAMESPACE}" \
-                "svc/${svc_name}" \
-                "${local_port}:${remote_port}" \
-                &>/dev/null &
+            # Auto-reconnect wrapper: kubectl port-forward dies when the backing pod
+            # is replaced (rollout, eviction, crash). Looping in a subshell keeps the
+            # tunnel alive across restarts. Trap forwards signals to the kubectl child
+            # so pf_stop can take the whole thing down cleanly. set +e because `wait`
+            # returns the child's non-zero exit when killed, which would otherwise kill
+            # the wrapper on the first reconnect.
+            (
+                set +e
+                trap 'kill "${child:-0}" 2>/dev/null; exit 0' TERM INT HUP
+                while true; do
+                    # shellcheck disable=SC2086
+                    kubectl $kctl_flags port-forward \
+                        -n "${NAMESPACE}" \
+                        "svc/${svc_name}" \
+                        "${local_port}:${remote_port}" \
+                        &>/dev/null &
+                    child=$!
+                    wait "$child" 2>/dev/null
+                    sleep 2
+                done
+            ) &
             local pf_pid=$!
 
             echo "${pf_pid}:${local_port}" > "$pf_file"
-            sleep 0.5
+            sleep 2
 
-            if pf_is_running "$pf_file"; then
-                success "${COMP_LABEL[$selected_c]} → http://localhost:${local_port}"
+            # Verify something is listening — if not, the wrapper is spinning on
+            # failed kubectl invocations (port in use, service not ready).
+            if lsof -i ":${local_port}" -sTCP:LISTEN >/dev/null 2>&1; then
+                success "${COMP_LABEL[$selected_c]} → http://localhost:${local_port} (auto-reconnect)"
             else
+                pkill -P "$pf_pid" 2>/dev/null || true
+                kill "$pf_pid" 2>/dev/null || true
                 rm -f "$pf_file"
-                warn "Port-forward failed to start for ${COMP_LABEL[$selected_c]}."
+                warn "Port-forward failed to start for ${COMP_LABEL[$selected_c]} (port in use, or service not ready)."
             fi
         fi
     done
@@ -1266,9 +1295,8 @@ cmd_port_forward() {
 cmd_start() {
     header "LGTM — Start"
 
-    cfg_load
     local target_type
-    target_type=$(cfg_get "TARGET_TYPE")
+    target_type=$(cfg_require)
 
     if [[ "$target_type" != "docker" ]]; then
         # k8s scale-up
@@ -1319,9 +1347,8 @@ cmd_start() {
 cmd_stop() {
     header "LGTM — Stop"
 
-    cfg_load
     local target_type
-    target_type=$(cfg_get "TARGET_TYPE")
+    target_type=$(cfg_require)
 
     if [[ "$target_type" != "docker" ]]; then
         # k8s scale-down
@@ -1338,6 +1365,14 @@ cmd_stop() {
         [[ -z "$components_to_stop" ]] && { warn "Nothing selected."; return; }
 
         for c in $components_to_stop; do
+            # Tear down the per-component port-forward first — the backing pod
+            # is about to disappear, and the auto-reconnect wrapper (see
+            # cmd_port_forward) would otherwise spin trying to reconnect.
+            local pf_file="${PF_DIR}/${c}.pid"
+            if pf_is_running "$pf_file"; then
+                pf_stop "$pf_file"
+            fi
+
             gum spin --spinner dot --title "Scaling down ${COMP_LABEL[$c]}..." -- \
                 kubectl $kctl_flags scale deployment "${c}" \
                 --replicas=0 -n "${NAMESPACE}" 2>/dev/null || \
@@ -1395,11 +1430,11 @@ cmd_update() {
 cmd_test() {
     header "LGTM — Send Test Data"
 
-    cfg_load
     local target_type
-    target_type=$(cfg_get "TARGET_TYPE")
-    [[ -z "$target_type" ]] && error_exit "No saved config found. Run install first."
-    [[ "$target_type" == "docker" ]] && error_exit "Test command requires k8s or kind."
+    target_type=$(cfg_require)
+    if [[ "$target_type" == "docker" ]]; then
+        error_exit "Test command requires k8s or kind."
+    fi
 
     command -v curl &>/dev/null || error_exit "curl is required for this command."
 
