@@ -67,6 +67,7 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 | -------------------- | ----------------------------------------------- |
 | `starlight_astro.sh` | Create and manage Starlight documentation sites |
 | `file_conversion.sh` | Convert documents (MD, PDF, DOCX)               |
+| `sshger.sh`          | Manage SSH profiles in `~/.ssh/config`          |
 
 ---
 
@@ -115,6 +116,7 @@ The setup script will:
 | pandoc                      | Document conversion                                   |
 | TeX Live (xelatex/lualatex) | PDF generation                                        |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
+| jq                          | SSH profile manager (`sshger.sh`)                     |
 
 > **Helm and kubectl** are checked at runtime and can be auto-installed via `mise` if missing.
 
@@ -365,6 +367,23 @@ Create and manage Astro Starlight documentation sites:
 - **Content editing** with vim integration
 - **Project discovery** to manage existing sites
 
+#### SSH Profile Manager (`ssh/sshger.sh`)
+
+Manage SSH connection profiles directly in `~/.ssh/config`. The script owns a delimited managed section (between `# BEGIN sshger` / `# END sshger` markers); everything outside that section is left untouched, and existing unmanaged hosts can be imported.
+
+**Actions:**
+
+- **add** — create a profile, generate a new `ed25519` / `rsa-4096` key (or reuse an existing one), and copy the public key to the clipboard
+- **import** — pull existing `Host` entries from outside the managed section into management, optionally removing the originals
+- **remove** — delete a profile (optionally its key files too)
+- **view** — show profile details and the public key
+- **edit** — change host / hostname / user / port / key path
+- **use** — wire a profile to the current git repo (rewrites `origin` URL, optionally sets local `user.name` / `user.email`)
+- **test** — verify the SSH connection for a profile (single host or all hosts)
+- **list** — show all managed profiles
+
+**Dependencies:** `jq` (prompted on first run if missing).
+
 #### Document Conversion (`file_conversion/file_conversion.sh`)
 
 Convert documents between formats with extensive customization:
@@ -456,6 +475,8 @@ scomp-link/
     │       └── convert.sh
     ├── file_conversion/
     │   └── file_conversion.sh        # Document format converter
+    ├── ssh/
+    │   └── sshger.sh                 # SSH profile manager (~/.ssh/config)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
