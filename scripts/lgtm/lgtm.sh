@@ -156,9 +156,44 @@ cfg_require() {
     local target_type
     target_type=$(cfg_get "TARGET_TYPE")
     if [[ -z "$target_type" ]]; then
+        # Before failing, see if the cluster has an existing LGTM install we
+        # could adopt — much more useful than "Run install first" when the
+        # stack is already deployed by another tool.
+        if _lgtm_detect_in_cluster; then
+            warn "Detected LGTM-like resources in the current kube-context."
+            warn "Run 'lgtm.sh import' to adopt them, or 'lgtm.sh install' to deploy fresh."
+        fi
         error_exit "$msg"
     fi
     printf '%s\n' "$target_type"
+}
+
+# Cheap probe: does the current kube-context have any LGTM-shaped services?
+# Used by cfg_require to nudge toward 'import' when the user's stack was
+# deployed outside this script.
+_lgtm_detect_in_cluster() {
+    command -v kubectl &>/dev/null || return 1
+    kubectl get svc -A -o name 2>/dev/null \
+        | grep -qiE '/(grafana|loki|tempo|mimir|otelcol|opentelemetry)'
+}
+
+# Check whether a single LGTM component is present in a namespace.
+# Tries the canonical Service name from COMP_SVC first (fast path), then falls
+# back to a name-pattern match across svc/deploy/sts (so non-standard releases
+# with prefixes/suffixes still get picked up).
+_component_present() {
+    local ns="$1" component="$2" ctx="$3"
+    local canonical="${COMP_SVC[$component]}"
+    # shellcheck disable=SC2086
+    kubectl $ctx -n "$ns" get svc "$canonical" &>/dev/null && return 0
+    local pattern
+    case "$component" in
+        otelcol) pattern='otel|opentelemetry' ;;
+        *)       pattern="(^|/)${component}" ;;
+    esac
+    # shellcheck disable=SC2086
+    kubectl $ctx -n "$ns" get svc,deploy,sts -o name 2>/dev/null \
+        | grep -qiE "$pattern"
 }
 
 # resource profiles─
@@ -965,6 +1000,108 @@ cmd_install() {
     esac
 }
 
+# cmd: import — adopt an existing LGTM-shaped install
+#
+# Useful when the stack was deployed outside this script (manual helm, GitOps,
+# other tooling). Probes the chosen kube-context, lets the user pick a
+# namespace, detects which components are present, and writes a conf that
+# points at the live stack. Subsequent commands (status, port-forward, start,
+# stop, test) then work normally. uninstall/purge are gated by the
+# INSTALL_METHOD=external marker so the tool can't accidentally delete a
+# stack it didn't deploy.
+# ─────────────────────────────────────────────────────────────────────────────
+
+cmd_import() {
+    header "LGTM — Import existing install"
+
+    select_target
+
+    if [[ "$TARGET_TYPE" == "docker" ]]; then
+        error_exit "Import is for Kubernetes installs. For Docker, just run 'install'."
+    fi
+
+    local ctx_flags
+    ctx_flags="$(kubectl_context_flag)"
+
+    info "Scanning '${TARGET_CONTEXT}' for LGTM-like services..."
+
+    # Find namespaces containing at least one matching service. jsonpath lets
+    # us cheaply emit "namespace|service" pairs without spawning yq/jq.
+    local candidates
+    # shellcheck disable=SC2086
+    candidates=$(kubectl $ctx_flags get svc -A \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}|{.metadata.name}{"\n"}{end}' 2>/dev/null \
+        | grep -iE '\|(grafana|loki|tempo|mimir|otelcol|opentelemetry)' \
+        | cut -d'|' -f1 | sort -u)
+
+    local target_ns
+    if [[ -z "$candidates" ]]; then
+        warn "No LGTM-shaped services found via name match."
+        if ! gum confirm "Pick a namespace manually anyway?"; then
+            error_exit "Import cancelled."
+        fi
+        # shellcheck disable=SC2086
+        candidates=$(kubectl $ctx_flags get ns -o name 2>/dev/null \
+            | sed 's|namespace/||' \
+            | grep -vE '^(kube-|default$)')
+        [[ -z "$candidates" ]] && error_exit "No namespaces available."
+        target_ns=$(echo "$candidates" | gum choose --header "Select namespace:") || true
+        [[ -z "$target_ns" ]] && error_exit "No namespace selected."
+    else
+        local n_ns
+        n_ns=$(echo "$candidates" | wc -l | tr -d ' ')
+        if [[ "$n_ns" -eq 1 ]]; then
+            target_ns="$candidates"
+            info "Detected LGTM components in namespace: ${target_ns}"
+        else
+            target_ns=$(echo "$candidates" | gum choose \
+                --header "Multiple namespaces have LGTM components — pick one:") || true
+            [[ -z "$target_ns" ]] && error_exit "No namespace selected."
+        fi
+    fi
+
+    # Detect which components are present in that namespace
+    info "Probing components in '${target_ns}'..."
+    local found_components="" missing_components=""
+    local c
+    for c in "${COMPONENTS[@]}"; do
+        if _component_present "$target_ns" "$c" "$ctx_flags"; then
+            found_components+="$c "
+        else
+            missing_components+="$c "
+        fi
+    done
+    found_components=$(echo "$found_components" | xargs)
+    missing_components=$(echo "$missing_components" | xargs)
+
+    if [[ -z "$found_components" ]]; then
+        error_exit "No managed LGTM components found in '${target_ns}'."
+    fi
+
+    success "Found: ${found_components}"
+    [[ -n "$missing_components" ]] && info "Not present (won't be managed): ${missing_components}"
+
+    # Profile is informational only — import doesn't reapply Helm values.
+    local profile
+    profile=$(gum choose --header "Resource profile (informational only, no reapply):" \
+        "minimal" "standard" "custom") || true
+    profile="${profile:-standard}"
+
+    # Persist config. NAMESPACE is the live one (may differ from the default
+    # "monitoring"); subsequent commands source the conf via cfg_load and
+    # override the default constant set at script load.
+    cfg_set "TARGET_TYPE"        "$TARGET_TYPE"
+    cfg_set "TARGET_CONTEXT"     "$TARGET_CONTEXT"
+    cfg_set "NAMESPACE"          "$target_ns"
+    cfg_set "ENABLED_COMPONENTS" "$found_components"
+    cfg_set "RESOURCE_PROFILE"   "$profile"
+    cfg_set "INSTALL_METHOD"     "external"
+
+    success "Imported. Config written to ${CONFIG_FILE}."
+    info  "Try: lgtm.sh status   or   lgtm.sh port-forward"
+    warn  "'uninstall' and 'purge' will require extra confirmation for imported stacks."
+}
+
 # cmd: uninstall────
 
 cmd_uninstall() {
@@ -972,6 +1109,22 @@ cmd_uninstall() {
 
     local target_type ctx_flags
     target_type=$(cfg_require "No saved config found. Nothing to uninstall.")
+
+    # Imported stack guard: this stack wasn't deployed by lgtm.sh, so its
+    # Helm release names may not match what this script expects. uninstall
+    # could fail or partially remove. Make the user opt in explicitly.
+    local install_method
+    install_method=$(cfg_get "INSTALL_METHOD")
+    if [[ "$install_method" == "external" ]]; then
+        warn "This stack was IMPORTED — not deployed by lgtm.sh."
+        warn "Helm release names may differ from what this script assumes;"
+        warn "uninstall may fail or only partially remove resources."
+        warn "Prefer 'helm uninstall <release>' directly for imported stacks."
+        if ! gum confirm "Proceed with lgtm.sh uninstall anyway?"; then
+            info "Cancelled."
+            return
+        fi
+    fi
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1023,6 +1176,21 @@ cmd_purge() {
     local target_type
     target_type=$(cfg_require "No saved config found. Nothing to purge.")
 
+    # Imported stack guard — purge does helm uninstall + wipe data. For a stack
+    # this tool didn't deploy, that's almost never what the user wants.
+    local install_method
+    install_method=$(cfg_get "INSTALL_METHOD")
+    if [[ "$install_method" == "external" ]]; then
+        warn "This stack was IMPORTED — not deployed by lgtm.sh."
+        warn "Purging will attempt to helm-uninstall releases this script didn't create"
+        warn "and wipe data this script didn't provision. Almost certainly not what you want."
+        if ! gum confirm --affirmative "Yes, purge anyway" --negative "Cancel" \
+            "Continue with purge of an imported stack?"; then
+            info "Cancelled."
+            return
+        fi
+    fi
+
     gum style --foreground "${RED}" --bold \
         "WARNING: Purge will remove ALL stack resources AND delete all data on disk."
 
@@ -1057,11 +1225,27 @@ cmd_purge() {
         done
         # shellcheck disable=SC2086
         if kubectl $kctl_flags delete namespace "${NAMESPACE}" 2>/dev/null; then
+            # Poll for the namespace to disappear instead of using `kubectl wait`
+            # silently — namespace termination on a stack with many CRD instances
+            # / finalizers can easily take 60-90s, and zero output during that
+            # window reads as a hang.
             info "Waiting for namespace '${NAMESPACE}' to terminate..."
+            local elapsed=0 interval=5 ns_timeout=120
+            while (( elapsed < ns_timeout )); do
+                # shellcheck disable=SC2086
+                if ! kubectl $kctl_flags get namespace "${NAMESPACE}" &>/dev/null; then
+                    success "Namespace '${NAMESPACE}' terminated (${elapsed}s)."
+                    break
+                fi
+                sleep "$interval"
+                elapsed=$((elapsed + interval))
+                info "  …still terminating (${elapsed}s / ${ns_timeout}s)"
+            done
             # shellcheck disable=SC2086
-            kubectl $kctl_flags wait --for=delete \
-                namespace/"${NAMESPACE}" --timeout=120s 2>/dev/null || \
-                warn "Namespace may still be terminating — wait before reinstalling."
+            if kubectl $kctl_flags get namespace "${NAMESPACE}" &>/dev/null; then
+                warn "Namespace did not terminate within ${ns_timeout}s — wait before reinstalling."
+                warn "Inspect stuck finalizers with: kubectl get ns ${NAMESPACE} -o yaml"
+            fi
         fi
     fi
 
@@ -1548,6 +1732,7 @@ main() {
     if [[ $# -gt 0 ]]; then
         case "$1" in
             install)      cmd_install      ;;
+            import)       cmd_import       ;;
             uninstall)    cmd_uninstall    ;;
             purge)        cmd_purge        ;;
             status)       cmd_status       ;;
@@ -1558,7 +1743,7 @@ main() {
             test)         cmd_test         ;;
             *)
                 error_exit "Unknown subcommand: $1
-Usage: lgtm.sh [install|uninstall|purge|status|port-forward|start|stop|update|test]"
+Usage: lgtm.sh [install|import|uninstall|purge|status|port-forward|start|stop|update|test]"
                 ;;
         esac
         return
@@ -1573,6 +1758,7 @@ Usage: lgtm.sh [install|uninstall|purge|status|port-forward|start|stop|update|te
             --header "Select action:" \
             --height 15 \
             "install       — guided install (k8s or Docker)" \
+            "import        — adopt an existing install (no Helm changes)" \
             "uninstall     — remove stack, keep data" \
             "purge         — remove stack + wipe all data" \
             "status        — stack health, resources, PVCs" \
@@ -1590,6 +1776,7 @@ Usage: lgtm.sh [install|uninstall|purge|status|port-forward|start|stop|update|te
 
         case "$action" in
             install*)      cmd_install      ;;
+            import*)       cmd_import       ;;
             uninstall*)    cmd_uninstall    ;;
             purge*)        cmd_purge        ;;
             status*)       cmd_status       ;;
