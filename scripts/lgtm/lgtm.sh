@@ -1225,25 +1225,18 @@ cmd_purge() {
         done
         # shellcheck disable=SC2086
         if kubectl $kctl_flags delete namespace "${NAMESPACE}" 2>/dev/null; then
-            # Poll for the namespace to disappear instead of using `kubectl wait`
-            # silently — namespace termination on a stack with many CRD instances
-            # / finalizers can easily take 60-90s, and zero output during that
-            # window reads as a hang.
-            info "Waiting for namespace '${NAMESPACE}' to terminate..."
-            local elapsed=0 interval=5 ns_timeout=120
-            while (( elapsed < ns_timeout )); do
-                # shellcheck disable=SC2086
-                if ! kubectl $kctl_flags get namespace "${NAMESPACE}" &>/dev/null; then
-                    success "Namespace '${NAMESPACE}' terminated (${elapsed}s)."
-                    break
-                fi
-                sleep "$interval"
-                elapsed=$((elapsed + interval))
-                info "  …still terminating (${elapsed}s / ${ns_timeout}s)"
-            done
+            # Wrap the wait in gum spin so the user sees a live spinner instead
+            # of a silent 60-120s pause that reads like a hang. Namespace
+            # termination on a stack with many CRD instances / finalizers can
+            # easily take that long.
             # shellcheck disable=SC2086
-            if kubectl $kctl_flags get namespace "${NAMESPACE}" &>/dev/null; then
-                warn "Namespace did not terminate within ${ns_timeout}s — wait before reinstalling."
+            if gum spin --spinner dot \
+                --title "Waiting for namespace '${NAMESPACE}' to terminate..." -- \
+                kubectl $kctl_flags wait --for=delete \
+                    namespace/"${NAMESPACE}" --timeout=120s; then
+                success "Namespace '${NAMESPACE}' terminated."
+            else
+                warn "Namespace did not terminate within 120s — wait before reinstalling."
                 warn "Inspect stuck finalizers with: kubectl get ns ${NAMESPACE} -o yaml"
             fi
         fi
