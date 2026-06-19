@@ -778,6 +778,13 @@ cmd_port_forward() {
     # pf_stop can take the whole thing down cleanly. Disable set -e in the
     # subshell — `wait` returns the child's (non-zero) exit status when it
     # dies, which would otherwise kill the wrapper on the first reconnect.
+    #
+    # Health-monitor inner loop: kubectl can stay alive while the upstream
+    # tunnel is broken (e.g. the container inside the pod restarted — same pod
+    # IP, dead TCP connection). Without this, kubectl looks healthy but
+    # localhost:$port times out. So we probe /healthz every 10s, and after 2
+    # consecutive failures we kill kubectl — the outer loop respawns it, which
+    # re-resolves the Service to the current pod.
     (
         set +e
         trap 'kill "${child:-0}" 2>/dev/null; exit 0' TERM INT HUP
@@ -786,6 +793,26 @@ cmd_port_forward() {
             kubectl $ctx_flags -n "${NAMESPACE}" port-forward "svc/dozzle" \
                 "${local_port}:${SERVICE_PORT}" >/dev/null 2>&1 &
             child=$!
+            sleep 1
+            fails=0
+            while kill -0 "$child" 2>/dev/null; do
+                sleep 10
+                if curl -sf --max-time 3 \
+                        "http://localhost:${local_port}/healthz" >/dev/null 2>&1; then
+                    fails=0
+                else
+                    fails=$((fails + 1))
+                    if (( fails >= 2 )); then
+                        # Try SIGTERM first; if the child is wedged (frozen on a
+                        # half-closed TCP socket, ignoring signals), escalate to
+                        # SIGKILL after 2s so the outer loop can respawn it.
+                        kill "$child" 2>/dev/null
+                        sleep 2
+                        kill -0 "$child" 2>/dev/null && kill -KILL "$child" 2>/dev/null
+                        break
+                    fi
+                fi
+            done
             wait "$child" 2>/dev/null
             sleep 2
         done
