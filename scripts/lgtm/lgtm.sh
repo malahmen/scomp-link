@@ -157,11 +157,26 @@ cfg_require() {
     target_type=$(cfg_get "TARGET_TYPE")
     if [[ -z "$target_type" ]]; then
         # Before failing, see if the cluster has an existing LGTM install we
-        # could adopt — much more useful than "Run install first" when the
-        # stack is already deployed by another tool.
+        # could adopt — and offer to run import inline. Saves the user from
+        # having to know about a separate subcommand when the stack is right
+        # there in the current context.
         if _lgtm_detect_in_cluster; then
             warn "Detected LGTM-like resources in the current kube-context."
-            warn "Run 'lgtm.sh import' to adopt them, or 'lgtm.sh install' to deploy fresh."
+            # gum confirm reads /dev/tty directly, so stdin redirection (the
+            # outer $() captures stdout, not stdin) doesn't break the prompt.
+            if gum confirm "Adopt them now (run import)?"; then
+                # cmd_import's stdout (header, info, success) must NOT be
+                # captured by the outer $(cfg_require) — redirect to stderr so
+                # the user sees the import UX live and the caller still gets a
+                # clean target_type back from our trailing printf.
+                cmd_import >&2
+                cfg_load
+                target_type=$(cfg_get "TARGET_TYPE")
+                if [[ -n "$target_type" ]]; then
+                    printf '%s\n' "$target_type"
+                    return 0
+                fi
+            fi
         fi
         error_exit "$msg"
     fi
