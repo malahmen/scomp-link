@@ -72,12 +72,13 @@ cfg_load() {
     DOZZLE_VERSION=""
     AUTH_ENABLED="false"
     AUTH_USER=""
-    STORAGE_MODE=""     # docker: bind ; k8s/kind: hostpath | nfs
+    STORAGE_MODE=""      # docker: bind ; k8s/kind: hostpath | nfs
     STORAGE_PATH=""      # bind path, or hostPath path
     NFS_SERVER=""
     NFS_PATH=""
     RBAC_SCOPE="cluster" # cluster | namespace
     RESTRICT_NAMESPACE=""
+    INSTALL_METHOD=""    # "" (script-installed) | "external" (imported)
 
     [[ -f "$CONFIG_FILE" ]] || return 0
     # shellcheck disable=SC1090
@@ -97,14 +98,78 @@ NFS_SERVER="${NFS_SERVER:-}"
 NFS_PATH="${NFS_PATH:-}"
 RBAC_SCOPE="${RBAC_SCOPE:-}"
 RESTRICT_NAMESPACE="${RESTRICT_NAMESPACE:-}"
+INSTALL_METHOD="${INSTALL_METHOD:-}"
 EOF
 }
 
 cfg_require() {
     cfg_load
     if [[ -z "$TARGET_TYPE" ]]; then
-        error_exit "No saved config found. Run 'install' first."
+        # No config — check if there's an existing Dozzle install we could
+        # adopt, and offer to import it inline instead of forcing the user to
+        # know about a separate 'import' subcommand.
+        local detected
+        detected=$(_dozzle_detect_existing)
+        if [[ -n "$detected" ]]; then
+            warn "Detected an existing Dozzle install: ${detected}"
+            if gum confirm "Adopt it now instead of running install?"; then
+                cmd_import
+                cfg_load
+                [[ -n "$TARGET_TYPE" ]] && return 0
+            fi
+        fi
+        error_exit "No saved config found. Run 'install' or 'import' first."
     fi
+}
+
+# -----------------------------------------------------------------------------
+# Detection helpers (used by cfg_require's adoption nudge and by cmd_import).
+#
+# _dozzle_detect_existing
+#   Cheap probe: returns a short human-readable hint about where Dozzle
+#   appears to be running, or empty if nothing matched. Checks Docker (local
+#   container named 'dozzle') and every reachable kube-context (Service named
+#   'dozzle' in any namespace).
+#
+# _dozzle_detect_in_docker / _dozzle_detect_in_k8s
+#   Per-target probes returning the discovered location, used by cmd_import.
+# -----------------------------------------------------------------------------
+
+_dozzle_detect_in_docker() {
+    command -v docker &>/dev/null || return 1
+    docker ps -a --filter "name=^dozzle$" --format '{{.Names}}' 2>/dev/null \
+        | grep -qx 'dozzle'
+}
+
+# Echoes "<context>|<namespace>" lines for every kube-context where a Service
+# named 'dozzle' is reachable. Empty if none.
+_dozzle_detect_in_k8s() {
+    command -v kubectl &>/dev/null || return 0
+    local ctx
+    for ctx in $(kubectl config get-contexts -o name 2>/dev/null); do
+        local ns
+        ns=$(kubectl --context "$ctx" get svc -A \
+            -o jsonpath='{range .items[?(@.metadata.name=="dozzle")]}{.metadata.namespace}{"\n"}{end}' \
+            2>/dev/null | head -1)
+        [[ -n "$ns" ]] && printf '%s|%s\n' "$ctx" "$ns"
+    done
+}
+
+_dozzle_detect_existing() {
+    local hits=""
+    if _dozzle_detect_in_docker; then
+        hits+="docker (container 'dozzle')"
+    fi
+    local k8s
+    k8s=$(_dozzle_detect_in_k8s)
+    if [[ -n "$k8s" ]]; then
+        [[ -n "$hits" ]] && hits+="; "
+        # Show first hit; cmd_import will resolve disambiguation if multiple.
+        local first
+        first=$(echo "$k8s" | head -1)
+        hits+="k8s (${first/|/ — ns })"
+    fi
+    printf '%s' "$hits"
 }
 
 # -----------------------------------------------------------------------------
@@ -435,12 +500,120 @@ cmd_install() {
 }
 
 # -----------------------------------------------------------------------------
+# cmd: import — adopt an existing Dozzle install
+#
+# Useful when Dozzle was deployed outside this script (manual kubectl apply,
+# helm, docker run by hand, GitOps). Probes Docker and reachable kube-contexts
+# for a 'dozzle' container/service, lets the user confirm, and writes a conf
+# that points at the live install. Subsequent commands (status, start, stop,
+# port-forward) work normally; uninstall is gated by the INSTALL_METHOD=external
+# marker so the tool can't accidentally delete a deployment it didn't create.
+# -----------------------------------------------------------------------------
+
+cmd_import() {
+    header "Dozzle — Import existing install"
+
+    # Reset state to defaults before populating from detection.
+    cfg_load
+
+    # Build the option list — one entry per discovered Dozzle location.
+    local -a opt_labels=() opt_types=() opt_contexts=() opt_namespaces=()
+
+    if _dozzle_detect_in_docker; then
+        opt_labels+=("Docker  (container 'dozzle' on local daemon)")
+        opt_types+=("docker")
+        opt_contexts+=("")
+        opt_namespaces+=("")
+    fi
+
+    local k8s_hits ctx ns
+    k8s_hits=$(_dozzle_detect_in_k8s)
+    while IFS='|' read -r ctx ns; do
+        [[ -z "$ctx" ]] && continue
+        local type
+        case "$ctx" in
+            kind-*) type="kind"; ctx="${ctx#kind-}" ;;
+            *)      type="k8s" ;;
+        esac
+        opt_labels+=("${type}    ${ctx}  /  namespace: ${ns}")
+        opt_types+=("$type")
+        opt_contexts+=("$ctx")
+        opt_namespaces+=("$ns")
+    done <<< "$k8s_hits"
+
+    local count="${#opt_labels[@]}"
+    if [[ "$count" -eq 0 ]]; then
+        error_exit "No existing Dozzle install found in Docker or any reachable kube-context."
+    fi
+
+    # Pick (auto-select if single)
+    local chosen
+    if [[ "$count" -eq 1 ]]; then
+        chosen="${opt_labels[0]}"
+        info "Detected: ${chosen}"
+    else
+        chosen=$(printf '%s\n' "${opt_labels[@]}" | gum choose \
+            --header "Multiple Dozzle installs detected — pick one:" \
+            --height 10) || true
+        [[ -z "$chosen" ]] && error_exit "Nothing selected."
+    fi
+
+    # Resolve picked label → fields
+    local i
+    for i in "${!opt_labels[@]}"; do
+        if [[ "${opt_labels[$i]}" == "$chosen" ]]; then
+            TARGET_TYPE="${opt_types[$i]}"
+            TARGET_CONTEXT="${opt_contexts[$i]}"
+            if [[ "$TARGET_TYPE" != "docker" ]]; then
+                NAMESPACE="${opt_namespaces[$i]}"
+            fi
+            break
+        fi
+    done
+
+    # Best-effort version detection from the live install — purely informational.
+    if [[ "$TARGET_TYPE" == "docker" ]]; then
+        DOZZLE_VERSION=$(docker inspect dozzle --format '{{.Config.Image}}' 2>/dev/null \
+            | sed 's|.*:||' || true)
+    else
+        local ctx_flags
+        ctx_flags="$(kubectl_context_flag)"
+        # shellcheck disable=SC2086
+        DOZZLE_VERSION=$(kubectl $ctx_flags -n "${NAMESPACE}" get deploy dozzle \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null \
+            | sed 's|.*:||' || true)
+    fi
+    DOZZLE_VERSION="${DOZZLE_VERSION:-unknown}"
+
+    INSTALL_METHOD="external"
+
+    cfg_save
+    success "Imported. Config written to ${CONFIG_FILE}."
+    info  "Detected version: ${DOZZLE_VERSION}"
+    info  "Try: dozzle.sh status   or   dozzle.sh port-forward"
+    warn  "'uninstall' will require extra confirmation for imported installs."
+}
+
+# -----------------------------------------------------------------------------
 # cmd: uninstall
 # -----------------------------------------------------------------------------
 
 cmd_uninstall() {
     header "Dozzle — Uninstall"
     cfg_require
+
+    # Imported-install guard: the deployment / container was created by
+    # something else, so removing it via this script could conflict with the
+    # owning tool (helm, GitOps, hand-rolled manifests). Make the user opt in.
+    if [[ "${INSTALL_METHOD:-}" == "external" ]]; then
+        warn "This Dozzle install was IMPORTED — not deployed by dozzle.sh."
+        warn "Manifest / container names may differ from what this script assumes."
+        warn "Prefer removing it via the tool that created it (helm, kubectl, docker)."
+        if ! gum confirm "Proceed with dozzle.sh uninstall anyway?"; then
+            info "Cancelled."
+            return
+        fi
+    fi
 
     gum confirm "This removes Dozzle AND its /data (auth users, notification rules). Continue?" \
         || { info "Cancelled."; return; }
@@ -640,12 +813,13 @@ main() {
     if [[ $# -gt 0 ]]; then
         case "$1" in
             install)       cmd_install ;;
+            import)        cmd_import ;;
             uninstall)     cmd_uninstall ;;
             status)        cmd_status ;;
             start)         cmd_start ;;
             stop)          cmd_stop ;;
             port-forward)  cmd_port_forward ;;
-            *) error_exit "Unknown command: $1 (expected: install|uninstall|status|start|stop|port-forward)" ;;
+            *) error_exit "Unknown command: $1 (expected: install|import|uninstall|status|start|stop|port-forward)" ;;
         esac
         exit 0
     fi
@@ -654,13 +828,14 @@ main() {
         header "Dozzle Manager"
         local action
         action=$(gum choose \
-            "install" "uninstall" "status" "start" "stop" "port-forward" "quit" \
+            "install" "import" "uninstall" "status" "start" "stop" "port-forward" "quit" \
             --header "Choose an action:") || true
 
         [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
 
         case "$action" in
             install)      cmd_install      ;;
+            import)       cmd_import      ;;
             uninstall)    cmd_uninstall    ;;
             status)       cmd_status       ;;
             start)        cmd_start        ;;
