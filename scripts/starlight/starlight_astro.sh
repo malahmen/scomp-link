@@ -178,6 +178,17 @@ create_scaffold() {
         warn "Copy it manually before running mise tasks."
     fi
 
+    # Vendor ui.sh alongside convert.sh so the scaffolded project is
+    # self-contained (no dependency on the scomp-link repo layout). convert.sh
+    # sources this from its own SCRIPT_DIR.
+    local ui_source="${SCRIPT_DIR}/../_common/ui.sh"
+    if [[ -f "$ui_source" ]]; then
+        cp "$ui_source" converter/ui.sh
+        success "ui.sh vendored into converter/"
+    else
+        warn "ui.sh not found at ${ui_source} — convert.sh will fail until it's copied in."
+    fi
+
     # Copy .fcc/ assets if they exist next to starlight_astro.sh
     local fcc_source="${SCRIPT_DIR}/.fcc"
     if [[ -d "$fcc_source" ]]; then
