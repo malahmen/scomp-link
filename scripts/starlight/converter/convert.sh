@@ -43,13 +43,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-COMMON_DIR="${SCRIPT_DIR}/../../_common"
-if [[ ! -d "$COMMON_DIR" ]]; then
-    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+# -----------------------------------------------------------------------------
+# UI helpers
+#
+# Scaffolded projects carry a copy of _common/ui.sh alongside this script
+# (placed by starlight_astro.sh at create time), so we source it from the same
+# directory rather than depending on the scomp-link repo layout. The project
+# folder is then self-contained — copy / move / share it without breaking the
+# converter.
+# -----------------------------------------------------------------------------
+command -v gum &>/dev/null || { echo "[error] gum is required. Install via mise or brew." >&2; exit 1; }
+
+if [[ ! -f "${SCRIPT_DIR}/ui.sh" ]]; then
+    printf "\033[0;31m[error] ui.sh not found at %s\033[0m\n" "${SCRIPT_DIR}/ui.sh" >&2
+    printf "        If this scaffold pre-dates the ui.sh-shipping fix, copy it in:\n" >&2
+    printf "        cp <scomp-link>/scripts/_common/ui.sh %s/\n" "${SCRIPT_DIR}" >&2
     exit 1
 fi
-# shellcheck source=../../_common/ui.sh
-source "${COMMON_DIR}/ui.sh"
+# shellcheck source=ui.sh
+source "${SCRIPT_DIR}/ui.sh"
 
 # Source files live one level up in the Starlight docs directory
 DOCS_DIR="../src/content/docs"
