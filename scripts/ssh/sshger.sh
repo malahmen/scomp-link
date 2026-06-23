@@ -198,8 +198,19 @@ cmd_add() {
         --header "HostName (leave blank to use Host):")
     [[ -z "$hostname" ]] && hostname="$host"
 
-    user=$(gum input --placeholder "git" --header "User:")
-    [[ -z "$user" ]] && user="git"
+    # Catch the common copy-paste mistake: pasting a vendor URL like
+    # 'git@ssh.dev.azure.com' or 'ubuntu@ec2-1-2-3-4.amazonaws.com' into the
+    # HostName field. HostName must be a bare hostname; the part before '@' is
+    # the SSH user and belongs in the User field. Split and inform.
+    local default_user="git"
+    if [[ "$hostname" == *@* ]]; then
+        default_user="${hostname%%@*}"
+        hostname="${hostname#*@}"
+        info "Detected 'user@host' pattern — split into User='${default_user}', HostName='${hostname}'."
+    fi
+
+    user=$(gum input --placeholder "$default_user" --header "User:")
+    [[ -z "$user" ]] && user="$default_user"
 
     port=$(gum input --placeholder "22" --header "Port:")
     [[ -z "$port" ]] && port="22"
@@ -250,6 +261,29 @@ cmd_add() {
 ProxyJump jump-host
 ForwardAgent yes") || additional=""
 
+    # Preview + confirm -------------------------------------------------
+    # Show the resulting config block so the user can sanity-check field
+    # placement (HostName vs User, etc.) before it's written to ~/.ssh/config.
+    local preview="Host ${host}
+    HostName ${hostname}
+    User ${user}"
+    [[ "$port" != "22" ]] && preview+="
+    Port ${port}"
+    preview+="
+    IdentityFile ${key_path}"
+    if [[ -n "$additional" ]]; then
+        preview+="
+$(printf '%s' "$additional" | sed 's/^/    /')"
+    fi
+    echo
+    gum style --foreground "${CYAN:-212}" --bold "Resulting ~/.ssh/config block:"
+    gum style --border rounded --padding "0 1" --foreground "${GREEN:-82}" "$preview"
+
+    if ! gum confirm "Save this profile?"; then
+        warn "Aborted — profile not saved." >&2
+        return 1
+    fi
+
     # Persist -----------------------------------------------------------
     local profiles new_profiles profile_json
     profiles=$(load_profiles)
@@ -268,6 +302,23 @@ ForwardAgent yes") || additional=""
     save_profiles "$new_profiles"
 
     success "Profile '$profile_name' added."
+
+    # Usage example ------------------------------------------------------
+    # The alias replaces the *entire* host part of an SSH/SCP-style URL.
+    # Users frequently paste a vendor URL like 'git@host.com:repo' and
+    # prepend the alias, ending up with 'alias@host.com:repo' — which makes
+    # ssh ignore the config block entirely (no Host match) and fall back to
+    # the default key. Show the correct shape explicitly.
+    echo
+    gum style --foreground "${CYAN:-212}" --bold "How to use this profile:"
+    gum style --foreground "${GREEN:-82}" "  git clone ${host}:path/to/repo.git"
+    gum style --foreground "${GREEN:-82}" "  ssh ${host}"
+    gum style --foreground "${GREEN:-82}" "  scp file ${host}:/remote/path"
+    echo
+    gum style --foreground "${YELLOW:-220}" \
+        "Don't write '${host}@${hostname}:…' — the alias '${host}' replaces the whole host part."
+    gum style --faint \
+        "(The alias resolves to user='${user}', host='${hostname}', and your key, via ~/.ssh/config.)"
 
     if [[ -f "${key_path}.pub" ]]; then
         info "Add this public key to your git hosting service before testing:"
