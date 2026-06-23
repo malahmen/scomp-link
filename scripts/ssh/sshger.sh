@@ -554,7 +554,31 @@ cmd_test() {
             -o StrictHostKeyChecking=accept-new \
             "$target" </dev/null 2>&1) || exit_code=$?
 
-        if [[ $exit_code -eq 0 ]] || echo "$output" | grep -qiE "(authenticated|welcome|success)"; then
+        # Auth detection
+        #
+        # Most git-hosting services return a non-zero exit code even on a
+        # successful SSH handshake because they refuse interactive shell
+        # access after the key is verified. So exit code alone is not a
+        # reliable signal — we need to inspect the message:
+        #
+        #   GitHub  : "Hi <user>! You've successfully authenticated, but GitHub
+        #             does not provide shell access."
+        #   GitLab  : "Welcome to GitLab, @<user>!"
+        #   Bitbucket: "logged in as <user>"
+        #   Azure DevOps: "remote: Shell access is not supported."
+        #
+        # Failure indicators take precedence so we never report a hard-fail as OK.
+        local result
+        if echo "$output" | grep -qiE 'permission denied|publickey.*(denied|failed)|could not be loaded|host key verification failed|no such identity'; then
+            result="fail"
+        elif [[ $exit_code -eq 0 ]] \
+            || echo "$output" | grep -qiE 'authenticated|welcome|hello|shell access (is )?not (supported|allowed)|does not provide shell|logged in as'; then
+            result="ok"
+        else
+            result="fail"
+        fi
+
+        if [[ "$result" == "ok" ]]; then
             success "[$host_alias] OK${output:+  ($output)}"
         else
             warn "[$host_alias] Failed (exit ${exit_code})${output:+  — $output}"
