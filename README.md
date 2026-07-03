@@ -34,6 +34,9 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 | `argo.sh`      | Install and manage Argo Workflows & Argo CD                                 |
 | `akinn_tui.sh` | Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn) |
 | `docker.sh`    | Install, uninstall, and check status of Docker itself                       |
+| `k9s.sh`       | Install and launch k9s — terminal UI for Kubernetes                         |
+| `lazydocker.sh`| Install and launch lazydocker — terminal UI for Docker                      |
+| `lazygit.sh`   | Install and launch lazygit — terminal UI for git                            |
 
 ### Databases
 
@@ -258,6 +261,23 @@ Installs, uninstalls, and reports status of Docker itself — most other scripts
 - `rpm-ostree` (Bazzite/immutable Fedora Atomic) supported via `_common/deps.sh`'s package helpers — layers the packages and prompts to reboot
 - Enables + starts the systemd service and adds the current user to the `docker` group; warns that a fresh login/shell is needed for the group membership to apply
 - Commands: `install`, `uninstall`, `status`
+
+#### k9s (`k9s/k9s.sh`)
+
+Install and launch [k9s](https://k9scli.io) — a terminal UI for Kubernetes.
+
+- No config file of its own — k9s reads the ambient kubeconfig exactly like `kubectl` does
+- `launch` picks a context explicitly (via k9s's own `--context` flag) instead of silently relying on kubectl's `current-context` — auto-selects if there's only one context, otherwise prompts. Never mutates your ambient kubectl state.
+- Install/uninstall via `mise use --global` / `mise uninstall --all` (same pattern `setup.sh` uses for `gum`)
+- Commands: `install`, `uninstall`, `status`, `launch`
+
+#### lazydocker (`lazydocker/lazydocker.sh`)
+
+Install and launch [lazydocker](https://github.com/jesseduffield/lazydocker) — a terminal UI for Docker and Docker Compose. No config needed — it just talks to whatever Docker daemon is reachable. Commands: `install`, `uninstall`, `status`, `launch`.
+
+#### lazygit (`lazygit/lazygit.sh`)
+
+Install and launch [lazygit](https://github.com/jesseduffield/lazygit) — a terminal UI for git. No config needed — operates on the current directory's git repo (prompts for a path if the current directory isn't one), same as the `git` CLI itself. Commands: `install`, `uninstall`, `status`, `launch`.
 
 ---
 
@@ -527,6 +547,12 @@ scomp-link/
     │   └── kind.sh                   # Kind cluster manager
     ├── docker/
     │   └── docker.sh                 # Install/uninstall/status for Docker itself
+    ├── k9s/
+    │   └── k9s.sh                    # k9s: Kubernetes terminal UI (install + launch)
+    ├── lazydocker/
+    │   └── lazydocker.sh             # lazydocker: Docker terminal UI (install + launch)
+    ├── lazygit/
+    │   └── lazygit.sh                # lazygit: git terminal UI (install + launch)
     │
     ├── # Databases
     ├── postgres/
