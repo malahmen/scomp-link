@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vanilla-wow-server
+  namespace: __NAMESPACE__
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vanilla-wow-server
+  template:
+    metadata:
+      labels:
+        app: vanilla-wow-server
+    spec:
+      # hostNetwork so the client-hardcoded realm port (3724) and the world
+      # port are reachable at their real values on the node's LAN IP without
+      # a LoadBalancer controller. ClusterFirstWithHostNet keeps in-cluster
+      # DNS (the mariadb Service) resolvable despite hostNetwork.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: vanilla-wow-server
+          image: __IMAGE_TAG__
+          # stdin: true — mangosd/realmd run an interactive console reader
+          # on stdin; without an open stdin the container gets an immediate
+          # EOF, which the console reads as an implicit quit (the server
+          # fully starts — DB connected, world initialized, ports bound —
+          # then shuts itself down cleanly seconds later).
+          stdin: true
+          ports:
+            - containerPort: __REALM_PORT__
+              hostPort: __REALM_PORT__
+              protocol: TCP
+            - containerPort: __WORLD_PORT__
+              hostPort: __WORLD_PORT__
+              protocol: TCP
+          volumeMounts:
+            - name: conf
+              mountPath: /app/etc
+              readOnly: true
+            - name: game-data
+              mountPath: /app/data
+              readOnly: true
+            - name: logs
+              mountPath: /app/logs
+      volumes:
+        - name: conf
+          configMap:
+            name: vanilla-wow-conf
+        - name: logs
+          emptyDir: {}
+        - name: game-data
+          __DATA_SOURCE__
