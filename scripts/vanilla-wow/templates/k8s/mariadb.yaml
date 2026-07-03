@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vanilla-wow-mariadb
+  namespace: __NAMESPACE__
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vanilla-wow-mariadb
+  template:
+    metadata:
+      labels:
+        app: vanilla-wow-mariadb
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              value: "__DB_PASS__"
+          ports:
+            - containerPort: 3306
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: db-data
+          __DB_SOURCE__
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: __NAMESPACE__
+spec:
+  selector:
+    app: vanilla-wow-mariadb
+  ports:
+    - port: 3306
+      targetPort: 3306
