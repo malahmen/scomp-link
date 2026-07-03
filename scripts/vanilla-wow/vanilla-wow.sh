@@ -718,13 +718,108 @@ cmd_status() {
 }
 
 # -----------------------------------------------------------------------------
-# create-account — accounts live in the realmd DB with SRP6 verifier/salt
-# columns, not a hash that's safe to compute and INSERT by hand, so this
-# goes through mangosd's own console command instead ('account create',
-# same as the repack's own README instructs), via the FIFO set up in
-# 'start'/entrypoint.sh. Auto-detects which deployment is actually running
-# (local/docker/k8s); asks if more than one is.
+# create-account / list-accounts / delete-account — accounts live in the
+# realmd DB with SRP6 verifier/salt columns, not a hash that's safe to
+# compute by hand, so any command that creates or removes one goes through
+# mangosd's own console instead ('account create'/'account delete', same as
+# the repack's own README and the source's command table use), via the FIFO
+# set up in 'start'/entrypoint.sh. Listing doesn't touch credentials at all,
+# so that one queries the DB directly instead — there's no console command
+# for it anyway (only 'account onlinelist', currently-connected accounts
+# only, confirmed by checking the source's command table directly rather
+# than guessing).
 # -----------------------------------------------------------------------------
+
+# _detect_running_target — echoes "local"/"docker"/"k8s" on stdout for
+# whichever deployment mangosd is actually running in right now, prompting
+# if more than one qualifies. warn+return 1 if none does. Shared by every
+# command below that needs to reach a live mangosd console.
+_detect_running_target() {
+    local -a targets=()
+    pf_is_running "${PF_DIR}/mangosd.pid" && targets+=("local")
+    [[ "$(docker inspect --type container "$SERVER_CONTAINER_NAME" --format='{{.State.Status}}' 2>/dev/null)" == "running" ]] \
+        && targets+=("docker")
+    if command -v kubectl &>/dev/null; then
+        kubectl get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-server --no-headers 2>/dev/null | grep -q Running \
+            && targets+=("k8s")
+    fi
+
+    if [[ ${#targets[@]} -eq 0 ]]; then
+        warn "mangosd doesn't appear to be running anywhere (checked local, docker, k8s). Start it first."
+        return 1
+    fi
+
+    local chosen="${targets[0]}"
+    if [[ ${#targets[@]} -gt 1 ]]; then
+        chosen=$(printf '%s\n' "${targets[@]}" | gum choose --header "mangosd is running in more than one place. Which one?") || true
+        if [[ -z "$chosen" ]]; then
+            warn "No target selected."
+            return 1
+        fi
+    fi
+
+    # k8s only: resolve once here, rather than in every caller — K8S_CTX_FLAGS/
+    # K8S_POD are globals _send_console_cmd/_db_query read for the k8s case.
+    K8S_CTX_FLAGS="" K8S_POD=""
+    if [[ "$chosen" == "k8s" ]]; then
+        K8S_CTX_FLAGS="$(kubectl_context_flag)"
+        K8S_POD=$(kubectl $K8S_CTX_FLAGS get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-server -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [[ -z "$K8S_POD" ]]; then
+            warn "No running vanilla-wow-server pod found in namespace ${K8S_NAMESPACE}."
+            return 1
+        fi
+    fi
+
+    echo "$chosen"
+}
+
+# _db_query <target: local|docker|k8s> <sql> — local/docker share the same
+# local MariaDB container (_db_exec); k8s has its own separate MariaDB pod
+# in the cluster (see the architecture note on templates/k8s/mariadb.yaml),
+# so that one needs its own kubectl exec instead of _db_exec's docker exec.
+_db_query() {
+    local tgt="$1" sql="$2"
+    case "$tgt" in
+        local|docker)
+            # -t (table format), not _db_exec's plain tab-separated output —
+            # every _db_query caller is a human-facing read, not the DB
+            # bootstrap machinery _db_exec also serves.
+            docker exec "$DB_CONTAINER_NAME" mariadb -u"$DB_USER" -p"$DB_PASS" -t -e "$sql"
+            ;;
+        k8s)
+            local ctx_flags pod
+            ctx_flags="$(kubectl_context_flag)"
+            pod=$(kubectl $ctx_flags get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-mariadb -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if [[ -z "$pod" ]]; then
+                warn "No running vanilla-wow-mariadb pod found in namespace ${K8S_NAMESPACE}."
+                return 1
+            fi
+            kubectl $ctx_flags exec -n "$K8S_NAMESPACE" "$pod" -- mariadb -u"$DB_USER" -p"$DB_PASS" -t -e "$sql"
+            ;;
+    esac
+}
+
+# _db_query_raw <target> <sql> — like _db_query, but -N -B (no column
+# headers, tab-separated, no ASCII table borders) for callers that need to
+# actually parse a single value out of the result, not display it.
+_db_query_raw() {
+    local tgt="$1" sql="$2"
+    case "$tgt" in
+        local|docker)
+            docker exec "$DB_CONTAINER_NAME" mariadb -u"$DB_USER" -p"$DB_PASS" -N -B -e "$sql"
+            ;;
+        k8s)
+            local ctx_flags pod
+            ctx_flags="$(kubectl_context_flag)"
+            pod=$(kubectl $ctx_flags get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-mariadb -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            if [[ -z "$pod" ]]; then
+                warn "No running vanilla-wow-mariadb pod found in namespace ${K8S_NAMESPACE}."
+                return 1
+            fi
+            kubectl $ctx_flags exec -n "$K8S_NAMESPACE" "$pod" -- mariadb -u"$DB_USER" -p"$DB_PASS" -N -B -e "$sql"
+            ;;
+    esac
+}
 
 # _send_console_cmd <local|docker|k8s> <single console command line>
 # Globals used for the k8s case: K8S_CTX_FLAGS, K8S_POD (set by the caller).
@@ -754,25 +849,8 @@ cmd_create_account() {
     header "vanilla-wow — Create account"
     _settings
 
-    local -a targets=()
-    pf_is_running "${PF_DIR}/mangosd.pid" && targets+=("local")
-    [[ "$(docker inspect --type container "$SERVER_CONTAINER_NAME" --format='{{.State.Status}}' 2>/dev/null)" == "running" ]] \
-        && targets+=("docker")
-    if command -v kubectl &>/dev/null; then
-        kubectl get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-server --no-headers 2>/dev/null | grep -q Running \
-            && targets+=("k8s")
-    fi
-
-    if [[ ${#targets[@]} -eq 0 ]]; then
-        warn "mangosd doesn't appear to be running anywhere (checked local, docker, k8s). Start it first."
-        return 1
-    fi
-
-    local target="${targets[0]}"
-    if [[ ${#targets[@]} -gt 1 ]]; then
-        target=$(printf '%s\n' "${targets[@]}" | gum choose --header "mangosd is running in more than one place. Which one?") || true
-        [[ -z "$target" ]] && { info "Cancelled."; return 1; }
-    fi
+    local target
+    target=$(_detect_running_target) || return 1
 
     local user_input pass_input
     user_input=$(gum input --placeholder "username" --header "New account username:") || true
@@ -789,18 +867,6 @@ cmd_create_account() {
         Gamemaster*) gm_num=2 ;;
         Admin*)      gm_num=3 ;;
     esac
-
-    # k8s only: resolve once, reused by both _send_console_cmd calls below —
-    # K8S_CTX_FLAGS/K8S_POD are globals _send_console_cmd reads for the k8s case.
-    K8S_CTX_FLAGS="" K8S_POD=""
-    if [[ "$target" == "k8s" ]]; then
-        K8S_CTX_FLAGS="$(kubectl_context_flag)"
-        K8S_POD=$(kubectl $K8S_CTX_FLAGS get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-server -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-        if [[ -z "$K8S_POD" ]]; then
-            warn "No running vanilla-wow-server pod found in namespace ${K8S_NAMESPACE}."
-            return 1
-        fi
-    fi
 
     # 'account create' and 'account set gmlevel' can't be sent as one burst:
     # live-tested, sending both in a single write reliably fails the gmlevel
@@ -822,6 +888,75 @@ cmd_create_account() {
     esac
 
     success "Account '${user_input}' created (GM level: ${gm_num})."
+}
+
+# _print_accounts_table <target> — shared by list-accounts and
+# delete-account (as a courtesy display before prompting for a username),
+# so delete-account doesn't need to run _detect_running_target a second time
+# (and risk a second "which target?" prompt) just to show the same list.
+_print_accounts_table() {
+    local target="$1"
+    # GM level lives in account_access (per-realm), not account.gmlevel,
+    # which is vestigial (see create-account's notes). LEFT JOIN so an
+    # account with no account_access row still shows up, as GM level 0.
+    _db_query "$target" \
+        "SELECT a.id, a.username, COALESCE(aa.gmlevel, 0) AS gmlevel, a.online, a.locked, a.last_login
+         FROM realmd.account a LEFT JOIN realmd.account_access aa ON aa.id = a.id AND aa.RealmID = ${REALM_ID}
+         ORDER BY a.username;"
+}
+
+cmd_list_accounts() {
+    header "vanilla-wow — List accounts"
+    _settings
+
+    local target
+    target=$(_detect_running_target) || return 1
+
+    _print_accounts_table "$target" || return 1
+}
+
+cmd_delete_account() {
+    header "vanilla-wow — Delete account"
+    _settings
+
+    local target
+    target=$(_detect_running_target) || return 1
+
+    _print_accounts_table "$target"
+    echo ""
+
+    local user_input
+    user_input=$(gum input --placeholder "username" --header "Account to delete:") || true
+    [[ -z "$user_input" ]] && { info "Cancelled."; return 1; }
+
+    gum confirm "Delete account '${user_input}'? This also removes its characters." \
+        || { info "Cancelled."; return 1; }
+
+    # Needed for the account_access cleanup below: that row can only be
+    # looked up by account id, and 'account delete' removes the account row
+    # itself, so the id has to be captured before the console command runs.
+    local acc_id
+    acc_id=$(_db_query_raw "$target" "SELECT id FROM realmd.account WHERE username='${user_input^^}';" 2>/dev/null)
+
+    _send_console_cmd "$target" "account delete ${user_input}" || return 1
+
+    # AccountMgr::DeleteAccount (confirmed directly in the source) cleans up
+    # characters/character_tutorial/account/realmcharacters, but never
+    # account_access — a real, if harmless, upstream gap (an orphaned row
+    # can never rejoin a real account again, ids aren't reused). Sweep it
+    # here so repeated create/delete cycles don't quietly accumulate junk.
+    if [[ "$acc_id" =~ ^[0-9]+$ ]]; then
+        sleep 2
+        _db_query "$target" "DELETE FROM realmd.account_access WHERE id=${acc_id};" &>/dev/null || true
+    fi
+
+    case "$target" in
+        local)  info "Check ${INSTALL_DIR}/logs/mangosd.out to confirm." ;;
+        docker) info "Check: docker logs ${SERVER_CONTAINER_NAME}" ;;
+        k8s)    info "Check: kubectl -n ${K8S_NAMESPACE} logs ${K8S_POD}" ;;
+    esac
+
+    success "Delete command sent for '${user_input}'."
 }
 
 # -----------------------------------------------------------------------------
@@ -1142,17 +1277,19 @@ cmd_run_k8s() {
 main() {
     if [[ $# -gt 0 ]]; then
         case "$1" in
-            install-deps) cmd_install_deps ;;
-            configure)    cmd_configure ;;
-            start)        cmd_start ;;
-            stop)         cmd_stop ;;
+            install-deps)   cmd_install_deps ;;
+            configure)      cmd_configure ;;
+            start)          cmd_start ;;
+            stop)           cmd_stop ;;
             status)         cmd_status ;;
             edit)           cmd_edit ;;
             create-account) cmd_create_account ;;
+            list-accounts)  cmd_list_accounts ;;
+            delete-account) cmd_delete_account ;;
             build-image)    cmd_build_image ;;
             run-docker)     cmd_run_docker ;;
             run-k8s)        cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|build-image|run-docker|run-k8s)" ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1161,7 +1298,8 @@ main() {
         header "Vanilla WoW (VMaNGOS) Manager"
         local action
         action=$(gum choose \
-            "install-deps" "configure" "start" "stop" "status" "edit" "create-account" \
+            "install-deps" "configure" "start" "stop" "status" "edit" \
+            "create-account" "list-accounts" "delete-account" \
             "build-image" "run-docker" "run-k8s" "quit" \
             --header "Choose an action:") || true
 
@@ -1178,6 +1316,8 @@ main() {
             status)         cmd_status         || true ;;
             edit)           cmd_edit           || true ;;
             create-account) cmd_create_account || true ;;
+            list-accounts)  cmd_list_accounts  || true ;;
+            delete-account) cmd_delete_account || true ;;
             build-image)    cmd_build_image    || true ;;
             run-docker)     cmd_run_docker     || true ;;
             run-k8s)        cmd_run_k8s        || true ;;
