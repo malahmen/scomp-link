@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: __NAME__
+  namespace: __NAMESPACE__
+spec:
+  accessModes:
+    - ReadWriteOnce
+__STORAGECLASS_LINE__
+  resources:
+    requests:
+      storage: __SIZE__
