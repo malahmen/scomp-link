@@ -31,7 +31,16 @@ cd /app/bin
 # plumbing, since it's entirely internal to the container's process tree.
 ./realmd < <(sleep infinity) &
 realmd_pid=$!
-./mangosd < <(sleep infinity) &
+
+# mangosd gets a real FIFO instead, so admin commands (account creation —
+# see vanilla-wow.sh's 'create-account') can still reach its console from
+# outside the container. Holding a read-write fd open on it (fd 9) keeps the
+# FIFO from ever reporting EOF to a reader, same effect as the process
+# substitution above, but it's also externally writable, e.g.
+# `docker exec <container> sh -c 'echo "account create bob pass" > /app/mangosd.stdin'`.
+mkfifo /app/mangosd.stdin
+exec 9<>/app/mangosd.stdin
+./mangosd < /app/mangosd.stdin &
 mangosd_pid=$!
 
 _shutdown() {
