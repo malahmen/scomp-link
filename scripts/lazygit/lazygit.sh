@@ -83,17 +83,26 @@ cmd_status() {
 cmd_launch() {
     header "lazygit — Launch"
 
-    command -v lazygit &>/dev/null || error_exit "lazygit is not installed. Run: lazygit.sh install"
+    # Soft-fail (warn + return) throughout, not error_exit — reached from
+    # the interactive menu, where a hard exit here would kill the whole
+    # script and dump back out to init.sh's top-level menu instead of
+    # staying inside lazygit.sh's own loop for another attempt.
+    if ! command -v lazygit &>/dev/null; then
+        warn "lazygit is not installed. Run: lazygit.sh install"
+        return 1
+    fi
 
     local target_dir="$PWD"
     if ! git -C "$target_dir" rev-parse --is-inside-work-tree &>/dev/null; then
         warn "Current directory is not a git repository."
         local path_input
         path_input=$(gum input --placeholder "$HOME/some/repo" --header "Path to a git repository:") || true
-        [[ -z "$path_input" ]] && { info "Cancelled."; return; }
+        [[ -z "$path_input" ]] && { info "Cancelled."; return 1; }
         target_dir="${path_input/#\~/$HOME}"
-        git -C "$target_dir" rev-parse --is-inside-work-tree &>/dev/null \
-            || error_exit "Not a git repository: ${target_dir}"
+        if ! git -C "$target_dir" rev-parse --is-inside-work-tree &>/dev/null; then
+            warn "Not a git repository: ${target_dir}"
+            return 1
+        fi
     fi
 
     # Foreground, not exec — control returns here (and to the menu) on quit.
@@ -118,15 +127,30 @@ main() {
 
     while true; do
         header "lazygit Manager"
+
+        # launch/status/uninstall only make sense once lazygit is actually
+        # installed — offering them beforehand just leads to a "not
+        # installed" warning instead of doing anything useful.
+        local -a opts=()
+        if command -v lazygit &>/dev/null; then
+            opts=("launch" "status" "uninstall" "quit")
+        else
+            opts=("install" "quit")
+        fi
+
         local action
-        action=$(gum choose "launch" "install" "uninstall" "status" "quit" --header "Choose an action:") || true
+        action=$(printf '%s\n' "${opts[@]}" | gum choose --header "Choose an action:") || true
         [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
 
+        # || true on each: under `set -e`, a cmd_* returning non-zero here
+        # (e.g. cmd_launch's soft-fail warn+return) would otherwise trigger
+        # errexit and kill the whole script — exactly the "dumped back to
+        # init.sh's top-level menu" behavior this loop exists to avoid.
         case "$action" in
-            launch)    cmd_launch ;;
-            install)   cmd_install ;;
-            uninstall) cmd_uninstall ;;
-            status)    cmd_status ;;
+            launch)    cmd_launch    || true ;;
+            install)   cmd_install   || true ;;
+            uninstall) cmd_uninstall || true ;;
+            status)    cmd_status    || true ;;
         esac
 
         echo ""
