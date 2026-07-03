@@ -124,6 +124,14 @@ _settings() {
     REALM_PORT="$(cfg_default REALM_PORT 3724)"
     WORLD_PORT="$(cfg_default WORLD_PORT 8085)"
     REALM_ADDRESS="$(cfg_default REALM_ADDRESS "$(_detect_lan_ip)")"
+    REALM_NAME="$(cfg_default REALM_NAME "VanillaWoW")"
+    REALM_ZONE="$(cfg_default REALM_ZONE 1)"
+    GAME_TYPE="$(cfg_default GAME_TYPE 1)"  # matches the repack's own stock default (1 = PvP)
+    PLAYER_LIMIT="$(cfg_default PLAYER_LIMIT 100)"
+    # WowPatch: content/progression cap (quest, NPC, dungeon, raid data) —
+    # distinct from CLIENT_BUILD (what the compiled binary itself supports).
+    # 10 = patch 1.12, matching the CLIENT_BUILD_DEFAULT (5875) target.
+    WOW_PATCH="$(cfg_default WOW_PATCH 10)"
     IMAGE_TAG="$(cfg_default IMAGE_TAG vanilla-wow-server:latest)"
     SERVER_CONTAINER_NAME="$(cfg_default SERVER_CONTAINER_NAME vanilla-wow-server)"
     K8S_NAMESPACE="$(cfg_default K8S_NAMESPACE vanilla-wow)"
@@ -314,10 +322,10 @@ _db_bootstrap() {
 # ("Config contains invalid realmID"). ON DUPLICATE KEY UPDATE keeps this in
 # sync with the current REALM_ADDRESS/WORLD_PORT/CLIENT_BUILD on every run.
 _ensure_realmlist() {
-    info "Ensuring realmlist row (id=${REALM_ID}, address=${REALM_ADDRESS}:${WORLD_PORT})..."
+    info "Ensuring realmlist row (id=${REALM_ID}, name=${REALM_NAME}, address=${REALM_ADDRESS}:${WORLD_PORT})..."
     _db_exec "INSERT INTO realmd.realmlist (id, name, address, localAddress, localSubnetMask, port, gamebuild_min, gamebuild_max)
-        VALUES (${REALM_ID}, 'VanillaWoW', '${REALM_ADDRESS}', '127.0.0.1', '255.255.255.0', ${WORLD_PORT}, ${CLIENT_BUILD}, ${CLIENT_BUILD})
-        ON DUPLICATE KEY UPDATE address='${REALM_ADDRESS}', port=${WORLD_PORT}, gamebuild_min=${CLIENT_BUILD}, gamebuild_max=${CLIENT_BUILD};" \
+        VALUES (${REALM_ID}, '${REALM_NAME}', '${REALM_ADDRESS}', '127.0.0.1', '255.255.255.0', ${WORLD_PORT}, ${CLIENT_BUILD}, ${CLIENT_BUILD})
+        ON DUPLICATE KEY UPDATE name='${REALM_NAME}', address='${REALM_ADDRESS}', port=${WORLD_PORT}, gamebuild_min=${CLIENT_BUILD}, gamebuild_max=${CLIENT_BUILD};" \
         || error_exit "Failed to write the realmlist row."
     success "realmlist ready."
 }
@@ -341,6 +349,10 @@ _render_mangosd_conf() {
         -e "s|^LogsDatabase\.Info[[:space:]]*=.*|LogsDatabase.Info               = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};logs\"|" \
         -e "s|^WorldServerPort[[:space:]]*=.*|WorldServerPort = ${WORLD_PORT}|" \
         -e "s|^RealmID[[:space:]]*=.*|RealmID = ${REALM_ID}|" \
+        -e "s|^GameType[[:space:]]*=.*|GameType = ${GAME_TYPE}|" \
+        -e "s|^RealmZone[[:space:]]*=.*|RealmZone = ${REALM_ZONE}|" \
+        -e "s|^PlayerLimit[[:space:]]*=.*|PlayerLimit = ${PLAYER_LIMIT}|" \
+        -e "s|^WowPatch[[:space:]]*=.*|WowPatch = ${WOW_PATCH}|" \
         "$dst"
 }
 
@@ -359,6 +371,67 @@ _render_realmd_conf() {
 # configure
 # -----------------------------------------------------------------------------
 
+
+# Value/label picker — presents labels via gum choose, echoes the matching
+# value on stdout. Used for RealmZone/GameType, where the numeric value
+# mangosd.conf actually wants isn't self-explanatory on its own.
+# _pick_value_label <header> <current-value> <default-label-on-cancel> "value|Label" ...
+_pick_value_label() {
+    local hdr="$1" current="$2" fallback_label="$3"; shift 3
+    local -a values=() labels=()
+    local pair
+    for pair in "$@"; do
+        values+=("${pair%%|*}")
+        labels+=("${pair#*|}")
+    done
+
+    local current_label="$fallback_label" i
+    for i in "${!values[@]}"; do
+        [[ "${values[$i]}" == "$current" ]] && current_label="${labels[$i]}"
+    done
+
+    local chosen
+    chosen=$(printf '%s\n' "${labels[@]}" | gum choose --header "${hdr} (current: ${current_label}):") || true
+    [[ -z "$chosen" ]] && { echo "$current"; return; }
+
+    for i in "${!labels[@]}"; do
+        [[ "${labels[$i]}" == "$chosen" ]] && { echo "${values[$i]}"; return; }
+    done
+    echo "$current"
+}
+
+# Prompts for the server-identity/gameplay settings mangosd.conf actually
+# needs beyond DB wiring — realm name/zone, game type, player cap, and the
+# progression content patch. Values persist and pre-fill on future runs, so
+# re-running configure to pick up new SQL doesn't force re-answering these
+# every time — just confirm-or-change like the rest of configure already works.
+_prompt_server_settings() {
+    local name_input
+    name_input=$(gum input --value "$REALM_NAME" --header "Realm name (shown in the realm list):") || true
+    REALM_NAME="${name_input:-$REALM_NAME}"
+    cfg_set REALM_NAME "$REALM_NAME"
+
+    REALM_ZONE=$(_pick_value_label "Realm zone (character-name alphabet / client compatibility)" "$REALM_ZONE" "Development" \
+        "1|Development (any language)" "2|United States" "3|Oceanic" "4|Latin America" \
+        "6|Korea" "8|English" "9|German" "10|French" "11|Spanish" "12|Russian" \
+        "14|Taiwan" "16|China" "26|Test Server" "28|QA Server")
+    cfg_set REALM_ZONE "$REALM_ZONE"
+
+    GAME_TYPE=$(_pick_value_label "Realm style" "$GAME_TYPE" "Normal" \
+        "0|Normal" "1|PvP" "6|RP" "8|RP-PvP" "16|FFA PvP (custom — arena rules everywhere)")
+    cfg_set GAME_TYPE "$GAME_TYPE"
+
+    local limit_input
+    limit_input=$(gum input --value "$PLAYER_LIMIT" \
+        --header "Player limit (0 = infinite, -1 = mods/GMs/admins only, -2 = GMs/admins only, -3 = admins only):") || true
+    PLAYER_LIMIT="${limit_input:-$PLAYER_LIMIT}"
+    cfg_set PLAYER_LIMIT "$PLAYER_LIMIT"
+
+    WOW_PATCH=$(_pick_value_label "Progression content patch (quest/NPC/dungeon/raid data — independent of the compiled client build)" "$WOW_PATCH" "1.12" \
+        "0|1.2" "1|1.3" "2|1.4" "3|1.5" "4|1.6" "5|1.7" "6|1.8" "7|1.9" "8|1.10" "9|1.11" "10|1.12")
+    cfg_set WOW_PATCH "$WOW_PATCH"
+}
+
 cmd_configure() {
     header "vanilla-wow — Configure"
     _settings
@@ -376,6 +449,8 @@ cmd_configure() {
         --header "LAN-reachable address for this realm (what WoW clients connect to after login):") || true
     REALM_ADDRESS="${addr_input:-$REALM_ADDRESS}"
     cfg_set REALM_ADDRESS "$REALM_ADDRESS"
+
+    _prompt_server_settings
 
     _check_docker
     _ensure_local_mariadb
@@ -769,7 +844,7 @@ cmd_run_k8s() {
     info "Running DB bootstrap Job (schemas + world dump + migrations)..."
     render_template "${k8s_tpl}/db-init-job.yaml" \
         "NAMESPACE=${K8S_NAMESPACE}" "DB_PASS=${DB_PASS}" \
-        "REALM_ID=${REALM_ID}" "REALM_ADDRESS=${REALM_ADDRESS}" \
+        "REALM_ID=${REALM_ID}" "REALM_NAME=${REALM_NAME}" "REALM_ADDRESS=${REALM_ADDRESS}" \
         "WORLD_PORT=${WORLD_PORT}" "CLIENT_BUILD=${CLIENT_BUILD}" \
         "SQL_HOSTPATH=${SOURCE_DIR}/sql" > "${manifest}.job"
     # shellcheck disable=SC2086
