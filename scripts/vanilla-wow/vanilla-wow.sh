@@ -142,6 +142,10 @@ _settings() {
     WRONG_PASS_BAN_TYPE="$(cfg_default WRONG_PASS_BAN_TYPE 0)"
     REQ_EMAIL_VERIFICATION="$(cfg_default REQ_EMAIL_VERIFICATION 0)"
     STRICT_VERSION_CHECK="$(cfg_default STRICT_VERSION_CHECK 1)"
+    # Warden anti-cheat — matches the repack's own stock default (enabled).
+    # Controls both Warden.WinEnabled/Warden.OSXEnabled together, a private
+    # LAN server has no real use for per-platform cheat detection control.
+    WARDEN_ENABLED="$(cfg_default WARDEN_ENABLED 1)"
     IMAGE_TAG="$(cfg_default IMAGE_TAG vanilla-wow-server:latest)"
     SERVER_CONTAINER_NAME="$(cfg_default SERVER_CONTAINER_NAME vanilla-wow-server)"
     K8S_NAMESPACE="$(cfg_default K8S_NAMESPACE vanilla-wow)"
@@ -362,6 +366,8 @@ _render_mangosd_conf() {
         -e "s|^DataDir[[:space:]]*=.*|DataDir = \"${data_dir}\"|" \
         -e "s|^LogsDir[[:space:]]*=.*|LogsDir = \"${logs_dir}\"|" \
         -e "s|^Warden\.ModuleDir[[:space:]]*=.*|Warden.ModuleDir             = \"${warden_dir}\"|" \
+        -e "s|^Warden\.WinEnabled[[:space:]]*=.*|Warden.WinEnabled            = ${WARDEN_ENABLED}|" \
+        -e "s|^Warden\.OSXEnabled[[:space:]]*=.*|Warden.OSXEnabled            = ${WARDEN_ENABLED}|" \
         -e "s|^LoginDatabase\.Info[[:space:]]*=.*|LoginDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};realmd\"|" \
         -e "s|^WorldDatabase\.Info[[:space:]]*=.*|WorldDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};mangos\"|" \
         -e "s|^CharacterDatabase\.Info[[:space:]]*=.*|CharacterDatabase.Info          = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};characters\"|" \
@@ -538,6 +544,10 @@ _prompt_server_settings() {
     STRICT_VERSION_CHECK=$(_pick_value_label "Reject modified/mismatched game clients (strict version check)" "$STRICT_VERSION_CHECK" "Yes" \
         "1|Yes" "0|No")
     cfg_set STRICT_VERSION_CHECK "$STRICT_VERSION_CHECK"
+
+    WARDEN_ENABLED=$(_pick_value_label "Warden anti-cheat (client-side scans; irrelevant on a private/trusted LAN server)" "$WARDEN_ENABLED" "Enabled" \
+        "1|Enabled" "0|Disabled")
+    cfg_set WARDEN_ENABLED "$WARDEN_ENABLED"
 }
 
 cmd_configure() {
