@@ -1,0 +1,92 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vanilla-wow-db-init
+  namespace: __NAMESPACE__
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: db-init
+          image: mariadb:11
+          env:
+            - name: DB_PASS
+              value: "__DB_PASS__"
+            - name: REALM_ID
+              value: "__REALM_ID__"
+            - name: REALM_ADDRESS
+              value: "__REALM_ADDRESS__"
+            - name: WORLD_PORT
+              value: "__WORLD_PORT__"
+            - name: CLIENT_BUILD
+              value: "__CLIENT_BUILD__"
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+          # Mirrors vanilla-wow.sh's _db_bootstrap: create schemas, import
+          # Base + the full world dump + Migrations in filename order, then
+          # any optional Custom content (Job runs non-interactively, so the
+          # gum-confirm gate from local 'configure' doesn't apply here —
+          # Custom content is always applied by this Job).
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              mysql() { mariadb -h mariadb -uroot -p"${DB_PASS}" "$@"; }
+              until mariadb-admin ping -h mariadb -uroot -p"${DB_PASS}" --silent; do
+                echo "Waiting for mariadb..."; sleep 2
+              done
+              mysql -e "CREATE DATABASE IF NOT EXISTS realmd; CREATE DATABASE IF NOT EXISTS mangos; CREATE DATABASE IF NOT EXISTS characters; CREATE DATABASE IF NOT EXISTS logs;"
+              mysql realmd     < /sql/Base/logon.sql
+              mysql mangos     < /sql/Base/world.sql
+              mysql characters < /sql/Base/characters.sql
+              mysql logs       < /sql/Base/logs.sql
+              # Required, not optional: mangosd hard-crashes at startup if
+              # these tables (e.g. realmd.antispam_blacklist) don't exist —
+              # the Anticheat/Warden/antispam features are always compiled in.
+              if [ -d /sql/Anticheat ]; then
+                mysql realmd     < /sql/Anticheat/realmd.sql
+                mysql mangos     < /sql/Anticheat/world.sql
+                mysql characters < /sql/Anticheat/characters.sql
+              fi
+              echo "Importing world dump (this takes a while)..."
+              mysql mangos < /sql/world_full_14_june_2021.sql
+              # Migrations/ holds files for all 4 databases (suffix-routed),
+              # plus 4 pre-merged "*_db_updates.sql" aggregates and
+              # merge.bat/merge.sh/README with no numeric prefix — applying
+              # those alongside the individual migrations would double-apply
+              # the same changes, so only numerically-prefixed files are used.
+              for f in /sql/Migrations/[0-9]*.sql; do
+                [ -e "$f" ] || continue
+                case "$f" in
+                  *_world.sql)      db=mangos ;;
+                  *_characters.sql) db=characters ;;
+                  *_logon.sql)      db=realmd ;;
+                  *_logs.sql)       db=logs ;;
+                  *) echo "  skipping unrecognized migration: $f"; continue ;;
+                esac
+                echo "Applying migration: $f -> ${db}"
+                mysql "$db" < "$f"
+              done
+              for f in /sql/Custom/*.sql; do
+                [ -e "$f" ] || continue
+                echo "Applying custom content: $f"
+                mysql mangos < "$f" || echo "  (failed, continuing) $f"
+              done
+              # None of the SQL dumps seed realmlist — it's inherently
+              # deployment-specific (the realm's actual reachable
+              # address/port). Without it mangosd refuses to start.
+              echo "Ensuring realmlist row..."
+              mysql realmd -e "INSERT INTO realmlist (id, name, address, localAddress, localSubnetMask, port, gamebuild_min, gamebuild_max)
+                VALUES (${REALM_ID}, 'VanillaWoW', '${REALM_ADDRESS}', '127.0.0.1', '255.255.255.0', ${WORLD_PORT}, ${CLIENT_BUILD}, ${CLIENT_BUILD})
+                ON DUPLICATE KEY UPDATE address='${REALM_ADDRESS}', port=${WORLD_PORT}, gamebuild_min=${CLIENT_BUILD}, gamebuild_max=${CLIENT_BUILD};"
+              echo "DB bootstrap complete."
+      volumes:
+        - name: sql
+          hostPath:
+            path: __SQL_HOSTPATH__
+            type: Directory

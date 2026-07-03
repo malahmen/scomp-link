@@ -3,11 +3,11 @@
 
 _check_docker() {
     if ! command -v docker &>/dev/null; then
-        gum log --level error "docker is not installed or not in PATH."
+        gum log --level error "docker is not installed or not in PATH. Run: docker.sh install (scripts/docker/docker.sh)"
         exit 1
     fi
     if ! docker info &>/dev/null 2>&1; then
-        gum log --level error "Docker daemon is not running. Start Docker and retry."
+        gum log --level error "Docker daemon is not running/reachable. Try: docker.sh status (scripts/docker/docker.sh) to diagnose, or start Docker and retry."
         exit 1
     fi
     info "docker: $(docker --version 2>/dev/null | head -1)"
@@ -71,8 +71,15 @@ _pkg_manager() {
 # password prompt isn't available, instead of hanging or silently failing.
 _require_sudo_or_instruct() {
     local desc="$1"; shift
+    # Already has a cached/passwordless credential — nothing to prompt for.
     sudo -n true 2>/dev/null && return 0
-    warn "${desc} requires sudo, and this session has no passwordless sudo / TTY for a password prompt."
+    # No cached credential, but a real terminal is attached — sudo can just
+    # prompt for the password normally here; no need to bail.
+    [[ -t 0 && -t 1 ]] && return 0
+    # No TTY at all (e.g. a non-interactive tool/CI session) — sudo would
+    # hang waiting for a password it can never receive. Bail with manual
+    # instructions instead of hanging.
+    warn "${desc} requires sudo, and this session has no TTY for a password prompt."
     error_exit "Please run this yourself in a terminal, then re-run this script:
   $*"
 }
@@ -114,6 +121,43 @@ _ensure_pkg() {
     esac
     command -v "$check_bin" &>/dev/null || error_exit "${check_bin} installation appears to have failed."
     success "${check_bin} installed."
+}
+
+# _ensure_pkgs <dnf-pkg-list> <apt-pkg-list>
+# Bulk-installs packages that have no single checkable binary — typically
+# -dev/-devel libraries (e.g. libace-dev / libtbb-dev). Unlike _ensure_pkg,
+# this always runs the install command; apt/dnf no-op cleanly on packages
+# that are already installed, so this stays safe to call on every run.
+# Each list is space-separated, e.g.: _ensure_pkgs "ace-devel tbb-devel" "libace-dev libtbb-dev"
+_ensure_pkgs() {
+    local dnf_pkgs="$1" apt_pkgs="$2"
+    local pm; pm="$(_pkg_manager)"
+    [[ -z "$pm" ]] && error_exit "No supported package manager found (need dnf, apt, or rpm-ostree)."
+
+    info "Ensuring packages installed via ${pm}: $([[ "$pm" == "apt" ]] && echo "$apt_pkgs" || echo "$dnf_pkgs")"
+    case "$pm" in
+        rpm-ostree)
+            _require_sudo_or_instruct "Layering packages via rpm-ostree" "rpm-ostree install -y ${dnf_pkgs}"
+            # shellcheck disable=SC2086
+            rpm-ostree install -y $dnf_pkgs || error_exit "rpm-ostree install failed for: ${dnf_pkgs}"
+            warn "Packages layered via rpm-ostree — a REBOOT is required before they're available."
+            if gum confirm "Reboot now?"; then
+                systemctl reboot
+            fi
+            ;;
+        dnf)
+            _require_sudo_or_instruct "Installing packages" "sudo dnf install -y ${dnf_pkgs}"
+            # shellcheck disable=SC2086
+            sudo dnf install -y $dnf_pkgs || error_exit "dnf install failed for: ${dnf_pkgs}"
+            ;;
+        apt)
+            _require_sudo_or_instruct "Installing packages" "sudo apt-get update -qq && sudo apt-get install -y ${apt_pkgs}"
+            # shellcheck disable=SC2086
+            sudo apt-get update -qq && sudo apt-get install -y $apt_pkgs \
+                || error_exit "apt install failed for: ${apt_pkgs}"
+            ;;
+    esac
+    success "Packages installed."
 }
 
 # _ensure_helm_repo <repo-name> <repo-url>
