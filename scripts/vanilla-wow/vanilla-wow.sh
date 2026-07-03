@@ -715,6 +715,15 @@ cmd_status() {
 
     gum style --foreground "${CYAN}" --bold "── Docker image"
     docker image inspect "$IMAGE_TAG" --format='{{.Id}}' 2>/dev/null || info "Not built."
+
+    # realmlist.wtf syntax: 'set realmlist <address>[:<port>]' — the port
+    # suffix is only needed when it's non-standard, the client already
+    # assumes 3724 if omitted.
+    gum style --foreground "${CYAN}" --bold "── Client setup"
+    local realmlist_value="$REALM_ADDRESS"
+    [[ "$REALM_PORT" != "3724" ]] && realmlist_value+=":${REALM_PORT}"
+    info "In the client's WTF/realmlist.wtf, set:"
+    gum style --bold "  set realmlist ${realmlist_value}"
 }
 
 # -----------------------------------------------------------------------------
