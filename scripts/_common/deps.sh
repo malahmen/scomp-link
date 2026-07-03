@@ -56,6 +56,66 @@ _ensure_helm() {
     success "helm installed: $(helm version --short 2>/dev/null)"
 }
 
+# _pkg_manager — echoes "rpm-ostree" | "dnf" | "apt" | "" (none supported).
+# rpm-ostree takes priority: on immutable Fedora Atomic hosts (e.g. Bazzite),
+# dnf usually isn't meant to be used directly even if present.
+_pkg_manager() {
+    if command -v rpm-ostree &>/dev/null; then echo "rpm-ostree";
+    elif command -v dnf &>/dev/null; then echo "dnf";
+    elif command -v apt-get &>/dev/null; then echo "apt";
+    else echo ""; fi
+}
+
+# _require_sudo_or_instruct <description> <command to hand back to the user>
+# Bails with clear manual instructions when passwordless sudo / a TTY for a
+# password prompt isn't available, instead of hanging or silently failing.
+_require_sudo_or_instruct() {
+    local desc="$1"; shift
+    sudo -n true 2>/dev/null && return 0
+    warn "${desc} requires sudo, and this session has no passwordless sudo / TTY for a password prompt."
+    error_exit "Please run this yourself in a terminal, then re-run this script:
+  $*"
+}
+
+# _ensure_pkg <binary-to-check> <dnf/rpm-ostree-pkg-name> [apt-pkg-name]
+# Installs a system package via whichever package manager is available.
+# On rpm-ostree (immutable systems like Bazzite), the package is layered and
+# requires a reboot before the binary becomes available — the function warns
+# and offers to reboot rather than pretending the install is immediately live.
+_ensure_pkg() {
+    local check_bin="$1" pkg_dnf="$2" pkg_apt="${3:-$2}"
+    if command -v "$check_bin" &>/dev/null; then
+        info "${check_bin} found: $(command -v "$check_bin")"
+        return 0
+    fi
+
+    local pm; pm="$(_pkg_manager)"
+    [[ -z "$pm" ]] && error_exit "No supported package manager found (need dnf, apt, or rpm-ostree) to install '${pkg_dnf}'."
+
+    info "${check_bin} not found. Installing '${pkg_dnf}' via ${pm}..."
+    case "$pm" in
+        rpm-ostree)
+            _require_sudo_or_instruct "Layering ${pkg_dnf} via rpm-ostree" "rpm-ostree install -y ${pkg_dnf}"
+            rpm-ostree install -y "$pkg_dnf" || error_exit "rpm-ostree install failed for ${pkg_dnf}."
+            warn "Package layered via rpm-ostree — a REBOOT is required before '${check_bin}' becomes available."
+            if gum confirm "Reboot now?"; then
+                systemctl reboot
+            fi
+            return 1
+            ;;
+        dnf)
+            _require_sudo_or_instruct "Installing ${pkg_dnf}" "sudo dnf install -y ${pkg_dnf}"
+            sudo dnf install -y "$pkg_dnf" || error_exit "dnf install failed for ${pkg_dnf}."
+            ;;
+        apt)
+            _require_sudo_or_instruct "Installing ${pkg_apt}" "sudo apt-get update -qq && sudo apt-get install -y ${pkg_apt}"
+            sudo apt-get update -qq && sudo apt-get install -y "$pkg_apt" || error_exit "apt install failed for ${pkg_apt}."
+            ;;
+    esac
+    command -v "$check_bin" &>/dev/null || error_exit "${check_bin} installation appears to have failed."
+    success "${check_bin} installed."
+}
+
 # _ensure_helm_repo <repo-name> <repo-url>
 _ensure_helm_repo() {
     local repo_name="$1"
