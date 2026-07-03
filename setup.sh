@@ -143,6 +143,40 @@ Please open a new terminal and re-run."
     ok "mise installed: $(command -v mise)"
 }
 
+# Persist mise activation to the user's shell profile. Without this, tools
+# installed via mise (gum here, but also kubectl/kind/helm/node/etc. that
+# other scripts in this repo install the same way) only stay on PATH for the
+# rest of THIS script's process — the moment setup.sh exits, a fresh shell
+# has no idea mise's shims directory exists, and every mise-installed tool
+# looks "not installed" again despite being on disk. Runs unconditionally
+# (not just when mise was freshly installed above) since a pre-existing mise
+# install may never have had shell activation configured either.
+ensure_mise_activation() {
+    local profile_file="" shell_name=""
+
+    case "${SHELL:-}" in
+        */zsh)  profile_file="$HOME/.zshrc";  shell_name="zsh"  ;;
+        */bash) profile_file="$HOME/.bashrc"; shell_name="bash" ;;
+        *)      profile_file="$HOME/.profile" ;;
+    esac
+
+    if grep -qF "mise activate" "$profile_file" 2>/dev/null || grep -qF "mise/shims" "$profile_file" 2>/dev/null; then
+        ok "mise activation already configured in ${profile_file}."
+    else
+        info "Persisting mise activation to ${profile_file} (needed so mise-installed tools stay on PATH in new shells, not just within this script)..."
+        if [[ -n "$shell_name" ]]; then
+            printf '\n# mise activation (added by scomp-link setup.sh)\neval "$(mise activate %s)"\n' "$shell_name" >> "$profile_file"
+        else
+            printf '\n# mise shims on PATH (added by scomp-link setup.sh)\nexport PATH="$HOME/.local/share/mise/shims:$PATH"\n' >> "$profile_file"
+        fi
+        ok "Added to ${profile_file}."
+        info "Restart your terminal (or run: source ${profile_file}) for new shells to pick it up."
+    fi
+
+    # Keep this script's own PATH correct for the remainder of this run too.
+    export PATH="$HOME/.local/share/mise/shims:$PATH"
+}
+
 # gum via mise
 ensure_gum() {
     info "Looking for gum..."
@@ -326,6 +360,7 @@ info "Detected OS: $OS, package manager: $PKG_MANAGER"
 
 ensure_curl
 ensure_mise
+ensure_mise_activation
 ensure_gum
 ensure_gum_width
 ensure_vim
