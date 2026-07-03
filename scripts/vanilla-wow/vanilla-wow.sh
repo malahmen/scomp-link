@@ -132,6 +132,16 @@ _settings() {
     # distinct from CLIENT_BUILD (what the compiled binary itself supports).
     # 10 = patch 1.12, matching the CLIENT_BUILD_DEFAULT (5875) target.
     WOW_PATCH="$(cfg_default WOW_PATCH 10)"
+    MOTD="$(cfg_default MOTD "Welcome to ${REALM_NAME}!")"
+    XP_RATE="$(cfg_default XP_RATE 1)"
+    DROP_RATE="$(cfg_default DROP_RATE 1)"
+    # realmd.conf security/behavior settings — all match the repack's own
+    # stock defaults unless changed in 'configure'.
+    WRONG_PASS_MAX_COUNT="$(cfg_default WRONG_PASS_MAX_COUNT 0)"
+    WRONG_PASS_BAN_TIME="$(cfg_default WRONG_PASS_BAN_TIME 600)"
+    WRONG_PASS_BAN_TYPE="$(cfg_default WRONG_PASS_BAN_TYPE 0)"
+    REQ_EMAIL_VERIFICATION="$(cfg_default REQ_EMAIL_VERIFICATION 0)"
+    STRICT_VERSION_CHECK="$(cfg_default STRICT_VERSION_CHECK 1)"
     IMAGE_TAG="$(cfg_default IMAGE_TAG vanilla-wow-server:latest)"
     SERVER_CONTAINER_NAME="$(cfg_default SERVER_CONTAINER_NAME vanilla-wow-server)"
     K8S_NAMESPACE="$(cfg_default K8S_NAMESPACE vanilla-wow)"
@@ -339,6 +349,7 @@ _ensure_realmlist() {
 # _render_mangosd_conf <src> <dst> <data_dir> <logs_dir>
 _render_mangosd_conf() {
     local src="$1" dst="$2" data_dir="$3" logs_dir="$4"
+    local motd_escaped; motd_escaped="$(_sed_escape "$MOTD")"
     cp "$src" "$dst"
     sed -i \
         -e "s|^DataDir[[:space:]]*=.*|DataDir = \"${data_dir}\"|" \
@@ -353,6 +364,20 @@ _render_mangosd_conf() {
         -e "s|^RealmZone[[:space:]]*=.*|RealmZone = ${REALM_ZONE}|" \
         -e "s|^PlayerLimit[[:space:]]*=.*|PlayerLimit = ${PLAYER_LIMIT}|" \
         -e "s|^WowPatch[[:space:]]*=.*|WowPatch = ${WOW_PATCH}|" \
+        -e "s|^Motd[[:space:]]*=.*|Motd = \"${motd_escaped}\"|" \
+        -e "s|^Rate\.XP\.Kill[[:space:]]*=.*|Rate.XP.Kill    = ${XP_RATE}|" \
+        -e "s|^Rate\.XP\.Kill\.Elite[[:space:]]*=.*|Rate.XP.Kill.Elite = ${XP_RATE}|" \
+        -e "s|^Rate\.XP\.Quest[[:space:]]*=.*|Rate.XP.Quest   = ${XP_RATE}|" \
+        -e "s|^Rate\.XP\.Explore[[:space:]]*=.*|Rate.XP.Explore = ${XP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Poor[[:space:]]*=.*|Rate.Drop.Item.Poor = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Normal[[:space:]]*=.*|Rate.Drop.Item.Normal = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Uncommon[[:space:]]*=.*|Rate.Drop.Item.Uncommon = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Rare[[:space:]]*=.*|Rate.Drop.Item.Rare = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Epic[[:space:]]*=.*|Rate.Drop.Item.Epic = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Legendary[[:space:]]*=.*|Rate.Drop.Item.Legendary = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Artifact[[:space:]]*=.*|Rate.Drop.Item.Artifact = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Item\.Referenced[[:space:]]*=.*|Rate.Drop.Item.Referenced = ${DROP_RATE}|" \
+        -e "s|^Rate\.Drop\.Money[[:space:]]*=.*|Rate.Drop.Money = ${DROP_RATE}|" \
         "$dst"
 }
 
@@ -364,7 +389,27 @@ _render_realmd_conf() {
         -e "s|^LogsDir[[:space:]]*=.*|LogsDir = \"${logs_dir}\"|" \
         -e "s|^LoginDatabaseInfo[[:space:]]*=.*|LoginDatabaseInfo = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};realmd\"|" \
         -e "s|^RealmServerPort[[:space:]]*=.*|RealmServerPort = ${REALM_PORT}|" \
+        -e "s|^WrongPass\.MaxCount[[:space:]]*=.*|WrongPass.MaxCount = ${WRONG_PASS_MAX_COUNT}|" \
+        -e "s|^WrongPass\.BanTime[[:space:]]*=.*|WrongPass.BanTime = ${WRONG_PASS_BAN_TIME}|" \
+        -e "s|^WrongPass\.BanType[[:space:]]*=.*|WrongPass.BanType = ${WRONG_PASS_BAN_TYPE}|" \
+        -e "s|^ReqEmailVerification[[:space:]]*=.*|ReqEmailVerification = ${REQ_EMAIL_VERIFICATION}|" \
+        -e "s|^StrictVersionCheck[[:space:]]*=.*|StrictVersionCheck = ${STRICT_VERSION_CHECK}|" \
         "$dst"
+}
+
+# _effective_conf_source <filename> — prefer the already-configured copy
+# under ETC_DIR (which carries both the 'configure' prompts and any manual
+# `edit` tweaks) over the repack's pristine file. Used by the deploy paths
+# (run-docker/run-k8s) so a hand edit isn't silently discarded on the next
+# build/deploy; 'configure' itself always re-derives from the pristine
+# SOURCE_DIR file, since re-establishing the baseline is its whole job.
+_effective_conf_source() {
+    local filename="$1"
+    if [[ -f "${ETC_DIR}/${filename}" ]]; then
+        echo "${ETC_DIR}/${filename}"
+    else
+        echo "${SOURCE_DIR}/${filename}"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -430,6 +475,58 @@ _prompt_server_settings() {
     WOW_PATCH=$(_pick_value_label "Progression content patch (quest/NPC/dungeon/raid data — independent of the compiled client build)" "$WOW_PATCH" "1.12" \
         "0|1.2" "1|1.3" "2|1.4" "3|1.5" "4|1.6" "5|1.7" "6|1.8" "7|1.9" "8|1.10" "9|1.11" "10|1.12")
     cfg_set WOW_PATCH "$WOW_PATCH"
+
+    # MOTD — strip literal quotes so it can't break the conf file's own
+    # quoting; sed-escaping (|, &) happens in _render_mangosd_conf itself.
+    local motd_input
+    motd_input=$(gum input --value "$MOTD" --header "Message of the day (shown at login):") || true
+    MOTD="${motd_input:-$MOTD}"
+    MOTD="${MOTD//\"/}"
+    cfg_set MOTD "$MOTD"
+
+    # A single multiplier is applied to every leveling-XP source
+    # (kill/kill-elite/quest/explore) and every loot source (money + all
+    # item-quality drop rates) — exposing the ~13 underlying Rate.* knobs
+    # individually would be a lot of prompts for something almost nobody
+    # tunes separately from "2x server" / "half rate server".
+    local xp_input drop_input
+    xp_input=$(gum input --value "$XP_RATE" --header "XP rate multiplier (1 = normal, 2 = double, 0.5 = half):") || true
+    XP_RATE="${xp_input:-$XP_RATE}"
+    cfg_set XP_RATE "$XP_RATE"
+
+    drop_input=$(gum input --value "$DROP_RATE" --header "Loot/gold drop rate multiplier (1 = normal, 2 = double, 0.5 = half):") || true
+    DROP_RATE="${drop_input:-$DROP_RATE}"
+    cfg_set DROP_RATE "$DROP_RATE"
+
+    # realmd.conf — login/security behavior.
+    local wp_count_input wp_time_input
+    wp_count_input=$(gum input --value "$WRONG_PASS_MAX_COUNT" \
+        --header "Wrong-password attempts before a ban (0 = disabled):") || true
+    WRONG_PASS_MAX_COUNT="${wp_count_input:-$WRONG_PASS_MAX_COUNT}"
+    cfg_set WRONG_PASS_MAX_COUNT "$WRONG_PASS_MAX_COUNT"
+
+    if [[ "$WRONG_PASS_MAX_COUNT" != "0" ]]; then
+        wp_time_input=$(gum input --value "$WRONG_PASS_BAN_TIME" --header "Ban duration in seconds:") || true
+        WRONG_PASS_BAN_TIME="${wp_time_input:-$WRONG_PASS_BAN_TIME}"
+        cfg_set WRONG_PASS_BAN_TIME "$WRONG_PASS_BAN_TIME"
+
+        WRONG_PASS_BAN_TYPE=$(_pick_value_label "Ban target" "$WRONG_PASS_BAN_TYPE" "Ban IP" \
+            "0|Ban IP" "1|Ban Account")
+        cfg_set WRONG_PASS_BAN_TYPE "$WRONG_PASS_BAN_TYPE"
+    fi
+
+    # _pick_value_label, not gum confirm: a cancelled/no-TTY gum confirm
+    # always resolves false, which would force these to "off" on every run
+    # regardless of the actual current/stock value (same bug class already
+    # caught once with GAME_TYPE) — _pick_value_label correctly falls back
+    # to whatever the current value already is instead.
+    REQ_EMAIL_VERIFICATION=$(_pick_value_label "Require email verification before login" "$REQ_EMAIL_VERIFICATION" "No" \
+        "0|No" "1|Yes")
+    cfg_set REQ_EMAIL_VERIFICATION "$REQ_EMAIL_VERIFICATION"
+
+    STRICT_VERSION_CHECK=$(_pick_value_label "Reject modified/mismatched game clients (strict version check)" "$STRICT_VERSION_CHECK" "Yes" \
+        "1|Yes" "0|No")
+    cfg_set STRICT_VERSION_CHECK "$STRICT_VERSION_CHECK"
 }
 
 cmd_configure() {
@@ -585,6 +682,38 @@ cmd_status() {
 }
 
 # -----------------------------------------------------------------------------
+# edit — escape hatch for anything 'configure' doesn't prompt for. Opens the
+# already-configured conf files (not the repack's pristine copies) in vim,
+# which setup.sh already installs. Picked up automatically by run-docker/
+# run-k8s afterward via _effective_conf_source; 'start' just needs a restart.
+# -----------------------------------------------------------------------------
+
+cmd_edit() {
+    header "vanilla-wow — Edit conf files"
+
+    if [[ ! -f "${ETC_DIR}/mangosd.conf" ]]; then
+        warn "Not configured yet — run 'configure' first."
+        return 1
+    fi
+    if ! command -v vim &>/dev/null; then
+        warn "vim not found (setup.sh normally installs it) — edit these files with any editor: ${ETC_DIR}"
+        return 1
+    fi
+
+    local choice
+    choice=$(gum choose "mangosd.conf (server settings, rates, MOTD, ...)" "realmd.conf (login/security settings)" "cancel" \
+        --header "Which file to edit?") || true
+
+    case "$choice" in
+        mangosd.conf*) vim "${ETC_DIR}/mangosd.conf" ;;
+        realmd.conf*)  vim "${ETC_DIR}/realmd.conf" ;;
+        *) info "Cancelled."; return ;;
+    esac
+
+    success "Saved. Restart 'start' for the local process, or re-run 'run-docker'/'run-k8s' to apply it to a container/pod (conf files are mounted at runtime, not baked into the image — no need to 'build-image' again)."
+}
+
+# -----------------------------------------------------------------------------
 # build-image — multi-stage Dockerfile, builder compiles inside Ubuntu
 # regardless of host OS, runtime stage is slim.
 # -----------------------------------------------------------------------------
@@ -638,8 +767,8 @@ cmd_run_docker() {
         docker rm -f "$SERVER_CONTAINER_NAME" &>/dev/null || true
     fi
 
-    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.docker.conf" "/app/data" "/app/logs"
-    _render_realmd_conf  "${SOURCE_DIR}/realmd.conf"  "${ETC_DIR}/realmd.docker.conf"  "/app/logs"
+    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.docker.conf" "/app/data" "/app/logs"
+    _render_realmd_conf  "$(_effective_conf_source realmd.conf)"  "${ETC_DIR}/realmd.docker.conf"  "/app/logs"
 
     # :Z (private SELinux relabel) is required on Fedora/RHEL hosts with
     # SELinux enforcing — without it the container's unprivileged user gets
@@ -829,8 +958,8 @@ cmd_run_k8s() {
     # as an inline YAML string.
     local saved_db_host="$DB_HOST"
     DB_HOST="mariadb.${K8S_NAMESPACE}.svc.cluster.local"
-    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.k8s.conf" "/app/data" "/app/logs"
-    _render_realmd_conf  "${SOURCE_DIR}/realmd.conf"  "${ETC_DIR}/realmd.k8s.conf"  "/app/logs"
+    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.k8s.conf" "/app/data" "/app/logs"
+    _render_realmd_conf  "$(_effective_conf_source realmd.conf)"  "${ETC_DIR}/realmd.k8s.conf"  "/app/logs"
     DB_HOST="$saved_db_host"
 
     info "Creating server config ConfigMap..."
@@ -875,10 +1004,11 @@ main() {
             start)        cmd_start ;;
             stop)         cmd_stop ;;
             status)       cmd_status ;;
+            edit)         cmd_edit ;;
             build-image)  cmd_build_image ;;
             run-docker)   cmd_run_docker ;;
             run-k8s)      cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|build-image|run-docker|run-k8s)" ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -887,21 +1017,25 @@ main() {
         header "Vanilla WoW (VMaNGOS) Manager"
         local action
         action=$(gum choose \
-            "install-deps" "configure" "start" "stop" "status" \
+            "install-deps" "configure" "start" "stop" "status" "edit" \
             "build-image" "run-docker" "run-k8s" "quit" \
             --header "Choose an action:") || true
 
         [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
 
+        # || true on each: under `set -e`, a cmd_* returning non-zero here
+        # (e.g. cmd_edit's soft-fail warn+return) would otherwise trigger
+        # errexit and kill the whole script instead of returning to this menu.
         case "$action" in
-            install-deps) cmd_install_deps ;;
-            configure)    cmd_configure ;;
-            start)        cmd_start ;;
-            stop)         cmd_stop ;;
-            status)       cmd_status ;;
-            build-image)  cmd_build_image ;;
-            run-docker)   cmd_run_docker ;;
-            run-k8s)      cmd_run_k8s ;;
+            install-deps) cmd_install_deps || true ;;
+            configure)    cmd_configure    || true ;;
+            start)        cmd_start        || true ;;
+            stop)         cmd_stop         || true ;;
+            status)       cmd_status       || true ;;
+            edit)         cmd_edit         || true ;;
+            build-image)  cmd_build_image  || true ;;
+            run-docker)   cmd_run_docker   || true ;;
+            run-k8s)      cmd_run_k8s      || true ;;
         esac
 
         echo ""
