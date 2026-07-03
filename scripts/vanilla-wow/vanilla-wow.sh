@@ -795,6 +795,32 @@ _detect_running_target() {
     echo "$chosen"
 }
 
+# _detect_db_target — like _detect_running_target, but for queries that only
+# need the database, not mangosd itself (e.g. search, which reads static
+# reference tables that don't require the server to be up at all). Local
+# native and Docker share the exact same local MariaDB container, so unlike
+# _detect_running_target there's nothing to disambiguate between them —
+# echoes "docker" for that shared container, "k8s" for the cluster's own
+# separate MariaDB pod.
+_detect_db_target() {
+    if [[ "$(docker inspect --type container "$DB_CONTAINER_NAME" --format='{{.State.Status}}' 2>/dev/null)" == "running" ]]; then
+        echo "docker"
+        return 0
+    fi
+    if command -v kubectl &>/dev/null; then
+        if kubectl get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-mariadb --no-headers 2>/dev/null | grep -q Running; then
+            echo "k8s"
+            return 0
+        fi
+    fi
+    warn "No reachable database found (checked the local MariaDB container and K8s). Run 'configure' or 'run-k8s' first."
+    return 1
+}
+
+# Escapes a value for embedding inside a single-quoted SQL string literal
+# (backslash first, so it isn't double-escaped by the quote pass after it).
+_sql_escape() { printf '%s' "$1" | sed -e "s/\\\\/\\\\\\\\/g" -e "s/'/\\\\'/g"; }
+
 # _db_query <target: local|docker|k8s> <sql> — local/docker share the same
 # local MariaDB container (_db_exec); k8s has its own separate MariaDB pod
 # in the cluster (see the architecture note on templates/k8s/mariadb.yaml),
@@ -979,6 +1005,68 @@ cmd_delete_account() {
     esac
 
     success "Delete command sent for '${user_input}'."
+}
+
+# -----------------------------------------------------------------------------
+# search — name lookup for items, NPCs, GM teleport locations, and player
+# characters. All four are plain reference-data reads (no SRP6/console
+# involved, unlike the account commands), so this goes straight to the
+# database via _db_query, and works even if mangosd itself isn't running —
+# only the database needs to be up (_detect_db_target, not
+# _detect_running_target).
+# -----------------------------------------------------------------------------
+
+cmd_search() {
+    header "vanilla-wow — Search"
+    _settings
+
+    local target
+    target=$(_detect_db_target) || return 1
+
+    local kind
+    kind=$(printf '%s\n' "Items" "NPCs" "Teleport locations" "Player characters" \
+        | gum choose --header "Search what?") || true
+    [[ -z "$kind" ]] && { info "Cancelled."; return 1; }
+
+    local term
+    term=$(gum input --placeholder "name (partial match)" --header "Search term:") || true
+    [[ -z "$term" ]] && { info "Cancelled."; return 1; }
+    local term_escaped; term_escaped="$(_sql_escape "$term")"
+
+    case "$kind" in
+        Items)
+            # item_template/creature_template key on (entry, patch) — the
+            # same entry can have a different row per patch it changed in.
+            # Without filtering, a search can show stale/duplicate rows for
+            # an item that changed since; the correlated subquery picks the
+            # latest row at or before the configured WOW_PATCH, matching
+            # what's actually loaded on this server.
+            _db_query "$target" \
+                "SELECT it.entry, it.name, it.quality FROM mangos.item_template it
+                 WHERE it.name LIKE '%${term_escaped}%' AND it.patch = (
+                     SELECT MAX(patch) FROM mangos.item_template it2 WHERE it2.entry = it.entry AND it2.patch <= ${WOW_PATCH}
+                 ) ORDER BY it.name LIMIT 50;" || return 1
+            ;;
+        NPCs)
+            _db_query "$target" \
+                "SELECT ct.entry, ct.name, ct.subname FROM mangos.creature_template ct
+                 WHERE ct.name LIKE '%${term_escaped}%' AND ct.patch = (
+                     SELECT MAX(patch) FROM mangos.creature_template ct2 WHERE ct2.entry = ct.entry AND ct2.patch <= ${WOW_PATCH}
+                 ) ORDER BY ct.name LIMIT 50;" || return 1
+            ;;
+        "Teleport locations")
+            # game_tele — the table the '.tele <name>' GM command itself
+            # searches, no patch column here.
+            _db_query "$target" \
+                "SELECT id, name, map, ROUND(position_x,1) AS x, ROUND(position_y,1) AS y
+                 FROM mangos.game_tele WHERE name LIKE '%${term_escaped}%' ORDER BY name LIMIT 50;" || return 1
+            ;;
+        "Player characters")
+            _db_query "$target" \
+                "SELECT guid, name, race, class, level FROM characters.characters
+                 WHERE name LIKE '%${term_escaped}%' ORDER BY name LIMIT 50;" || return 1
+            ;;
+    esac
 }
 
 # -----------------------------------------------------------------------------
@@ -1325,10 +1413,11 @@ main() {
             create-account) cmd_create_account ;;
             list-accounts)  cmd_list_accounts ;;
             delete-account) cmd_delete_account ;;
+            search)         cmd_search ;;
             build-image)    cmd_build_image ;;
             run-docker)     cmd_run_docker ;;
             run-k8s)        cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|build-image|run-docker|run-k8s)" ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|search|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1338,7 +1427,7 @@ main() {
         local action
         action=$(gum choose \
             "install-deps" "configure" "start" "stop" "status" "edit" \
-            "create-account" "list-accounts" "delete-account" \
+            "create-account" "list-accounts" "delete-account" "search" \
             "build-image" "run-docker" "run-k8s" "quit" \
             --header "Choose an action:") || true
 
@@ -1357,6 +1446,7 @@ main() {
             create-account) cmd_create_account || true ;;
             list-accounts)  cmd_list_accounts  || true ;;
             delete-account) cmd_delete_account || true ;;
+            search)         cmd_search         || true ;;
             build-image)    cmd_build_image    || true ;;
             run-docker)     cmd_run_docker     || true ;;
             run-k8s)        cmd_run_k8s        || true ;;
