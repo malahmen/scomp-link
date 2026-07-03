@@ -16,6 +16,8 @@ spec:
               value: "__DB_PASS__"
             - name: REALM_ID
               value: "__REALM_ID__"
+            - name: REALM_NAME
+              value: "__REALM_NAME__"
             - name: REALM_ADDRESS
               value: "__REALM_ADDRESS__"
             - name: WORLD_PORT
@@ -82,8 +84,8 @@ spec:
               # address/port). Without it mangosd refuses to start.
               echo "Ensuring realmlist row..."
               mysql realmd -e "INSERT INTO realmlist (id, name, address, localAddress, localSubnetMask, port, gamebuild_min, gamebuild_max)
-                VALUES (${REALM_ID}, 'VanillaWoW', '${REALM_ADDRESS}', '127.0.0.1', '255.255.255.0', ${WORLD_PORT}, ${CLIENT_BUILD}, ${CLIENT_BUILD})
-                ON DUPLICATE KEY UPDATE address='${REALM_ADDRESS}', port=${WORLD_PORT}, gamebuild_min=${CLIENT_BUILD}, gamebuild_max=${CLIENT_BUILD};"
+                VALUES (${REALM_ID}, '${REALM_NAME}', '${REALM_ADDRESS}', '127.0.0.1', '255.255.255.0', ${WORLD_PORT}, ${CLIENT_BUILD}, ${CLIENT_BUILD})
+                ON DUPLICATE KEY UPDATE name='${REALM_NAME}', address='${REALM_ADDRESS}', port=${WORLD_PORT}, gamebuild_min=${CLIENT_BUILD}, gamebuild_max=${CLIENT_BUILD};"
               echo "DB bootstrap complete."
       volumes:
         - name: sql
