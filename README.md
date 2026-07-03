@@ -255,11 +255,11 @@ So run this TUI **on the node** you want to set up (or use "print" and paste the
 
 #### Docker Manager (`docker/docker.sh`)
 
-Installs, uninstalls, and reports status of Docker itself since most other scripts in this repo check for Docker but don't install it; this fills that gap.
+Installs, uninstalls, and reports status of Docker itself. Most other scripts in this repo check for Docker but don't install it, this fills that gap.
 
-- Uses each distro's own native Docker packaging (Fedora: `moby-engine` + `docker-cli` + `docker-compose`, no external repo needed; Debian/Ubuntu: `docker.io` + `docker-compose-v2`) rather than Docker's official `curl | sh` convenience script or adding Docker's own apt/dnf repo, no GPG key or repo file to maintain
+- Uses each distro's own native Docker packaging (Fedora gets `moby-engine` + `docker-cli` + `docker-compose` with no external repo needed, Debian/Ubuntu gets `docker.io` + `docker-compose-v2`) rather than Docker's official `curl | sh` convenience script or adding Docker's own apt/dnf repo, no GPG key or repo file to maintain
 - `rpm-ostree` (Bazzite/immutable Fedora Atomic) supported via `_common/deps.sh`'s package helpers, layers the packages and prompts to reboot
-- Enables + starts the systemd service and adds the current user to the `docker` group; warns that a fresh login/shell is needed for the group membership to apply
+- Enables and starts the systemd service and adds the current user to the `docker` group, warns that a fresh login/shell is needed for the group membership to apply
 - Commands: `install`, `uninstall`, `status`
 
 #### k9s (`k9s/k9s.sh`)
@@ -453,11 +453,13 @@ Builds and installs [GameConqueror/scanmem](https://github.com/scanmem/scanmem) 
 Builds, containerizes, and deploys a [VMaNGOS](https://github.com/vmangos/core)-based vanilla WoW server (1.12.1, client build 5875) from a repack's source, natively for local iteration and as a Docker/K8s deployment for LAN play.
 
 - **No Wine required**, builds native Linux `mangosd`/`realmd` binaries from the repack's own bundled C++ source (not the compiled Windows `.exe`s), using its official Linux Docker build recipe as reference
-- **Database**: always a separate MariaDB container/pod, never bundled into the server image; one DB-bootstrap sequence (schemas → base + anticheat schemas → full world dump → migrations, each routed to its correct database → optional custom content → `realmlist` seeding) is shared between local `configure` and a one-shot K8s Job
+- **Database**: always a separate MariaDB container/pod, never bundled into the server image. One DB-bootstrap sequence (schemas, then base and anticheat schemas, then the full world dump, then migrations each routed to its correct database, then optional custom content, then `realmlist` seeding) is shared between local `configure` and a one-shot K8s Job
+- **Configure** also prompts for the server's own identity and gameplay settings, not just the DB import: realm name, realm zone, game type, player limit, and the progression content patch, plus the message of the day and XP/loot rate multipliers in `mangosd.conf`, and login security settings (brute-force ban rules, email verification, strict version check) in `realmd.conf`
+- **Edit**: opens the already-configured conf files in vim (installed by `setup.sh`) for anything the prompts don't cover. The deploy commands pick up manual edits automatically instead of overwriting them with a fresh copy from the repack
 - **LAN exposure**: host networking throughout (`docker run --network host` / K8s `hostNetwork: true`), since the realm port (3724) is client-hardcoded and falls outside K8s's default NodePort range
-- **Storage** (K8s): StorageClass-backed PVC or hostPath, prompted at deploy time (same pattern as Harbor/LGTM)
-- Commands: `install-deps`, `configure`, `start`, `stop`, `status`, `build-image`, `run-docker`, `run-k8s`
-- Local native build (`start`/`stop`) is Debian/Ubuntu-oriented, the ACE toolkit build dependency isn't packaged for Fedora/RHEL; the Docker path (`build-image`) always builds inside an Ubuntu stage regardless of host OS
+- **Storage** (K8s): StorageClass-backed PVC or hostPath, prompted at deploy time, same pattern as Harbor/LGTM
+- Commands: `install-deps`, `configure`, `start`, `stop`, `status`, `edit`, `build-image`, `run-docker`, `run-k8s`
+- Local native build (`start`/`stop`) is Debian/Ubuntu-oriented. The ACE toolkit build dependency isn't packaged for Fedora/RHEL. The Docker path (`build-image`) always builds inside an Ubuntu stage regardless of host OS
 
 ---
 
