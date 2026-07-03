@@ -33,6 +33,7 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 | `karpenter.sh` | Install and manage Karpenter on any K8s cluster                             |
 | `argo.sh`      | Install and manage Argo Workflows & Argo CD                                 |
 | `akinn_tui.sh` | Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn) |
+| `docker.sh`    | Install, uninstall, and check status of Docker itself                       |
 
 ### Databases
 
@@ -61,6 +62,21 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 | ----------- | ------------ | ------------------------- |
 | `harbor.sh` | K8s          | Harbor container registry |
 | `n8n.sh`    | Docker · K8s | n8n workflow automation   |
+
+### AI / ML
+
+| Script        | Description                                                                |
+| ------------- | --------------------------------------------------------------------------- |
+| `lmstudio.sh` | Install and manage LM Studio (Flatpak) — headless service support included |
+
+### Gaming
+
+| Script               | Targets      | Description                                                        |
+| -------------------- | ------------ | -------------------------------------------------------------------- |
+| `bazzite-utils.sh`   | —            | EA App staged-update fix + Ubisoft Connect offscreen-window fix     |
+| `comfyengine.sh`     | —            | Build & install the ComfyEngine memory scanner from source          |
+| `gameconqueror.sh`   | —            | Build & install GameConqueror/scanmem (GUI memory scanner) from source |
+| `vanilla-wow.sh`     | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server        |
 
 ### Utilities
 
@@ -234,6 +250,15 @@ So run this TUI **on the node** you want to set up (or use "print" and paste the
 
 **Dependencies (operator side):** `gum`, `git`, `curl`. **On the target node:** Ubuntu 18.04+ / Raspberry Pi OS with sudo; `kubeadm`, `containerd`, and the rest are installed by Akinn.
 
+#### Docker Manager (`docker/docker.sh`)
+
+Installs, uninstalls, and reports status of Docker itself — most other scripts in this repo check for Docker but don't install it; this fills that gap.
+
+- Uses each distro's own native Docker packaging (Fedora: `moby-engine` + `docker-cli` + `docker-compose`, no external repo needed; Debian/Ubuntu: `docker.io` + `docker-compose-v2`) rather than Docker's official `curl | sh` convenience script or adding Docker's own apt/dnf repo — no GPG key or repo file to maintain
+- `rpm-ostree` (Bazzite/immutable Fedora Atomic) supported via `_common/deps.sh`'s package helpers — layers the packages and prompts to reboot
+- Enables + starts the systemd service and adds the current user to the `docker` group; warns that a fresh login/shell is needed for the group membership to apply
+- Commands: `install`, `uninstall`, `status`
+
 ---
 
 ### Databases
@@ -372,6 +397,50 @@ Kubernetes only.
 
 ---
 
+### AI / ML
+
+#### LM Studio Manager (`lmstudio/lmstudio.sh`)
+
+Installs and manages [LM Studio](https://lmstudio.ai) (Flatpak) so the `lms` CLI works out of the box, with optional headless operation.
+
+- **Sandbox override**: proactively applies `flatpak override --user --filesystem=home ai.lmstudio.lm-studio` before first launch — prevents an "Invalid passkey for lms CLI client" bug caused by LM Studio's identity/passkey files resolving to a different sandboxed `~/.lmstudio` than the rest of its state
+- **CLI bootstrap**: launches LM Studio against a throwaway headless Xvfb display so the `lms` CLI gets bootstrapped without needing a real desktop session
+- **Headless service** (`service-enable`): sets up a persistent Xvfb + `systemd --user` service pair so LM Studio can run headless and start at boot without anyone logged in (via `loginctl` linger)
+- Commands: `install`, `service-enable`, `service-disable`, `status`, `uninstall`
+
+---
+
+### Gaming
+
+#### Bazzite Utils (`bazzite-utils/bazzite-utils.sh`)
+
+Grab-bag of gaming-on-Linux workaround utilities, named after [Bazzite](https://bazzite.gg/) (the primary target) but works on any dnf/apt/rpm-ostree host.
+
+- **`ea-fix`** — copies EA App's staged self-update into place under Wine/Proton (EA's own updater frequently stages an update it never applies). The Wine/Proton prefix path is prompted once and persisted.
+- **`ubisoft-rws`** — finds Ubisoft Connect windows that render off-screen or invisible under Wine/Proton and repositions/raises them
+- Commands: `ea-fix`, `ubisoft-rws`
+
+#### ComfyEngine (`comfyengine/comfyengine.sh`)
+
+Builds and installs [ComfyEngine](https://github.com/kashithecomfy/ComfyEngine) (a Linux-native memory scanner) from source, with a desktop shortcut. Dependencies (`git`, `cmake`, `g++`) are checked/installed automatically. Commands: `install`, `uninstall`, `status`.
+
+#### GameConqueror (`gameconqueror/gameconqueror.sh`)
+
+Builds and installs [GameConqueror/scanmem](https://github.com/scanmem/scanmem) (a GUI memory scanner) from source, with a desktop shortcut. Same dependency-checking pattern as ComfyEngine. Commands: `install`, `uninstall`, `status`.
+
+#### Vanilla WoW Server (`vanilla-wow/vanilla-wow.sh`)
+
+Builds, containerizes, and deploys a [VMaNGOS](https://github.com/vmangos/core)-based vanilla WoW server (1.12.1, client build 5875) from a repack's source, natively for local iteration and as a Docker/K8s deployment for LAN play.
+
+- **No Wine required** — builds native Linux `mangosd`/`realmd` binaries from the repack's own bundled C++ source (not the compiled Windows `.exe`s), using its official Linux Docker build recipe as reference
+- **Database**: always a separate MariaDB container/pod, never bundled into the server image; one DB-bootstrap sequence (schemas → base + anticheat schemas → full world dump → migrations, each routed to its correct database → optional custom content → `realmlist` seeding) is shared between local `configure` and a one-shot K8s Job
+- **LAN exposure**: host networking throughout (`docker run --network host` / K8s `hostNetwork: true`), since the realm port (3724) is client-hardcoded and falls outside K8s's default NodePort range
+- **Storage** (K8s): StorageClass-backed PVC or hostPath, prompted at deploy time (same pattern as Harbor/LGTM)
+- Commands: `install-deps`, `configure`, `start`, `stop`, `status`, `build-image`, `run-docker`, `run-k8s`
+- Local native build (`start`/`stop`) is Debian/Ubuntu-oriented — the ACE toolkit build dependency isn't packaged for Fedora/RHEL; the Docker path (`build-image`) always builds inside an Ubuntu stage regardless of host OS
+
+---
+
 ### Utilities
 
 #### Starlight Documentation (`starlight/starlight_astro.sh`)
@@ -441,8 +510,10 @@ scomp-link/
     ├── _common/                       # [Shared] Sourced by app scripts — not run directly
     │   ├── cluster.sh                 # Deployment target detection (docker/kind/k8s)
     │   ├── ui.sh                      # gum display helpers (header, info, warn, …)
-    │   ├── deps.sh                    # helm/kubectl checks and repo management
-    │   ├── portforward.sh             # Port-forward pid-file helpers
+    │   ├── deps.sh                    # helm/kubectl/docker checks, repo management,
+    │   │                              #   dnf/apt/rpm-ostree package install helpers
+    │   ├── portforward.sh             # Port-forward pid-file helpers (also reused for
+    │   │                              #   tracking arbitrary background processes)
     │   └── gh_releases.sh             # GitHub release fetching helpers
     │
     ├── # Infrastructure
@@ -454,6 +525,8 @@ scomp-link/
     │   └── karpenter.sh              # Karpenter setup (any K8s cluster)
     ├── kind/
     │   └── kind.sh                   # Kind cluster manager
+    ├── docker/
+    │   └── docker.sh                 # Install/uninstall/status for Docker itself
     │
     ├── # Databases
     ├── postgres/
@@ -487,6 +560,21 @@ scomp-link/
     │   └── harbor.sh                 # Harbor container registry (K8s only)
     ├── n8n/
     │   └── n8n.sh                    # n8n workflow automation (Docker · K8s)
+    │
+    ├── # AI / ML
+    ├── lmstudio/
+    │   └── lmstudio.sh               # LM Studio install/manage, headless service
+    │
+    ├── # Gaming
+    ├── bazzite-utils/
+    │   └── bazzite-utils.sh          # EA App / Ubisoft Connect fixes
+    ├── comfyengine/
+    │   └── comfyengine.sh            # ComfyEngine memory scanner (build from source)
+    ├── gameconqueror/
+    │   └── gameconqueror.sh          # GameConqueror/scanmem (build from source)
+    ├── vanilla-wow/
+    │   ├── vanilla-wow.sh            # VMaNGOS server build/deploy (Docker · K8s)
+    │   └── templates/                # Dockerfile, entrypoint.sh, k8s manifests
     │
     ├── # Utilities
     ├── starlight/
