@@ -651,7 +651,23 @@ cmd_start() {
     if pf_is_running "$mangosd_pf"; then
         warn "mangosd already running (pid file present)."
     else
-        (cd "${INSTALL_DIR}/bin" && nohup ./mangosd >> "${INSTALL_DIR}/logs/mangosd.out" 2>&1 < <(sleep infinity) &
+        # mangosd gets a real FIFO instead of the sleep-infinity trick, so
+        # 'create-account' can still reach its console. Unlike the container
+        # path (where entrypoint.sh's own long-lived PID 1 process holds the
+        # FIFO's write end open for free), this command returns immediately
+        # after backgrounding mangosd, so nothing would otherwise keep a
+        # writer attached — the FIFO would report EOF to mangosd on its next
+        # read and trigger the same implicit-quit bug this whole thing exists
+        # to avoid. A small detached 'sleep infinity' holds fd 9 open on the
+        # FIFO for as long as mangosd itself is meant to run; 'stop' kills it
+        # alongside mangosd.
+        local mangosd_fifo="${INSTALL_DIR}/bin/mangosd.stdin"
+        rm -f "$mangosd_fifo"
+        mkfifo "$mangosd_fifo"
+        ( exec 9<>"$mangosd_fifo"; exec sleep infinity ) &
+        echo "$!" > "${PF_DIR}/mangosd-stdin-holder.pid"
+
+        (cd "${INSTALL_DIR}/bin" && nohup ./mangosd >> "${INSTALL_DIR}/logs/mangosd.out" 2>&1 < "$mangosd_fifo" &
          echo "$!:${WORLD_PORT}" > "$mangosd_pf")
         sleep 1
         pf_is_running "$mangosd_pf" && success "mangosd started (port ${WORLD_PORT})." || warn "mangosd did not start — check ${INSTALL_DIR}/logs/mangosd.out"
@@ -662,11 +678,21 @@ cmd_start() {
 
 cmd_stop() {
     header "vanilla-wow — Stop (local)"
+    _settings
 
     local realmd_pf="${PF_DIR}/realmd.pid" mangosd_pf="${PF_DIR}/mangosd.pid"
+    local holder_pf="${PF_DIR}/mangosd-stdin-holder.pid"
 
     if pf_is_running "$mangosd_pf"; then pf_stop "$mangosd_pf"; else info "mangosd not running."; fi
     if pf_is_running "$realmd_pf";  then pf_stop "$realmd_pf";  else info "realmd not running.";  fi
+
+    # Companion 'sleep infinity' that kept mangosd's console FIFO writable
+    # (see 'start') — no longer needed once mangosd itself is stopped.
+    if [[ -f "$holder_pf" ]]; then
+        kill "$(cat "$holder_pf")" 2>/dev/null || true
+        rm -f "$holder_pf"
+    fi
+    rm -f "${INSTALL_DIR}/bin/mangosd.stdin"
 }
 
 cmd_status() {
@@ -689,6 +715,113 @@ cmd_status() {
 
     gum style --foreground "${CYAN}" --bold "── Docker image"
     docker image inspect "$IMAGE_TAG" --format='{{.Id}}' 2>/dev/null || info "Not built."
+}
+
+# -----------------------------------------------------------------------------
+# create-account — accounts live in the realmd DB with SRP6 verifier/salt
+# columns, not a hash that's safe to compute and INSERT by hand, so this
+# goes through mangosd's own console command instead ('account create',
+# same as the repack's own README instructs), via the FIFO set up in
+# 'start'/entrypoint.sh. Auto-detects which deployment is actually running
+# (local/docker/k8s); asks if more than one is.
+# -----------------------------------------------------------------------------
+
+# _send_console_cmd <local|docker|k8s> <single console command line>
+# Globals used for the k8s case: K8S_CTX_FLAGS, K8S_POD (set by the caller).
+_send_console_cmd() {
+    local tgt="$1" line="$2"
+    case "$tgt" in
+        local)
+            local fifo="${INSTALL_DIR}/bin/mangosd.stdin"
+            if [[ ! -p "$fifo" ]]; then
+                warn "mangosd's console FIFO isn't there (${fifo}). Was it started via this script's 'start'?"
+                return 1
+            fi
+            printf '%s\n' "$line" > "$fifo"
+            ;;
+        docker)
+            printf '%s\n' "$line" | docker exec -i "$SERVER_CONTAINER_NAME" sh -c "cat > /app/mangosd.stdin" \
+                || { warn "Failed to reach the container's console FIFO."; return 1; }
+            ;;
+        k8s)
+            printf '%s\n' "$line" | kubectl $K8S_CTX_FLAGS exec -i -n "$K8S_NAMESPACE" "$K8S_POD" -- sh -c "cat > /app/mangosd.stdin" \
+                || { warn "Failed to reach the pod's console FIFO."; return 1; }
+            ;;
+    esac
+}
+
+cmd_create_account() {
+    header "vanilla-wow — Create account"
+    _settings
+
+    local -a targets=()
+    pf_is_running "${PF_DIR}/mangosd.pid" && targets+=("local")
+    [[ "$(docker inspect --type container "$SERVER_CONTAINER_NAME" --format='{{.State.Status}}' 2>/dev/null)" == "running" ]] \
+        && targets+=("docker")
+    if command -v kubectl &>/dev/null; then
+        kubectl get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-server --no-headers 2>/dev/null | grep -q Running \
+            && targets+=("k8s")
+    fi
+
+    if [[ ${#targets[@]} -eq 0 ]]; then
+        warn "mangosd doesn't appear to be running anywhere (checked local, docker, k8s). Start it first."
+        return 1
+    fi
+
+    local target="${targets[0]}"
+    if [[ ${#targets[@]} -gt 1 ]]; then
+        target=$(printf '%s\n' "${targets[@]}" | gum choose --header "mangosd is running in more than one place. Which one?") || true
+        [[ -z "$target" ]] && { info "Cancelled."; return 1; }
+    fi
+
+    local user_input pass_input
+    user_input=$(gum input --placeholder "username" --header "New account username:") || true
+    [[ -z "$user_input" ]] && { info "Cancelled."; return 1; }
+
+    pass_input=$(gum input --password --placeholder "password" --header "New account password:") || true
+    [[ -z "$pass_input" ]] && { info "Cancelled."; return 1; }
+
+    local gm_choice gm_num=0
+    gm_choice=$(printf '%s\n' "Player (no GM powers)" "Moderator" "Gamemaster" "Admin (full GM)" \
+        | gum choose --header "Account access level:") || true
+    case "$gm_choice" in
+        Moderator*)  gm_num=1 ;;
+        Gamemaster*) gm_num=2 ;;
+        Admin*)      gm_num=3 ;;
+    esac
+
+    # k8s only: resolve once, reused by both _send_console_cmd calls below —
+    # K8S_CTX_FLAGS/K8S_POD are globals _send_console_cmd reads for the k8s case.
+    K8S_CTX_FLAGS="" K8S_POD=""
+    if [[ "$target" == "k8s" ]]; then
+        K8S_CTX_FLAGS="$(kubectl_context_flag)"
+        K8S_POD=$(kubectl $K8S_CTX_FLAGS get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-server -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [[ -z "$K8S_POD" ]]; then
+            warn "No running vanilla-wow-server pod found in namespace ${K8S_NAMESPACE}."
+            return 1
+        fi
+    fi
+
+    # 'account create' and 'account set gmlevel' can't be sent as one burst:
+    # live-tested, sending both in a single write reliably fails the gmlevel
+    # half with "Account not exist" — the newly created account isn't visible
+    # to the very next console command yet (an in-memory cache/registration
+    # lag, not a DB write issue, the account itself is created correctly
+    # either way). A few seconds between the two is enough.
+    _send_console_cmd "$target" "account create ${user_input} ${pass_input}" || return 1
+
+    if [[ "$gm_num" != "0" ]]; then
+        sleep 3
+        _send_console_cmd "$target" "account set gmlevel ${user_input} ${gm_num}" || return 1
+    fi
+
+    case "$target" in
+        local)  info "Check ${INSTALL_DIR}/logs/mangosd.out to confirm." ;;
+        docker) info "Check: docker logs ${SERVER_CONTAINER_NAME}" ;;
+        k8s)    info "Check: kubectl -n ${K8S_NAMESPACE} logs ${K8S_POD}" ;;
+    esac
+
+    success "Account '${user_input}' created (GM level: ${gm_num})."
 }
 
 # -----------------------------------------------------------------------------
@@ -1013,12 +1146,13 @@ main() {
             configure)    cmd_configure ;;
             start)        cmd_start ;;
             stop)         cmd_stop ;;
-            status)       cmd_status ;;
-            edit)         cmd_edit ;;
-            build-image)  cmd_build_image ;;
-            run-docker)   cmd_run_docker ;;
-            run-k8s)      cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|build-image|run-docker|run-k8s)" ;;
+            status)         cmd_status ;;
+            edit)           cmd_edit ;;
+            create-account) cmd_create_account ;;
+            build-image)    cmd_build_image ;;
+            run-docker)     cmd_run_docker ;;
+            run-k8s)        cmd_run_k8s ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1027,7 +1161,7 @@ main() {
         header "Vanilla WoW (VMaNGOS) Manager"
         local action
         action=$(gum choose \
-            "install-deps" "configure" "start" "stop" "status" "edit" \
+            "install-deps" "configure" "start" "stop" "status" "edit" "create-account" \
             "build-image" "run-docker" "run-k8s" "quit" \
             --header "Choose an action:") || true
 
@@ -1037,15 +1171,16 @@ main() {
         # (e.g. cmd_edit's soft-fail warn+return) would otherwise trigger
         # errexit and kill the whole script instead of returning to this menu.
         case "$action" in
-            install-deps) cmd_install_deps || true ;;
-            configure)    cmd_configure    || true ;;
-            start)        cmd_start        || true ;;
-            stop)         cmd_stop         || true ;;
-            status)       cmd_status       || true ;;
-            edit)         cmd_edit         || true ;;
-            build-image)  cmd_build_image  || true ;;
-            run-docker)   cmd_run_docker   || true ;;
-            run-k8s)      cmd_run_k8s      || true ;;
+            install-deps)   cmd_install_deps   || true ;;
+            configure)      cmd_configure      || true ;;
+            start)          cmd_start          || true ;;
+            stop)           cmd_stop           || true ;;
+            status)         cmd_status         || true ;;
+            edit)           cmd_edit           || true ;;
+            create-account) cmd_create_account || true ;;
+            build-image)    cmd_build_image    || true ;;
+            run-docker)     cmd_run_docker     || true ;;
+            run-k8s)        cmd_run_k8s        || true ;;
         esac
 
         echo ""
