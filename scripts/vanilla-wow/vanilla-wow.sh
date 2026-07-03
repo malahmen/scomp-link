@@ -351,6 +351,13 @@ _render_mangosd_conf() {
     local src="$1" dst="$2" data_dir="$3" logs_dir="$4"
     local motd_escaped; motd_escaped="$(_sed_escape "$MOTD")"
     cp "$src" "$dst"
+    # The repack's conf files ship with Windows CRLF line endings (they were
+    # distributed alongside .exe binaries). Left as-is, sed's substitutions
+    # below strip the trailing \r only on the handful of lines they touch
+    # (matched by .* and not present in the replacement) while every other
+    # line keeps its \r — a mixed-line-ending file, which shows up as a wall
+    # of ^M in vim/cmd_edit and is generally fragile. Normalize to LF first.
+    sed -i 's/\r$//' "$dst"
     sed -i \
         -e "s|^DataDir[[:space:]]*=.*|DataDir = \"${data_dir}\"|" \
         -e "s|^LogsDir[[:space:]]*=.*|LogsDir = \"${logs_dir}\"|" \
@@ -385,6 +392,9 @@ _render_mangosd_conf() {
 _render_realmd_conf() {
     local src="$1" dst="$2" logs_dir="$3"
     cp "$src" "$dst"
+    # See the matching comment in _render_mangosd_conf — same CRLF-source,
+    # mixed-line-ending issue applies here too.
+    sed -i 's/\r$//' "$dst"
     sed -i \
         -e "s|^LogsDir[[:space:]]*=.*|LogsDir = \"${logs_dir}\"|" \
         -e "s|^LoginDatabaseInfo[[:space:]]*=.*|LoginDatabaseInfo = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};realmd\"|" \
