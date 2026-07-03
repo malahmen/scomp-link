@@ -346,9 +346,9 @@ _ensure_realmlist() {
 # handful need to change for a containerized/local deployment).
 # -----------------------------------------------------------------------------
 
-# _render_mangosd_conf <src> <dst> <data_dir> <logs_dir>
+# _render_mangosd_conf <src> <dst> <data_dir> <logs_dir> <warden_dir>
 _render_mangosd_conf() {
-    local src="$1" dst="$2" data_dir="$3" logs_dir="$4"
+    local src="$1" dst="$2" data_dir="$3" logs_dir="$4" warden_dir="$5"
     local motd_escaped; motd_escaped="$(_sed_escape "$MOTD")"
     cp "$src" "$dst"
     # The repack's conf files ship with Windows CRLF line endings (they were
@@ -361,6 +361,7 @@ _render_mangosd_conf() {
     sed -i \
         -e "s|^DataDir[[:space:]]*=.*|DataDir = \"${data_dir}\"|" \
         -e "s|^LogsDir[[:space:]]*=.*|LogsDir = \"${logs_dir}\"|" \
+        -e "s|^Warden\.ModuleDir[[:space:]]*=.*|Warden.ModuleDir             = \"${warden_dir}\"|" \
         -e "s|^LoginDatabase\.Info[[:space:]]*=.*|LoginDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};realmd\"|" \
         -e "s|^WorldDatabase\.Info[[:space:]]*=.*|WorldDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};mangos\"|" \
         -e "s|^CharacterDatabase\.Info[[:space:]]*=.*|CharacterDatabase.Info          = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};characters\"|" \
@@ -565,7 +566,9 @@ cmd_configure() {
 
     info "Generating local conf files (native start/stop path)..."
     mkdir -p "$INSTALL_DIR"
-    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.conf" "${INSTALL_DIR}/data" "${INSTALL_DIR}/logs"
+    # Warden.ModuleDir points straight at the repack's own warden_modules —
+    # local native runs directly against SOURCE_DIR, no copy/mount needed.
+    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.conf" "${INSTALL_DIR}/data" "${INSTALL_DIR}/logs" "${SOURCE_DIR}/warden_modules"
     _render_realmd_conf  "${SOURCE_DIR}/realmd.conf"  "${ETC_DIR}/realmd.conf"  "${INSTALL_DIR}/logs"
     success "Conf files written to ${ETC_DIR}."
 
@@ -1020,6 +1023,20 @@ cmd_build_image() {
     cp "${TEMPLATES_DIR}/Dockerfile"    "${IMAGE_BUILD_CONTEXT}/Dockerfile"
     cp "${TEMPLATES_DIR}/entrypoint.sh" "${IMAGE_BUILD_CONTEXT}/entrypoint.sh"
 
+    # Warden anti-cheat modules — small and static like the binaries, baked
+    # into the image (see the Dockerfile's own note). Without them, Warden
+    # still runs (it's enabled by default in the repack's stock conf) but
+    # has nothing to actually scan with, which surfaces as players getting
+    # kicked for "Client response timeout" during normal play, not just a
+    # log warning at startup. Not every repack/fork ships this directory,
+    # so an empty one here is a soft warning, not a hard failure.
+    if [[ -d "${SOURCE_DIR}/warden_modules" ]]; then
+        cp -r "${SOURCE_DIR}/warden_modules" "${IMAGE_BUILD_CONTEXT}/warden_modules"
+    else
+        warn "No warden_modules/ found under SOURCE_DIR — Warden anti-cheat will run with no modules loaded, which can kick players unexpectedly. Building an empty directory instead."
+        mkdir -p "${IMAGE_BUILD_CONTEXT}/warden_modules"
+    fi
+
     info "Building image '${IMAGE_TAG}' (client build ${CLIENT_BUILD})..."
     docker build \
         --build-arg "SUPPORTED_CLIENT_BUILD=${CLIENT_BUILD}" \
@@ -1054,7 +1071,9 @@ cmd_run_docker() {
         docker rm -f "$SERVER_CONTAINER_NAME" &>/dev/null || true
     fi
 
-    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.docker.conf" "/app/data" "/app/logs"
+    # /app/bin/warden_modules — baked into the image at build time (see
+    # cmd_build_image/Dockerfile), mangosd's cwd is /app/bin at runtime.
+    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.docker.conf" "/app/data" "/app/logs" "/app/bin/warden_modules"
     _render_realmd_conf  "$(_effective_conf_source realmd.conf)"  "${ETC_DIR}/realmd.docker.conf"  "/app/logs"
 
     # :Z (private SELinux relabel) is required on Fedora/RHEL hosts with
@@ -1245,7 +1264,8 @@ cmd_run_k8s() {
     # as an inline YAML string.
     local saved_db_host="$DB_HOST"
     DB_HOST="mariadb.${K8S_NAMESPACE}.svc.cluster.local"
-    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.k8s.conf" "/app/data" "/app/logs"
+    # /app/bin/warden_modules — same image as run-docker, same baked-in path.
+    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.k8s.conf" "/app/data" "/app/logs" "/app/bin/warden_modules"
     _render_realmd_conf  "$(_effective_conf_source realmd.conf)"  "${ETC_DIR}/realmd.k8s.conf"  "/app/logs"
     DB_HOST="$saved_db_host"
 

@@ -4,7 +4,10 @@
 #
 # Data (maps/vmaps/mmaps) and the database are never baked into this image —
 # they're mounted at runtime (see entrypoint.sh and the vanilla-wow.sh
-# run-docker/run-k8s commands).
+# run-docker/run-k8s commands). warden_modules is the exception: it's small
+# (a few MB) and static like the compiled binaries themselves, not large or
+# mutable like the game data, so it's simplest to just bake it in rather
+# than add a third runtime mount/storage-source choice for it.
 
 ARG SUPPORTED_CLIENT_BUILD=5875
 
@@ -60,6 +63,7 @@ WORKDIR /app
 
 COPY --from=builder /out/bin/mangosd /app/bin/mangosd
 COPY --from=builder /out/bin/realmd  /app/bin/realmd
+COPY warden_modules /app/bin/warden_modules
 COPY entrypoint.sh /app/entrypoint.sh
 # mangosd/realmd have their config-file path baked in at compile time from
 # CMAKE_INSTALL_PREFIX (/out above) — they always look for
