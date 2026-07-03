@@ -34,9 +34,9 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 | `argo.sh`      | Install and manage Argo Workflows & Argo CD                                 |
 | `akinn_tui.sh` | Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn) |
 | `docker.sh`    | Install, uninstall, and check status of Docker itself                       |
-| `k9s.sh`       | Install and launch k9s — terminal UI for Kubernetes                         |
-| `lazydocker.sh`| Install and launch lazydocker — terminal UI for Docker                      |
-| `lazygit.sh`   | Install and launch lazygit — terminal UI for git                            |
+| `k9s.sh`       | Install and launch k9s, terminal UI for Kubernetes                         |
+| `lazydocker.sh`| Install and launch lazydocker, terminal UI for Docker                      |
+| `lazygit.sh`   | Install and launch lazygit, terminal UI for git                            |
 
 ### Databases
 
@@ -70,15 +70,15 @@ Scomp-Link comes with several ready-to-use scripts organized by category:
 
 | Script        | Description                                                                |
 | ------------- | --------------------------------------------------------------------------- |
-| `lmstudio.sh` | Install and manage LM Studio (Flatpak) — headless service support included |
+| `lmstudio.sh` | Install and manage LM Studio (Flatpak), headless service support included |
 
 ### Gaming
 
 | Script               | Targets      | Description                                                        |
 | -------------------- | ------------ | -------------------------------------------------------------------- |
-| `bazzite-utils.sh`   | —            | EA App staged-update fix + Ubisoft Connect offscreen-window fix     |
-| `comfyengine.sh`     | —            | Build & install the ComfyEngine memory scanner from source          |
-| `gameconqueror.sh`   | —            | Build & install GameConqueror/scanmem (GUI memory scanner) from source |
+| `bazzite-utils.sh`   | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix     |
+| `comfyengine.sh`     | -            | Build & install the ComfyEngine memory scanner from source          |
+| `gameconqueror.sh`   | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source |
 | `vanilla-wow.sh`     | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server        |
 
 ### Utilities
@@ -239,7 +239,7 @@ Install and manage Argo tools on your Kubernetes clusters:
 
 - Install from GitHub releases, retrieve admin password, port-forward with HTTPS, clean uninstall
 
-#### Akinn — Kubernetes Node Installer (`akinn/akinn_tui.sh`)
+#### Akinn - Kubernetes Node Installer (`akinn/akinn_tui.sh`)
 
 gum front-end for **Akinn** (Automated Kubernetes Installation for New Nodes), a standalone POSIX provisioner that turns a fresh Ubuntu / Raspberry Pi machine into a Kubernetes master or worker.
 Unlike every other script here, Akinn provisions **the machine it runs on** (as root, via `kubeadm`/`containerd`) rather than talking to a remote Docker/k8s target.
@@ -255,29 +255,29 @@ So run this TUI **on the node** you want to set up (or use "print" and paste the
 
 #### Docker Manager (`docker/docker.sh`)
 
-Installs, uninstalls, and reports status of Docker itself — most other scripts in this repo check for Docker but don't install it; this fills that gap.
+Installs, uninstalls, and reports status of Docker itself since most other scripts in this repo check for Docker but don't install it; this fills that gap.
 
-- Uses each distro's own native Docker packaging (Fedora: `moby-engine` + `docker-cli` + `docker-compose`, no external repo needed; Debian/Ubuntu: `docker.io` + `docker-compose-v2`) rather than Docker's official `curl | sh` convenience script or adding Docker's own apt/dnf repo — no GPG key or repo file to maintain
-- `rpm-ostree` (Bazzite/immutable Fedora Atomic) supported via `_common/deps.sh`'s package helpers — layers the packages and prompts to reboot
+- Uses each distro's own native Docker packaging (Fedora: `moby-engine` + `docker-cli` + `docker-compose`, no external repo needed; Debian/Ubuntu: `docker.io` + `docker-compose-v2`) rather than Docker's official `curl | sh` convenience script or adding Docker's own apt/dnf repo, no GPG key or repo file to maintain
+- `rpm-ostree` (Bazzite/immutable Fedora Atomic) supported via `_common/deps.sh`'s package helpers, layers the packages and prompts to reboot
 - Enables + starts the systemd service and adds the current user to the `docker` group; warns that a fresh login/shell is needed for the group membership to apply
 - Commands: `install`, `uninstall`, `status`
 
 #### k9s (`k9s/k9s.sh`)
 
-Install and launch [k9s](https://k9scli.io) — a terminal UI for Kubernetes.
+Install and launch [k9s](https://k9scli.io) - a terminal UI for Kubernetes.
 
-- No config file of its own — k9s reads the ambient kubeconfig exactly like `kubectl` does
-- `launch` picks a context explicitly (via k9s's own `--context` flag) instead of silently relying on kubectl's `current-context` — auto-selects if there's only one context, otherwise prompts. Never mutates your ambient kubectl state.
+- No config file of its own, k9s reads the ambient kubeconfig exactly like `kubectl` does
+- `launch` picks a context explicitly (via k9s's own `--context` flag) instead of silently relying on kubectl's `current-context`, auto-selects if there's only one context, otherwise prompts. Never mutates your ambient kubectl state.
 - Install/uninstall via `mise use --global` / `mise uninstall --all` (same pattern `setup.sh` uses for `gum`)
 - Commands: `install`, `uninstall`, `status`, `launch`
 
 #### lazydocker (`lazydocker/lazydocker.sh`)
 
-Install and launch [lazydocker](https://github.com/jesseduffield/lazydocker) — a terminal UI for Docker and Docker Compose. No config needed — it just talks to whatever Docker daemon is reachable. Commands: `install`, `uninstall`, `status`, `launch`.
+Install and launch [lazydocker](https://github.com/jesseduffield/lazydocker), a terminal UI for Docker and Docker Compose. No config needed since it just talks to whatever Docker daemon is reachable. Commands: `install`, `uninstall`, `status`, `launch`.
 
 #### lazygit (`lazygit/lazygit.sh`)
 
-Install and launch [lazygit](https://github.com/jesseduffield/lazygit) — a terminal UI for git. No config needed — operates on the current directory's git repo (prompts for a path if the current directory isn't one), same as the `git` CLI itself. Commands: `install`, `uninstall`, `status`, `launch`.
+Install and launch [lazygit](https://github.com/jesseduffield/lazygit), a terminal UI for git. No config needed, operates on the current directory's git repo (prompts for a path if the current directory isn't one), same as the `git` CLI itself. Commands: `install`, `uninstall`, `status`, `launch`.
 
 ---
 
@@ -377,7 +377,7 @@ Installs and manages the full Grafana observability stack in a single script:
 
 #### Dozzle (`dozzle/dozzle.sh`)
 
-Lightweight real-time log viewer for Docker / Kubernetes / kind — installs from rendered manifests (no Helm dependency).
+Lightweight real-time log viewer for Docker / Kubernetes / kind, installs from rendered manifests (no Helm dependency).
 
 - Docker image: `amir20/dozzle` · Port: `8080`
 - **Targets**: Docker (compose) or kind/k8s (rendered manifests applied directly)
@@ -386,7 +386,7 @@ Lightweight real-time log viewer for Docker / Kubernetes / kind — installs fro
 - **Auth**: optional bcrypt-hashed users via Dozzle's built-in `--auth-provider simple` (hash generation runs `docker run amir20/dozzle generate` so Docker must be reachable when enabling auth)
 - **Readiness / liveness probes** on `/healthz` to survive kind control-plane warm-up
 - **Port-forward** auto-reconnects across pod restarts; `stop` tears it down with the deployment
-- **Import**: adopt an existing Dozzle install that was deployed outside this script (docker container or k8s Service named `dozzle`). Detected automatically — if you run any command without a saved config, the script offers to adopt the existing install inline. Marks the conf with `INSTALL_METHOD=external` so `uninstall` double-confirms before acting on something it didn't deploy.
+- **Import**: adopt an existing Dozzle install that was deployed outside this script (docker container or k8s Service named `dozzle`). Detected automatically, if you run any command without a saved config, the script offers to adopt the existing install inline. Marks the conf with `INSTALL_METHOD=external` so `uninstall` double-confirms before acting on something it didn't deploy.
 - Commands: `install`, `import`, `uninstall`, `status`, `start`, `stop`, `port-forward`
 
 ---
@@ -423,7 +423,7 @@ Kubernetes only.
 
 Installs and manages [LM Studio](https://lmstudio.ai) (Flatpak) so the `lms` CLI works out of the box, with optional headless operation.
 
-- **Sandbox override**: proactively applies `flatpak override --user --filesystem=home ai.lmstudio.lm-studio` before first launch — prevents an "Invalid passkey for lms CLI client" bug caused by LM Studio's identity/passkey files resolving to a different sandboxed `~/.lmstudio` than the rest of its state
+- **Sandbox override**: proactively applies `flatpak override --user --filesystem=home ai.lmstudio.lm-studio` before first launch, prevents an "Invalid passkey for lms CLI client" bug caused by LM Studio's identity/passkey files resolving to a different sandboxed `~/.lmstudio` than the rest of its state
 - **CLI bootstrap**: launches LM Studio against a throwaway headless Xvfb display so the `lms` CLI gets bootstrapped without needing a real desktop session
 - **Headless service** (`service-enable`): sets up a persistent Xvfb + `systemd --user` service pair so LM Studio can run headless and start at boot without anyone logged in (via `loginctl` linger)
 - Commands: `install`, `service-enable`, `service-disable`, `status`, `uninstall`
@@ -436,8 +436,8 @@ Installs and manages [LM Studio](https://lmstudio.ai) (Flatpak) so the `lms` CLI
 
 Grab-bag of gaming-on-Linux workaround utilities, named after [Bazzite](https://bazzite.gg/) (the primary target) but works on any dnf/apt/rpm-ostree host.
 
-- **`ea-fix`** — copies EA App's staged self-update into place under Wine/Proton (EA's own updater frequently stages an update it never applies). The Wine/Proton prefix path is prompted once and persisted.
-- **`ubisoft-rws`** — finds Ubisoft Connect windows that render off-screen or invisible under Wine/Proton and repositions/raises them
+- **`ea-fix`**: copies EA App's staged self-update into place under Wine/Proton (EA's own updater frequently stages an update it never applies). The Wine/Proton prefix path is prompted once and persisted.
+- **`ubisoft-rws`**: finds Ubisoft Connect windows that render off-screen or invisible under Wine/Proton and repositions/raises them
 - Commands: `ea-fix`, `ubisoft-rws`
 
 #### ComfyEngine (`comfyengine/comfyengine.sh`)
@@ -452,12 +452,12 @@ Builds and installs [GameConqueror/scanmem](https://github.com/scanmem/scanmem) 
 
 Builds, containerizes, and deploys a [VMaNGOS](https://github.com/vmangos/core)-based vanilla WoW server (1.12.1, client build 5875) from a repack's source, natively for local iteration and as a Docker/K8s deployment for LAN play.
 
-- **No Wine required** — builds native Linux `mangosd`/`realmd` binaries from the repack's own bundled C++ source (not the compiled Windows `.exe`s), using its official Linux Docker build recipe as reference
+- **No Wine required**, builds native Linux `mangosd`/`realmd` binaries from the repack's own bundled C++ source (not the compiled Windows `.exe`s), using its official Linux Docker build recipe as reference
 - **Database**: always a separate MariaDB container/pod, never bundled into the server image; one DB-bootstrap sequence (schemas → base + anticheat schemas → full world dump → migrations, each routed to its correct database → optional custom content → `realmlist` seeding) is shared between local `configure` and a one-shot K8s Job
 - **LAN exposure**: host networking throughout (`docker run --network host` / K8s `hostNetwork: true`), since the realm port (3724) is client-hardcoded and falls outside K8s's default NodePort range
 - **Storage** (K8s): StorageClass-backed PVC or hostPath, prompted at deploy time (same pattern as Harbor/LGTM)
 - Commands: `install-deps`, `configure`, `start`, `stop`, `status`, `build-image`, `run-docker`, `run-k8s`
-- Local native build (`start`/`stop`) is Debian/Ubuntu-oriented — the ACE toolkit build dependency isn't packaged for Fedora/RHEL; the Docker path (`build-image`) always builds inside an Ubuntu stage regardless of host OS
+- Local native build (`start`/`stop`) is Debian/Ubuntu-oriented, the ACE toolkit build dependency isn't packaged for Fedora/RHEL; the Docker path (`build-image`) always builds inside an Ubuntu stage regardless of host OS
 
 ---
 
@@ -480,14 +480,14 @@ Manage SSH connection profiles directly in `~/.ssh/config`. The script owns a de
 
 **Actions:**
 
-- **add** — create a profile, generate a new `ed25519` / `rsa-4096` key (or reuse an existing one), and copy the public key to the clipboard
-- **import** — pull existing `Host` entries from outside the managed section into management, optionally removing the originals
-- **remove** — delete a profile (optionally its key files too)
-- **view** — show profile details and the public key
-- **edit** — change host / hostname / user / port / key path
-- **use** — wire a profile to the current git repo (rewrites `origin` URL, optionally sets local `user.name` / `user.email`)
-- **test** — verify the SSH connection for a profile (single host or all hosts)
-- **list** — show all managed profiles
+- **add**: create a profile, generate a new `ed25519` / `rsa-4096` key (or reuse an existing one), and copy the public key to the clipboard
+- **import**: pull existing `Host` entries from outside the managed section into management, optionally removing the originals
+- **remove**: delete a profile (optionally its key files too)
+- **view**: show profile details and the public key
+- **edit**: change host / hostname / user / port / key path
+- **use**: wire a profile to the current git repo (rewrites `origin` URL, optionally sets local `user.name` / `user.email`)
+- **test**: verify the SSH connection for a profile (single host or all hosts)
+- **list**: show all managed profiles
 
 **Dependencies:** `jq` (prompted on first run if missing).
 
@@ -527,7 +527,7 @@ scomp-link/
 │
 └── scripts/                          # All runnable scripts live here
     │
-    ├── _common/                       # [Shared] Sourced by app scripts — not run directly
+    ├── _common/                       # [Shared] Sourced by app scripts, not run directly
     │   ├── cluster.sh                 # Deployment target detection (docker/kind/k8s)
     │   ├── ui.sh                      # gum display helpers (header, info, warn, …)
     │   ├── deps.sh                    # helm/kubectl/docker checks, repo management,
