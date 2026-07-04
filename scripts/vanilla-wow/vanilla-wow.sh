@@ -142,6 +142,10 @@ _settings() {
     WRONG_PASS_BAN_TYPE="$(cfg_default WRONG_PASS_BAN_TYPE 0)"
     REQ_EMAIL_VERIFICATION="$(cfg_default REQ_EMAIL_VERIFICATION 0)"
     STRICT_VERSION_CHECK="$(cfg_default STRICT_VERSION_CHECK 1)"
+    # Warden anti-cheat — matches the repack's own stock default (enabled).
+    # Controls both Warden.WinEnabled/Warden.OSXEnabled together, a private
+    # LAN server has no real use for per-platform cheat detection control.
+    WARDEN_ENABLED="$(cfg_default WARDEN_ENABLED 1)"
     IMAGE_TAG="$(cfg_default IMAGE_TAG vanilla-wow-server:latest)"
     SERVER_CONTAINER_NAME="$(cfg_default SERVER_CONTAINER_NAME vanilla-wow-server)"
     K8S_NAMESPACE="$(cfg_default K8S_NAMESPACE vanilla-wow)"
@@ -346,9 +350,9 @@ _ensure_realmlist() {
 # handful need to change for a containerized/local deployment).
 # -----------------------------------------------------------------------------
 
-# _render_mangosd_conf <src> <dst> <data_dir> <logs_dir>
+# _render_mangosd_conf <src> <dst> <data_dir> <logs_dir> <warden_dir>
 _render_mangosd_conf() {
-    local src="$1" dst="$2" data_dir="$3" logs_dir="$4"
+    local src="$1" dst="$2" data_dir="$3" logs_dir="$4" warden_dir="$5"
     local motd_escaped; motd_escaped="$(_sed_escape "$MOTD")"
     cp "$src" "$dst"
     # The repack's conf files ship with Windows CRLF line endings (they were
@@ -361,6 +365,9 @@ _render_mangosd_conf() {
     sed -i \
         -e "s|^DataDir[[:space:]]*=.*|DataDir = \"${data_dir}\"|" \
         -e "s|^LogsDir[[:space:]]*=.*|LogsDir = \"${logs_dir}\"|" \
+        -e "s|^Warden\.ModuleDir[[:space:]]*=.*|Warden.ModuleDir             = \"${warden_dir}\"|" \
+        -e "s|^Warden\.WinEnabled[[:space:]]*=.*|Warden.WinEnabled            = ${WARDEN_ENABLED}|" \
+        -e "s|^Warden\.OSXEnabled[[:space:]]*=.*|Warden.OSXEnabled            = ${WARDEN_ENABLED}|" \
         -e "s|^LoginDatabase\.Info[[:space:]]*=.*|LoginDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};realmd\"|" \
         -e "s|^WorldDatabase\.Info[[:space:]]*=.*|WorldDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};mangos\"|" \
         -e "s|^CharacterDatabase\.Info[[:space:]]*=.*|CharacterDatabase.Info          = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};characters\"|" \
@@ -537,6 +544,10 @@ _prompt_server_settings() {
     STRICT_VERSION_CHECK=$(_pick_value_label "Reject modified/mismatched game clients (strict version check)" "$STRICT_VERSION_CHECK" "Yes" \
         "1|Yes" "0|No")
     cfg_set STRICT_VERSION_CHECK "$STRICT_VERSION_CHECK"
+
+    WARDEN_ENABLED=$(_pick_value_label "Warden anti-cheat (client-side scans; irrelevant on a private/trusted LAN server)" "$WARDEN_ENABLED" "Enabled" \
+        "1|Enabled" "0|Disabled")
+    cfg_set WARDEN_ENABLED "$WARDEN_ENABLED"
 }
 
 cmd_configure() {
@@ -565,7 +576,9 @@ cmd_configure() {
 
     info "Generating local conf files (native start/stop path)..."
     mkdir -p "$INSTALL_DIR"
-    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.conf" "${INSTALL_DIR}/data" "${INSTALL_DIR}/logs"
+    # Warden.ModuleDir points straight at the repack's own warden_modules —
+    # local native runs directly against SOURCE_DIR, no copy/mount needed.
+    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.conf" "${INSTALL_DIR}/data" "${INSTALL_DIR}/logs" "${SOURCE_DIR}/warden_modules"
     _render_realmd_conf  "${SOURCE_DIR}/realmd.conf"  "${ETC_DIR}/realmd.conf"  "${INSTALL_DIR}/logs"
     success "Conf files written to ${ETC_DIR}."
 
@@ -782,6 +795,32 @@ _detect_running_target() {
     echo "$chosen"
 }
 
+# _detect_db_target — like _detect_running_target, but for queries that only
+# need the database, not mangosd itself (e.g. search, which reads static
+# reference tables that don't require the server to be up at all). Local
+# native and Docker share the exact same local MariaDB container, so unlike
+# _detect_running_target there's nothing to disambiguate between them —
+# echoes "docker" for that shared container, "k8s" for the cluster's own
+# separate MariaDB pod.
+_detect_db_target() {
+    if [[ "$(docker inspect --type container "$DB_CONTAINER_NAME" --format='{{.State.Status}}' 2>/dev/null)" == "running" ]]; then
+        echo "docker"
+        return 0
+    fi
+    if command -v kubectl &>/dev/null; then
+        if kubectl get pods -n "$K8S_NAMESPACE" -l app=vanilla-wow-mariadb --no-headers 2>/dev/null | grep -q Running; then
+            echo "k8s"
+            return 0
+        fi
+    fi
+    warn "No reachable database found (checked the local MariaDB container and K8s). Run 'configure' or 'run-k8s' first."
+    return 1
+}
+
+# Escapes a value for embedding inside a single-quoted SQL string literal
+# (backslash first, so it isn't double-escaped by the quote pass after it).
+_sql_escape() { printf '%s' "$1" | sed -e "s/\\\\/\\\\\\\\/g" -e "s/'/\\\\'/g"; }
+
 # _db_query <target: local|docker|k8s> <sql> — local/docker share the same
 # local MariaDB container (_db_exec); k8s has its own separate MariaDB pod
 # in the cluster (see the architecture note on templates/k8s/mariadb.yaml),
@@ -969,6 +1008,68 @@ cmd_delete_account() {
 }
 
 # -----------------------------------------------------------------------------
+# search — name lookup for items, NPCs, GM teleport locations, and player
+# characters. All four are plain reference-data reads (no SRP6/console
+# involved, unlike the account commands), so this goes straight to the
+# database via _db_query, and works even if mangosd itself isn't running —
+# only the database needs to be up (_detect_db_target, not
+# _detect_running_target).
+# -----------------------------------------------------------------------------
+
+cmd_search() {
+    header "vanilla-wow — Search"
+    _settings
+
+    local target
+    target=$(_detect_db_target) || return 1
+
+    local kind
+    kind=$(printf '%s\n' "Items" "NPCs" "Teleport locations" "Player characters" \
+        | gum choose --header "Search what?") || true
+    [[ -z "$kind" ]] && { info "Cancelled."; return 1; }
+
+    local term
+    term=$(gum input --placeholder "name (partial match)" --header "Search term:") || true
+    [[ -z "$term" ]] && { info "Cancelled."; return 1; }
+    local term_escaped; term_escaped="$(_sql_escape "$term")"
+
+    case "$kind" in
+        Items)
+            # item_template/creature_template key on (entry, patch) — the
+            # same entry can have a different row per patch it changed in.
+            # Without filtering, a search can show stale/duplicate rows for
+            # an item that changed since; the correlated subquery picks the
+            # latest row at or before the configured WOW_PATCH, matching
+            # what's actually loaded on this server.
+            _db_query "$target" \
+                "SELECT it.entry, it.name, it.quality FROM mangos.item_template it
+                 WHERE it.name LIKE '%${term_escaped}%' AND it.patch = (
+                     SELECT MAX(patch) FROM mangos.item_template it2 WHERE it2.entry = it.entry AND it2.patch <= ${WOW_PATCH}
+                 ) ORDER BY it.name LIMIT 50;" || return 1
+            ;;
+        NPCs)
+            _db_query "$target" \
+                "SELECT ct.entry, ct.name, ct.subname FROM mangos.creature_template ct
+                 WHERE ct.name LIKE '%${term_escaped}%' AND ct.patch = (
+                     SELECT MAX(patch) FROM mangos.creature_template ct2 WHERE ct2.entry = ct.entry AND ct2.patch <= ${WOW_PATCH}
+                 ) ORDER BY ct.name LIMIT 50;" || return 1
+            ;;
+        "Teleport locations")
+            # game_tele — the table the '.tele <name>' GM command itself
+            # searches, no patch column here.
+            _db_query "$target" \
+                "SELECT id, name, map, ROUND(position_x,1) AS x, ROUND(position_y,1) AS y
+                 FROM mangos.game_tele WHERE name LIKE '%${term_escaped}%' ORDER BY name LIMIT 50;" || return 1
+            ;;
+        "Player characters")
+            _db_query "$target" \
+                "SELECT guid, name, race, class, level FROM characters.characters
+                 WHERE name LIKE '%${term_escaped}%' ORDER BY name LIMIT 50;" || return 1
+            ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
 # edit — escape hatch for anything 'configure' doesn't prompt for. Opens the
 # already-configured conf files (not the repack's pristine copies) in vim,
 # which setup.sh already installs. Picked up automatically by run-docker/
@@ -1020,6 +1121,20 @@ cmd_build_image() {
     cp "${TEMPLATES_DIR}/Dockerfile"    "${IMAGE_BUILD_CONTEXT}/Dockerfile"
     cp "${TEMPLATES_DIR}/entrypoint.sh" "${IMAGE_BUILD_CONTEXT}/entrypoint.sh"
 
+    # Warden anti-cheat modules — small and static like the binaries, baked
+    # into the image (see the Dockerfile's own note). Without them, Warden
+    # still runs (it's enabled by default in the repack's stock conf) but
+    # has nothing to actually scan with, which surfaces as players getting
+    # kicked for "Client response timeout" during normal play, not just a
+    # log warning at startup. Not every repack/fork ships this directory,
+    # so an empty one here is a soft warning, not a hard failure.
+    if [[ -d "${SOURCE_DIR}/warden_modules" ]]; then
+        cp -r "${SOURCE_DIR}/warden_modules" "${IMAGE_BUILD_CONTEXT}/warden_modules"
+    else
+        warn "No warden_modules/ found under SOURCE_DIR — Warden anti-cheat will run with no modules loaded, which can kick players unexpectedly. Building an empty directory instead."
+        mkdir -p "${IMAGE_BUILD_CONTEXT}/warden_modules"
+    fi
+
     info "Building image '${IMAGE_TAG}' (client build ${CLIENT_BUILD})..."
     docker build \
         --build-arg "SUPPORTED_CLIENT_BUILD=${CLIENT_BUILD}" \
@@ -1054,7 +1169,9 @@ cmd_run_docker() {
         docker rm -f "$SERVER_CONTAINER_NAME" &>/dev/null || true
     fi
 
-    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.docker.conf" "/app/data" "/app/logs"
+    # /app/bin/warden_modules — baked into the image at build time (see
+    # cmd_build_image/Dockerfile), mangosd's cwd is /app/bin at runtime.
+    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.docker.conf" "/app/data" "/app/logs" "/app/bin/warden_modules"
     _render_realmd_conf  "$(_effective_conf_source realmd.conf)"  "${ETC_DIR}/realmd.docker.conf"  "/app/logs"
 
     # :Z (private SELinux relabel) is required on Fedora/RHEL hosts with
@@ -1245,7 +1362,8 @@ cmd_run_k8s() {
     # as an inline YAML string.
     local saved_db_host="$DB_HOST"
     DB_HOST="mariadb.${K8S_NAMESPACE}.svc.cluster.local"
-    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.k8s.conf" "/app/data" "/app/logs"
+    # /app/bin/warden_modules — same image as run-docker, same baked-in path.
+    _render_mangosd_conf "$(_effective_conf_source mangosd.conf)" "${ETC_DIR}/mangosd.k8s.conf" "/app/data" "/app/logs" "/app/bin/warden_modules"
     _render_realmd_conf  "$(_effective_conf_source realmd.conf)"  "${ETC_DIR}/realmd.k8s.conf"  "/app/logs"
     DB_HOST="$saved_db_host"
 
@@ -1295,10 +1413,11 @@ main() {
             create-account) cmd_create_account ;;
             list-accounts)  cmd_list_accounts ;;
             delete-account) cmd_delete_account ;;
+            search)         cmd_search ;;
             build-image)    cmd_build_image ;;
             run-docker)     cmd_run_docker ;;
             run-k8s)        cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|build-image|run-docker|run-k8s)" ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|search|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1308,7 +1427,7 @@ main() {
         local action
         action=$(gum choose \
             "install-deps" "configure" "start" "stop" "status" "edit" \
-            "create-account" "list-accounts" "delete-account" \
+            "create-account" "list-accounts" "delete-account" "search" \
             "build-image" "run-docker" "run-k8s" "quit" \
             --header "Choose an action:") || true
 
@@ -1327,6 +1446,7 @@ main() {
             create-account) cmd_create_account || true ;;
             list-accounts)  cmd_list_accounts  || true ;;
             delete-account) cmd_delete_account || true ;;
+            search)         cmd_search         || true ;;
             build-image)    cmd_build_image    || true ;;
             run-docker)     cmd_run_docker     || true ;;
             run-k8s)        cmd_run_k8s        || true ;;
