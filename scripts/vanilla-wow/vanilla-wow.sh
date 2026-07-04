@@ -1401,6 +1401,42 @@ cmd_run_k8s() {
 # Main dispatch
 # -----------------------------------------------------------------------------
 
+# _run_category_menu <title> <action> [action...] — one submenu's loop.
+# Picking an action runs it, then the same submenu reappears (no "back to
+# X menu?" confirm — "back" is already a plain choice in the list, and a
+# separate confirm on top of that is just an extra step for no benefit).
+# Loops until "back"/empty is chosen, which returns to the top-level
+# category picker in main()'s own loop.
+_run_category_menu() {
+    local title="$1"; shift
+    local -a opts=("$@")
+
+    while true; do
+        header "Vanilla WoW — ${title}"
+        local action
+        action=$(printf '%s\n' "${opts[@]}" "back" | gum choose --header "Choose an action:") || true
+        [[ -z "$action" || "$action" == "back" ]] && return
+
+        # || true: under `set -e`, a cmd_* returning non-zero here (e.g.
+        # cmd_edit's soft-fail warn+return) would otherwise trigger errexit
+        # and kill the whole script instead of returning to this submenu.
+        case "$action" in
+            install-deps)   cmd_install_deps   || true ;;
+            configure)      cmd_configure      || true ;;
+            edit)           cmd_edit           || true ;;
+            start)          cmd_start          || true ;;
+            stop)           cmd_stop           || true ;;
+            build-image)    cmd_build_image    || true ;;
+            run-docker)     cmd_run_docker     || true ;;
+            run-k8s)        cmd_run_k8s        || true ;;
+            create-account) cmd_create_account || true ;;
+            list-accounts)  cmd_list_accounts  || true ;;
+            delete-account) cmd_delete_account || true ;;
+        esac
+        echo ""
+    done
+}
+
 main() {
     if [[ $# -gt 0 ]]; then
         case "$1" in
@@ -1424,36 +1460,20 @@ main() {
 
     while true; do
         header "Vanilla WoW (VMaNGOS) Manager"
-        local action
-        action=$(gum choose \
-            "install-deps" "configure" "start" "stop" "status" "edit" \
-            "create-account" "list-accounts" "delete-account" "search" \
-            "build-image" "run-docker" "run-k8s" "quit" \
-            --header "Choose an action:") || true
+        local category
+        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Search" "Status" "Quit" \
+            --header "Choose a category:") || true
 
-        [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
+        [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
 
-        # || true on each: under `set -e`, a cmd_* returning non-zero here
-        # (e.g. cmd_edit's soft-fail warn+return) would otherwise trigger
-        # errexit and kill the whole script instead of returning to this menu.
-        case "$action" in
-            install-deps)   cmd_install_deps   || true ;;
-            configure)      cmd_configure      || true ;;
-            start)          cmd_start          || true ;;
-            stop)           cmd_stop           || true ;;
-            status)         cmd_status         || true ;;
-            edit)           cmd_edit           || true ;;
-            create-account) cmd_create_account || true ;;
-            list-accounts)  cmd_list_accounts  || true ;;
-            delete-account) cmd_delete_account || true ;;
-            search)         cmd_search         || true ;;
-            build-image)    cmd_build_image    || true ;;
-            run-docker)     cmd_run_docker     || true ;;
-            run-k8s)        cmd_run_k8s        || true ;;
+        case "$category" in
+            Setup)    _run_category_menu "Setup"    install-deps configure edit ;;
+            Local)    _run_category_menu "Local"    start stop ;;
+            Deploy)   _run_category_menu "Deploy"   build-image run-docker run-k8s ;;
+            Accounts) _run_category_menu "Accounts" create-account list-accounts delete-account ;;
+            Search)   cmd_search || true ;;
+            Status)   cmd_status || true ;;
         esac
-
-        echo ""
-        gum confirm "Back to main menu?" || { gum style --faint "Bye."; exit 0; }
     done
 }
 
