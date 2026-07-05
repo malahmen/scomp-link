@@ -33,7 +33,7 @@ cd /app/bin
 realmd_pid=$!
 
 # mangosd gets a real FIFO instead, so admin commands (account creation —
-# see vanilla-wow.sh's 'create-account') can still reach its console from
+# see server.sh's 'create-account') can still reach its console from
 # outside the container. Holding a read-write fd open on it (fd 9) keeps the
 # FIFO from ever reporting EOF to a reader, same effect as the process
 # substitution above, but it's also externally writable, e.g.
