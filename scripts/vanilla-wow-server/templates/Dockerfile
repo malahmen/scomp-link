@@ -3,7 +3,7 @@
 # avoid ABI mismatches between the compiled binaries and the runtime libs.
 #
 # Data (maps/vmaps/mmaps) and the database are never baked into this image —
-# they're mounted at runtime (see entrypoint.sh and the vanilla-wow.sh
+# they're mounted at runtime (see entrypoint.sh and the server.sh
 # run-docker/run-k8s commands). warden_modules is the exception: it's small
 # (a few MB) and static like the compiled binaries themselves, not large or
 # mutable like the game data, so it's simplest to just bake it in rather

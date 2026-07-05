@@ -28,7 +28,7 @@ spec:
             - name: sql
               mountPath: /sql
               readOnly: true
-          # Mirrors vanilla-wow.sh's _db_bootstrap: create schemas, import
+          # Mirrors server.sh's _db_bootstrap: create schemas, import
           # Base + the full world dump + Migrations in filename order, then
           # any optional Custom content (Job runs non-interactively, so the
           # gum-confirm gate from local 'configure' doesn't apply here —

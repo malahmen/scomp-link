@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# vanilla-wow.sh
+# server.sh
 # Builds and runs a VMaNGOS-based vanilla WoW (1.12.1 / client build 5875)
 # server from the repack at SOURCE_DIR (default ~/jaws/MaNGOS), natively for
 # fast local iteration and as a Docker/k8s deployment for LAN-wide play.
