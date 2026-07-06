@@ -13,6 +13,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Canonical .fcc assets shipped inside the repo (single source of truth).
+# ensure_fcc_pdf_assets copies missing pieces from here into the working
+# ./.fcc/ so the good code theme, table/pagebreak/mermaid filters travel with
+# the script instead of only existing in Starlight scaffolds.
+CANONICAL_FCC="${SCRIPT_DIR}/../starlight/.fcc"
+
 COMMON_DIR="${SCRIPT_DIR}/../_common"
 if [[ ! -d "$COMMON_DIR" ]]; then
     printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
@@ -30,6 +36,9 @@ TITLE_PAGES_DIR=".fcc/title-pages"
 OUTPUT_DIR="./output"
 DEFAULT_DEPTH=3
 
+# Built-in DOCX reference doc: shaded code blocks + aligned table of contents.
+DOCX_DEFAULT_REFERENCE=".fcc/docx/reference.docx"
+
 
 # Title page state (set by select_title_page)
 USE_TITLE_PAGE=false
@@ -39,6 +48,11 @@ APPLY_SUBSTITUTIONS=false
 
 # Rule stripping state (set by select_strip_rules)
 STRIP_RULES=false
+
+# Table of contents state (set by select_toc)
+USE_TOC=false
+TOC_DEPTH=3
+TOC_TITLE="Contents"
 
 # PDF conversion state (set by dispatch → check_deps_md_pdf / select_pdf_engine / select_pdf_font)
 PDF_ENGINE=""
@@ -313,18 +327,19 @@ Install a PDF engine manually:
 }
 
 # -----------------------------------------------------------------------------
-# Config: ensure .fcc/pdf/header.tex exists
+# Config: ensure the .fcc/pdf/ asset set exists.
+#
+# Copies any missing asset from the canonical bundle (CANONICAL_FCC/pdf/) into
+# the working ./.fcc/pdf/. Existing files are never overwritten, so a project
+# can customise them. header.tex has a minimal built-in fallback for the case
+# where the bundle is unavailable (script run outside the repo).
+#
+# Arguments: asset filenames to ensure. With none, ensures the full PDF set.
 # -----------------------------------------------------------------------------
 
-ensure_pdf_config() {
-    local pdf_config_dir="${FCC_DIR}/pdf"
-    local header_tex="${pdf_config_dir}/header.tex"
-
-    mkdir -p "$pdf_config_dir"
-
-    if [[ ! -f "$header_tex" ]]; then
-        info "Creating default ${header_tex}..."
-        cat > "$header_tex" << 'EOF'
+_write_basic_header() {
+    # Minimal fallback used only when the canonical header.tex is unavailable.
+    cat > "$1" << 'EOF'
 \usepackage{listings}
 \usepackage{xcolor}
 \lstset{
@@ -337,12 +352,126 @@ ensure_pdf_config() {
   framesep=3pt
 }
 EOF
-        success "Created ${header_tex}."
-    else
-        info "Using existing ${header_tex}."
+}
+
+ensure_fcc_pdf_assets() {
+    local assets=("$@")
+    if [[ ${#assets[@]} -eq 0 ]]; then
+        assets=(header.tex p10k.theme widen-tables.lua render-mermaid.lua pagebreak.lua)
     fi
 
-    HEADER_TEX="$header_tex"
+    local pdf_config_dir="${FCC_DIR}/pdf"
+    local src="${CANONICAL_FCC}/pdf"
+    mkdir -p "$pdf_config_dir"
+
+    # The lua filters are behaviour-critical *code*, not user config — keep them
+    # in sync with the bundle so a stale copy from an older run never lingers
+    # (e.g. an old pagebreak.lua that missed markers adjacent to text). Config
+    # assets (header.tex, p10k.theme) are user-editable → created only if absent.
+    local managed=" widen-tables.lua render-mermaid.lua pagebreak.lua "
+
+    local a dest
+    for a in "${assets[@]}"; do
+        dest="${pdf_config_dir}/${a}"
+
+        if [[ "$managed" == *" ${a} "* ]]; then
+            if [[ -f "${src}/${a}" ]]; then
+                if [[ ! -f "$dest" ]] || ! cmp -s "${src}/${a}" "$dest"; then
+                    cp "${src}/${a}" "$dest"
+                    info "Synced ${dest} (bundled)."
+                fi
+            elif [[ ! -f "$dest" ]]; then
+                warn "Bundled asset '${a}' not found at ${src}/ — feature relying on it will be skipped."
+            fi
+            continue
+        fi
+
+        # Config asset — create only when missing.
+        [[ -f "$dest" ]] && continue
+        if [[ -f "${src}/${a}" ]]; then
+            cp "${src}/${a}" "$dest"
+            info "Installed ${dest} (bundled)."
+        elif [[ "$a" == "header.tex" ]]; then
+            _write_basic_header "$dest"
+            warn "Bundled header.tex not found — wrote minimal fallback to ${dest}."
+        else
+            warn "Bundled asset '${a}' not found at ${src}/ — feature relying on it will be skipped."
+        fi
+    done
+}
+
+ensure_pdf_config() {
+    ensure_fcc_pdf_assets
+    HEADER_TEX="${FCC_DIR}/pdf/header.tex"
+    info "Using ${HEADER_TEX}."
+}
+
+# -----------------------------------------------------------------------------
+# Resolve a lua filter to a usable path.
+# Prefer the working ./.fcc/ copy (so per-project customisation wins), but fall
+# back to the canonical bundle so a missing or partial .fcc never silently
+# disables a behaviour-critical filter (e.g. page breaks in DOCX).
+# Prints the path, or nothing if the filter can't be found in either location.
+# -----------------------------------------------------------------------------
+
+resolve_lua_filter() {
+    local name="$1"
+    if [[ -f "${FCC_DIR}/pdf/${name}" ]]; then
+        printf '%s' "${FCC_DIR}/pdf/${name}"
+    elif [[ -f "${CANONICAL_FCC}/pdf/${name}" ]]; then
+        printf '%s' "${CANONICAL_FCC}/pdf/${name}"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Ensure the bundled DOCX reference doc exists in .fcc/docx/.
+# Copies it from the canonical bundle when missing. Returns non-zero if it
+# cannot be made available (bundle absent), so callers can fall back cleanly.
+# -----------------------------------------------------------------------------
+
+ensure_fcc_docx_assets() {
+    local dest="$DOCX_DEFAULT_REFERENCE"
+    [[ -f "$dest" ]] && return 0
+
+    local src="${CANONICAL_FCC}/docx/reference.docx"
+    if [[ -f "$src" ]]; then
+        mkdir -p "$(dirname "$dest")"
+        cp "$src" "$dest"
+        info "Installed ${dest} (bundled)."
+        return 0
+    fi
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Post-process a generated .docx: fold each pageBreakBefore break paragraph onto
+# the following paragraph so a heading after \newpage starts the new page with
+# no blank line above it. The fold_pagebreaks.py helper is behaviour-critical
+# code, so keep the working copy in sync with the bundle (like the lua filters).
+# Skipped cleanly if python3 is unavailable — the break paragraph then remains
+# (no blank page, just a blank line), so nothing is ever dropped.
+# -----------------------------------------------------------------------------
+
+fold_docx_pagebreaks() {
+    local docx="$1"
+    command -v python3 &>/dev/null || {
+        info "python3 not found — leaving page-break paragraphs as-is (a blank line may show above headings)."
+        return 0
+    }
+
+    local dest="${FCC_DIR}/docx/fold_pagebreaks.py"
+    local src="${CANONICAL_FCC}/docx/fold_pagebreaks.py"
+    mkdir -p "$(dirname "$dest")"
+    if [[ -f "$src" ]] && { [[ ! -f "$dest" ]] || ! cmp -s "$src" "$dest"; }; then
+        cp "$src" "$dest"
+        info "Synced ${dest} (bundled)."
+    fi
+
+    local script="$dest"
+    [[ -f "$script" ]] || script="$src"
+    [[ -f "$script" ]] || { warn "fold_pagebreaks.py not found — skipping page-break tidy."; return 0; }
+
+    python3 "$script" "$docx"
 }
 
 # -----------------------------------------------------------------------------
@@ -470,6 +599,22 @@ select_pdf_engine() {
     info "PDF engine: ${PDF_ENGINE}"
 }
 
+# -----------------------------------------------------------------------------
+# Is a font family installed on this system?
+# Uses fontconfig (fc-list) when available — reliable on Linux and on macOS
+# with Homebrew fontconfig. If fc-list is absent we cannot verify, so we
+# optimistically report "installed" (best effort) rather than hide everything.
+# -----------------------------------------------------------------------------
+
+font_installed() {
+    local family="$1"
+    if command -v fc-list &>/dev/null; then
+        fc-list : family | tr ',' '\n' | grep -qixF "$family"
+        return
+    fi
+    return 0
+}
+
 select_pdf_font() {
     PDF_FONT=""
 
@@ -478,16 +623,25 @@ select_pdf_font() {
         return
     fi
 
+    # Only offer fonts that are actually installed — a missing font makes
+    # xelatex/lualatex abort the whole conversion.
+    local candidates=("Helvetica" "Times New Roman" "Georgia" "Palatino" "Garamond" "Arial")
+    local avail=()
+    local f
+    for f in "${candidates[@]}"; do
+        font_installed "$f" && avail+=("$f")
+    done
+    avail+=("None (pandoc default)")
+
+    if [[ ${#avail[@]} -eq 1 ]]; then
+        warn "None of the preset prose fonts are installed — using pandoc default."
+        PDF_FONT=""
+        return
+    fi
+
     local font
-    font=$(gum choose \
-        "Helvetica" \
-        "Times New Roman" \
-        "Georgia" \
-        "Palatino" \
-        "Garamond" \
-        "Arial" \
-        "None (pandoc default)" \
-        --header "Select prose font (body text):") || true
+    font=$(printf '%s\n' "${avail[@]}" | gum choose \
+        --header "Select prose font (body text) — only installed fonts shown:") || true
 
     [[ -z "$font" ]] && { gum style --faint "Cancelled."; exit 0; }
     [[ "$font" == "None (pandoc default)" ]] && { PDF_FONT=""; return; }
@@ -572,10 +726,6 @@ convert_md_to_pdf() {
         "$input_file"
         -o "$output_file"
         --pdf-engine="$PDF_ENGINE"
-        --syntax-highlighting="${FCC_DIR}/pdf/p10k.theme"
-        --lua-filter="${FCC_DIR}/pdf/widen-tables.lua"
-        --lua-filter="${FCC_DIR}/pdf/render-mermaid.lua"
-        #--lua-filter="${FCC_DIR}/pdf/wrap-code-urls.lua"
         -H "$HEADER_TEX"
         -H "$MONOFONT_TEX"
         -V colorlinks=true
@@ -584,9 +734,24 @@ convert_md_to_pdf() {
         -V citecolor=blue
     )
 
+    # Add optional assets only when present, so a missing bundle degrades
+    # gracefully instead of failing the whole conversion.
+    [[ -f "${FCC_DIR}/pdf/p10k.theme" ]] && \
+        pandoc_args+=(--syntax-highlighting="${FCC_DIR}/pdf/p10k.theme")
+    local lf lf_path
+    for lf in widen-tables.lua render-mermaid.lua pagebreak.lua; do
+        lf_path="$(resolve_lua_filter "$lf")"
+        [[ -n "$lf_path" ]] && pandoc_args+=(--lua-filter="$lf_path")
+    done
+
     # PDF_FONT controls prose (mainfont) only — monofont is handled by monofont.tex
     if [[ -n "$PDF_FONT" ]]; then
         pandoc_args+=(-V "mainfont=${PDF_FONT}")
+    fi
+
+    # Table of contents (opt-in) — pandoc builds it from the headers.
+    if [[ "$USE_TOC" == "true" ]]; then
+        pandoc_args+=(--toc --toc-depth="$TOC_DEPTH" -V "toc-title=${TOC_TITLE}")
     fi
 
     #gum spin --spinner dot --title "Converting $(basename "$input_file") → $(basename "$output_file") ..." -- \
@@ -635,8 +800,19 @@ Install it from: https://pandoc.org/installing.html
 select_docx_reference_doc() {
     DOCX_REFERENCE_DOC=""
 
-    if ! gum confirm "Use a reference .docx template for styling?"; then
-        info "No reference doc — using pandoc defaults."
+    # Make the built-in styled template available (shaded code + aligned TOC).
+    local have_default=false
+    if ensure_fcc_docx_assets; then
+        have_default=true
+    fi
+
+    if ! gum confirm "Use a custom reference .docx template? (No = built-in styled template)"; then
+        if [[ "$have_default" == "true" ]]; then
+            DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
+            info "Using built-in styled reference: ${DOCX_REFERENCE_DOC}"
+        else
+            warn "Built-in reference template unavailable — using pandoc defaults (plain code blocks, unstyled TOC)."
+        fi
         return
     fi
 
@@ -709,6 +885,20 @@ convert_md_to_docx() {
         --to=docx
     )
 
+    # Format-aware filters that also benefit DOCX: cross-format page breaks,
+    # mermaid-as-image, and even column widths. Falls back to the bundle so a
+    # missing .fcc copy never silently drops \newpage from the output.
+    local lf lf_path
+    for lf in pagebreak.lua render-mermaid.lua widen-tables.lua; do
+        lf_path="$(resolve_lua_filter "$lf")"
+        [[ -n "$lf_path" ]] && pandoc_args+=(--lua-filter="$lf_path")
+    done
+
+    # Table of contents (opt-in) — Word builds a native TOC field.
+    if [[ "$USE_TOC" == "true" ]]; then
+        pandoc_args+=(--toc --toc-depth="$TOC_DEPTH")
+    fi
+
     if [[ -n "$DOCX_REFERENCE_DOC" ]]; then
         pandoc_args+=(--reference-doc="$DOCX_REFERENCE_DOC")
     fi
@@ -717,6 +907,7 @@ convert_md_to_docx() {
         pandoc "${pandoc_args[@]}"
 
     if [[ $? -eq 0 ]]; then
+        fold_docx_pagebreaks "$output_file"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
@@ -899,6 +1090,38 @@ apply_strip_rules() {
         /^---[[:space:]]*$/ { next }
         { print }
     ' "$tmp_file" > "${tmp_file}.strip" && mv "${tmp_file}.strip" "$tmp_file"
+}
+
+# =============================================================================
+# TABLE OF CONTENTS
+# Optional index page built from the document's markdown headers.
+# Applies to md→pdf and md→docx (pandoc's native --toc). Not meaningful for
+# docx→md, so it is only offered when the source is markdown.
+# =============================================================================
+
+select_toc() {
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    [[ "$OUTPUT_FORMAT" != "pdf" && "$OUTPUT_FORMAT" != "docx" ]] && return
+
+    if ! gum confirm "Add a table of contents (index) built from headers?"; then
+        USE_TOC=false
+        return
+    fi
+
+    USE_TOC=true
+
+    local raw
+    raw=$(gum input \
+        --placeholder "${DEFAULT_DEPTH}" \
+        --header "Header depth to include in the TOC (1-6, default ${DEFAULT_DEPTH}):") || true
+
+    local depth="${raw:-${DEFAULT_DEPTH}}"
+    if ! [[ "$depth" =~ ^[0-9]+$ ]] || (( depth < 1 || depth > 6 )); then
+        warn "Invalid TOC depth '${depth}', using ${DEFAULT_DEPTH}."
+        depth="${DEFAULT_DEPTH}"
+    fi
+    TOC_DEPTH="$depth"
+    info "Table of contents enabled (depth ${TOC_DEPTH})."
 }
 
 # =============================================================================
@@ -1185,6 +1408,7 @@ dispatch() {
             ;;
         "md→docx")
             check_deps_md_docx
+            ensure_fcc_pdf_assets pagebreak.lua render-mermaid.lua widen-tables.lua
             select_docx_reference_doc
             ;;
         "docx→md")
@@ -1297,6 +1521,7 @@ main() {
     select_output_format
     select_apply_substitutions
     select_strip_rules
+    select_toc
     select_title_page
     dispatch
     run_conversions
