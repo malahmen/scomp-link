@@ -61,6 +61,12 @@ AVAILABLE_ENGINES=()
 MONOFONT_TEX=""
 HEADER_TEX=""
 
+# DOCX conversion state (set by dispatch → select_docx_font / detect_docx_mono).
+# Applied to the generated .docx so it uses installed fonts instead of the
+# reference template's Microsoft defaults (Aptos/Calibri/Cambria, Consolas).
+DOCX_FONT=""   # prose (headings + body); empty = leave the template's theme
+DOCX_MONO=""   # monospace (code); auto-detected
+
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
 # -----------------------------------------------------------------------------
@@ -475,6 +481,36 @@ fold_docx_pagebreaks() {
 }
 
 # -----------------------------------------------------------------------------
+# Apply the selected prose font (DOCX_FONT) and monospace font (DOCX_MONO) to a
+# generated .docx, so it uses installed fonts instead of the reference
+# template's Microsoft defaults. No-op for prose if DOCX_FONT is empty (template
+# default kept). Skipped cleanly if python3 is unavailable.
+# -----------------------------------------------------------------------------
+
+apply_docx_fonts() {
+    local docx="$1"
+    [[ -z "$DOCX_FONT" && -z "$DOCX_MONO" ]] && return 0
+    command -v python3 &>/dev/null || {
+        info "python3 not found — leaving DOCX fonts as the template defaults."
+        return 0
+    }
+
+    local dest="${FCC_DIR}/docx/apply_docx_fonts.py"
+    local src="${CANONICAL_FCC}/docx/apply_docx_fonts.py"
+    mkdir -p "$(dirname "$dest")"
+    if [[ -f "$src" ]] && { [[ ! -f "$dest" ]] || ! cmp -s "$src" "$dest"; }; then
+        cp "$src" "$dest"
+        info "Synced ${dest} (bundled)."
+    fi
+
+    local script="$dest"
+    [[ -f "$script" ]] || script="$src"
+    [[ -f "$script" ]] || { warn "apply_docx_fonts.py not found — skipping DOCX font apply."; return 0; }
+
+    python3 "$script" "$docx" "$DOCX_FONT" "$DOCX_MONO"
+}
+
+# -----------------------------------------------------------------------------
 # Detect a usable monospace font and write .fcc/pdf/monofont.tex.
 # Called once per md→pdf run before conversion begins.
 #
@@ -606,13 +642,40 @@ select_pdf_engine() {
 # optimistically report "installed" (best effort) rather than hide everything.
 # -----------------------------------------------------------------------------
 
+# macOS system font registry (families), loaded once. fontconfig is an add-on on
+# macOS and its cache/config does not always index /System/Library/Fonts, so a
+# system font like Helvetica can be missing from fc-list even though it exists
+# and XeLaTeX/LuaLaTeX can load it by name. system_profiler is authoritative.
+_MACOS_FONT_FAMILIES=""
+_MACOS_FONTS_LOADED=""
+_ensure_macos_fonts() {
+    [[ -n "$_MACOS_FONTS_LOADED" ]] && return
+    _MACOS_FONTS_LOADED=1
+    command -v system_profiler &>/dev/null || return
+    _MACOS_FONT_FAMILIES=$(system_profiler SPFontsDataType 2>/dev/null \
+        | sed -n 's/^[[:space:]]*Family:[[:space:]]*//p' | sort -u)
+}
+
 font_installed() {
     local family="$1"
-    if command -v fc-list &>/dev/null; then
-        fc-list : family | tr ',' '\n' | grep -qixF "$family"
+
+    # fontconfig first (fast): reliable on Linux and macOS-with-Homebrew-fontconfig.
+    if command -v fc-list &>/dev/null \
+       && fc-list : family | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | grep -qixF "$family"; then
+        return 0
+    fi
+
+    # macOS fallback: the authoritative system font registry, so system fonts
+    # like Helvetica are offered even when fontconfig does not see them.
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _ensure_macos_fonts
+        printf '%s\n' "$_MACOS_FONT_FAMILIES" | grep -qixF "$family"
         return
     fi
-    return 0
+
+    command -v fc-list &>/dev/null && return 1   # fc-list gave a definitive "no"
+    return 0                                      # no detector ⇒ stay optimistic
 }
 
 select_pdf_font() {
@@ -648,6 +711,59 @@ select_pdf_font() {
 
     PDF_FONT="$font"
     info "Prose font: ${PDF_FONT}"
+}
+
+# -----------------------------------------------------------------------------
+# DOCX prose font picker (parity with select_pdf_font). The chosen font is
+# applied to the generated .docx theme (headings + body) by apply_docx_fonts, so
+# Word does not substitute the reference template's fonts. "None" keeps the
+# template's own fonts (which may not be installed).
+# -----------------------------------------------------------------------------
+
+select_docx_font() {
+    DOCX_FONT=""
+
+    local candidates=("Helvetica" "Arial" "Times New Roman" "Georgia" "Palatino" "Garamond")
+    local avail=()
+    local f
+    for f in "${candidates[@]}"; do
+        font_installed "$f" && avail+=("$f")
+    done
+    avail+=("None (template default)")
+
+    if [[ ${#avail[@]} -eq 1 ]]; then
+        warn "None of the preset prose fonts are installed — keeping the template's fonts."
+        return
+    fi
+
+    local font
+    font=$(printf '%s\n' "${avail[@]}" | gum choose \
+        --header "Select DOCX prose font (body + headings) — only installed fonts shown:") || true
+
+    [[ -z "$font" ]] && { gum style --faint "Cancelled."; exit 0; }
+    [[ "$font" == "None (template default)" ]] && { DOCX_FONT=""; return; }
+
+    DOCX_FONT="$font"
+    info "DOCX prose font: ${DOCX_FONT}"
+}
+
+# -----------------------------------------------------------------------------
+# Pick an installed monospace font for DOCX code (auto, like detect_mono_font
+# for PDF). Falls back to Courier New, which ships broadly.
+# -----------------------------------------------------------------------------
+
+detect_docx_mono() {
+    DOCX_MONO=""
+    local candidates=("Menlo" "DejaVu Sans Mono" "Monaco" "Consolas" "Courier New")
+    local f
+    for f in "${candidates[@]}"; do
+        if font_installed "$f"; then
+            DOCX_MONO="$f"
+            break
+        fi
+    done
+    [[ -z "$DOCX_MONO" ]] && DOCX_MONO="Courier New"
+    info "DOCX monospace font: ${DOCX_MONO}"
 }
 
 # -----------------------------------------------------------------------------
@@ -908,6 +1024,7 @@ convert_md_to_docx() {
 
     if [[ $? -eq 0 ]]; then
         fold_docx_pagebreaks "$output_file"
+        apply_docx_fonts "$output_file"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
@@ -1410,6 +1527,8 @@ dispatch() {
             check_deps_md_docx
             ensure_fcc_pdf_assets pagebreak.lua render-mermaid.lua widen-tables.lua
             select_docx_reference_doc
+            select_docx_font
+            detect_docx_mono
             ;;
         "docx→md")
             check_deps_docx_md

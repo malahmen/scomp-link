@@ -90,6 +90,10 @@ MONO_FONT=""
 HEADER_TEX=""
 DOCX_REFERENCE_DOC=""
 MD_VARIANT=""
+# DOCX fonts applied to the generated file so it uses installed fonts instead of
+# the reference template's Microsoft defaults (Aptos/Calibri/Cambria, Consolas).
+DOCX_FONT=""   # prose (headings + body); empty = keep the template's theme
+DOCX_MONO=""   # monospace (code); auto-detected
 USE_TITLE_PAGE=false
 APPLIED_TITLE_PAGE_FILE=""
 STRIP_RULES=false
@@ -852,15 +856,40 @@ select_pdf_engine() {
     info "PDF engine: ${PDF_ENGINE}"
 }
 
-# Is a font family installed? Uses fontconfig when available (reliable on
-# Linux and macOS-with-Homebrew-fontconfig); optimistic when fc-list is absent.
+# macOS system font registry (families), loaded once. fontconfig is an add-on on
+# macOS and its cache/config does not always index /System/Library/Fonts, so a
+# system font like Helvetica can be missing from fc-list even though it exists
+# and XeLaTeX/LuaLaTeX can load it by name. system_profiler is authoritative.
+_MACOS_FONT_FAMILIES=""
+_MACOS_FONTS_LOADED=""
+_ensure_macos_fonts() {
+    [[ -n "$_MACOS_FONTS_LOADED" ]] && return
+    _MACOS_FONTS_LOADED=1
+    command -v system_profiler &>/dev/null || return
+    _MACOS_FONT_FAMILIES=$(system_profiler SPFontsDataType 2>/dev/null \
+        | sed -n 's/^[[:space:]]*Family:[[:space:]]*//p' | sort -u)
+}
+
+# Is a font family installed? fontconfig when available (reliable on Linux and
+# macOS-with-Homebrew-fontconfig), with a macOS system-registry fallback so
+# system fonts like Helvetica are never wrongly hidden; optimistic if neither.
 font_installed() {
     local family="$1"
-    if command -v fc-list &>/dev/null; then
-        fc-list : family | tr ',' '\n' | grep -qixF "$family"
+
+    if command -v fc-list &>/dev/null \
+       && fc-list : family | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | grep -qixF "$family"; then
+        return 0
+    fi
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _ensure_macos_fonts
+        printf '%s\n' "$_MACOS_FONT_FAMILIES" | grep -qixF "$family"
         return
     fi
-    return 0
+
+    command -v fc-list &>/dev/null && return 1   # fc-list gave a definitive "no"
+    return 0                                      # no detector ⇒ stay optimistic
 }
 
 select_pdf_font() {
@@ -1132,6 +1161,97 @@ if key in data:
 PYEOF
 }
 
+# DOCX prose font picker (parity with the PDF font picker). Applied to the
+# generated .docx theme (headings + body) so Word does not substitute the
+# reference template's fonts. "None" keeps the template's own fonts.
+select_docx_font() {
+    DOCX_FONT=""
+    local candidates=("Helvetica" "Arial" "Times New Roman" "Georgia" "Palatino" "Garamond")
+    local avail=() f
+    for f in "${candidates[@]}"; do font_installed "$f" && avail+=("$f"); done
+    avail+=("None (template default)")
+    if [[ ${#avail[@]} -eq 1 ]]; then
+        warn "None of the preset prose fonts are installed — keeping the template's fonts."
+        return
+    fi
+    local font
+    font=$(printf '%s\n' "${avail[@]}" | gum choose \
+        --header "Select DOCX prose font (body + headings) — only installed fonts shown:") || true
+    [[ -z "$font" ]] && { gum style --faint "Cancelled."; exit 0; }
+    [[ "$font" == "None (template default)" ]] && { DOCX_FONT=""; return; }
+    DOCX_FONT="$font"
+    info "DOCX prose font: ${DOCX_FONT}"
+}
+
+# Pick an installed monospace font for DOCX code (auto). Falls back to Courier New.
+detect_docx_mono() {
+    DOCX_MONO=""
+    local candidates=("Menlo" "DejaVu Sans Mono" "Monaco" "Consolas" "Courier New") f
+    for f in "${candidates[@]}"; do
+        if font_installed "$f"; then DOCX_MONO="$f"; break; fi
+    done
+    [[ -z "$DOCX_MONO" ]] && DOCX_MONO="Courier New"
+    info "DOCX monospace font: ${DOCX_MONO}"
+}
+
+# Apply DOCX_FONT (prose, via theme) + DOCX_MONO (code, via styles) to a
+# generated .docx so it uses installed fonts. No-op for prose if DOCX_FONT is
+# empty. Skipped cleanly if python3 is unavailable.
+# NOTE: keep this logic in sync with starlight/.fcc/docx/apply_docx_fonts.py.
+apply_docx_fonts() {
+    local docx="$1"
+    [[ -z "$DOCX_FONT" && -z "$DOCX_MONO" ]] && return 0
+    command -v python3 &>/dev/null || {
+        info "python3 not found — leaving DOCX fonts as the template defaults."
+        return 0
+    }
+    python3 - "$docx" "$DOCX_FONT" "$DOCX_MONO" <<'PYEOF'
+import sys, os, re, zipfile
+TEMPLATE_MONOS = ('Consolas', 'DejaVu Sans Mono')
+
+def set_theme_font(xml, prose):
+    def sub_tag(x, tag):
+        def repl(m):
+            inner = re.sub(r'(<a:latin typeface=")[^"]*(")',
+                           lambda mm: mm.group(1) + prose + mm.group(2), m.group(2), count=1)
+            return m.group(1) + inner + m.group(3)
+        return re.sub(r'(<a:%s>)(.*?)(</a:%s>)' % (tag, tag), repl, x, count=1, flags=re.S)
+    return sub_tag(sub_tag(xml, 'majorFont'), 'minorFont')
+
+def set_mono_font(xml, mono):
+    for old in TEMPLATE_MONOS:
+        for attr in ('w:ascii', 'w:hAnsi', 'w:cs'):
+            xml = xml.replace('%s="%s"' % (attr, old), '%s="%s"' % (attr, mono))
+    return xml
+
+path = sys.argv[1]
+prose = sys.argv[2] if len(sys.argv) > 2 else ''
+mono = sys.argv[3] if len(sys.argv) > 3 else ''
+try:
+    with zipfile.ZipFile(path) as z:
+        infos = z.infolist()
+        data = {i.filename: z.read(i.filename) for i in infos}
+except (OSError, zipfile.BadZipFile):
+    sys.exit(0)
+changed = False
+tkey = 'word/theme/theme1.xml'
+if prose and tkey in data:
+    t = data[tkey].decode('utf-8'); nt = set_theme_font(t, prose)
+    if nt != t: data[tkey] = nt.encode('utf-8'); changed = True
+skey = 'word/styles.xml'
+if mono and skey in data:
+    s = data[skey].decode('utf-8'); ns = set_mono_font(s, mono)
+    if ns != s: data[skey] = ns.encode('utf-8'); changed = True
+if changed:
+    tmp = path + '.tmp'
+    with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
+        for i in infos:
+            z.writestr(i, data[i.filename])
+    os.replace(tmp, path)
+    print(f'applied fonts: prose={prose or "(unchanged)"} mono={mono or "(unchanged)"}')
+PYEOF
+}
+
 convert_md_to_docx() {
     local input_file="$1"
     local name_source="${2:-$input_file}"
@@ -1167,6 +1287,7 @@ convert_md_to_docx() {
 
     if [[ $? -eq 0 ]]; then
         fold_docx_pagebreaks "$output_file"
+        apply_docx_fonts "$output_file"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
@@ -1391,6 +1512,8 @@ dispatch() {
             check_deps_md_docx
             ensure_pagebreak_filter
             select_docx_reference_doc
+            select_docx_font
+            detect_docx_mono
             ;;
         "docx→md")
             check_deps_docx_md
