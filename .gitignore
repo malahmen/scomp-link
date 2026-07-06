@@ -7,3 +7,4 @@ temp/
 *.swp
 *.swo
 ~
+scripts/starlight/.fcc/docx/__pycache__

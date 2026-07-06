@@ -75,6 +75,10 @@ TITLE_PAGES_DIR=".fcc/title-pages"
 OUTPUT_DIR="./output"
 DEFAULT_DEPTH=3
 
+# Built-in DOCX reference doc: shaded code blocks + aligned table of contents.
+# Shipped into the project by the scaffolder alongside the rest of .fcc/.
+DOCX_DEFAULT_REFERENCE=".fcc/docx/reference.docx"
+
 # Conversion state globals
 SOURCE_FORMAT=""
 OUTPUT_FORMAT=""
@@ -89,6 +93,9 @@ MD_VARIANT=""
 USE_TITLE_PAGE=false
 APPLIED_TITLE_PAGE_FILE=""
 STRIP_RULES=false
+USE_TOC=false
+TOC_DEPTH=3
+TOC_TITLE="Contents"
 AVAILABLE_ENGINES=()
 OUTPUT_FILE=""
 
@@ -337,6 +344,33 @@ select_strip_rules() {
     else
         STRIP_RULES=false
     fi
+}
+
+# Optional index page built from the document's markdown headers (pandoc --toc).
+# Applies to md→pdf and md→docx; not meaningful for docx→md.
+select_toc() {
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    [[ "$OUTPUT_FORMAT" != "pdf" && "$OUTPUT_FORMAT" != "docx" ]] && return
+
+    if ! gum confirm "Add a table of contents (index) built from headers?"; then
+        USE_TOC=false
+        return
+    fi
+
+    USE_TOC=true
+
+    local raw
+    raw=$(gum input \
+        --placeholder "${DEFAULT_DEPTH}" \
+        --header "Header depth to include in the TOC (1-6, default ${DEFAULT_DEPTH}):") || true
+
+    local depth="${raw:-${DEFAULT_DEPTH}}"
+    if ! [[ "$depth" =~ ^[0-9]+$ ]] || (( depth < 1 || depth > 6 )); then
+        warn "Invalid TOC depth '${depth}', using ${DEFAULT_DEPTH}."
+        depth="${DEFAULT_DEPTH}"
+    fi
+    TOC_DEPTH="$depth"
+    info "Table of contents enabled (depth ${TOC_DEPTH})."
 }
 
 # =============================================================================
@@ -638,6 +672,173 @@ EOF
     fi
 
     HEADER_TEX="$header_tex"
+
+    ensure_pagebreak_filter
+}
+
+# -----------------------------------------------------------------------------
+# Ensure .fcc/pdf/pagebreak.lua exists.
+# Ships with new scaffolds via .fcc/, but older projects predate it — write an
+# embedded copy when absent so cross-format page breaks work everywhere.
+# -----------------------------------------------------------------------------
+
+ensure_pagebreak_filter() {
+    local pagebreak_lua="${FCC_DIR}/pdf/pagebreak.lua"
+    mkdir -p "${FCC_DIR}/pdf"
+
+    # Write to a temp file first and only replace when the content differs, so a
+    # stale copy from an older scaffold self-heals instead of lingering silently.
+    local tmp="${pagebreak_lua}.new"
+    cat > "$tmp" << 'EOF'
+-- pagebreak.lua
+-- Turns an explicit page-break marker into the correct construct per output
+-- format, so the same marker works for both PDF (LaTeX) and DOCX.
+--
+-- Recognised markers (alone on a line):
+--   \newpage     \pagebreak     \newpage{}     \pagebreak{}
+--
+-- Honoured whether the marker is in its own paragraph or on its own line
+-- inside a paragraph (the paragraph is split around the break).
+
+local function is_marker(s)
+    s = (s or ""):gsub("%s+$", ""):gsub("^%s+", "")
+    return s == "\\newpage" or s == "\\pagebreak"
+        or s == "\\newpage{}" or s == "\\pagebreak{}"
+end
+
+local function supported_format()
+    return FORMAT:match("latex") or FORMAT:match("beamer") or FORMAT:match("docx")
+end
+
+local function break_block()
+    if FORMAT:match("latex") or FORMAT:match("beamer") then
+        return pandoc.RawBlock("latex", "\\newpage")
+    elseif FORMAT:match("docx") then
+        -- Use pageBreakBefore rather than an inline <w:br w:type="page"/> run.
+        -- An inline break lives in its own empty paragraph; when the preceding
+        -- content ends near a page boundary that empty paragraph spills to the
+        -- next page and its break then starts yet another → a blank page. Word
+        -- suppresses pageBreakBefore when the paragraph is already at the top of
+        -- a page, so it never produces that stray blank page.
+        return pandoc.RawBlock(
+            "openxml",
+            '<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>'
+        )
+    end
+    return nil
+end
+
+local function inline_is_marker(inl)
+    return (inl.t == "RawInline" or inl.t == "Str") and is_marker(inl.text)
+end
+
+local function trim_inlines(inls)
+    local function ws(i) return i.t == "Space" or i.t == "SoftBreak" or i.t == "LineBreak" end
+    local a, b = 1, #inls
+    while a <= b and ws(inls[a]) do a = a + 1 end
+    while b >= a and ws(inls[b]) do b = b - 1 end
+    local out = {}
+    for i = a, b do out[#out + 1] = inls[i] end
+    return out
+end
+
+function Para(el)
+    if not supported_format() then return nil end
+
+    if #el.content == 1 and inline_is_marker(el.content[1]) then
+        return break_block()
+    end
+
+    local has = false
+    for _, inl in ipairs(el.content) do
+        if inline_is_marker(inl) then has = true; break end
+    end
+    if not has then return nil end
+
+    local blocks = {}
+    local segment = {}
+    local function flush()
+        local trimmed = trim_inlines(segment)
+        if #trimmed > 0 then blocks[#blocks + 1] = pandoc.Para(trimmed) end
+        segment = {}
+    end
+    for _, inl in ipairs(el.content) do
+        if inline_is_marker(inl) then
+            flush()
+            blocks[#blocks + 1] = break_block()
+        else
+            segment[#segment + 1] = inl
+        end
+    end
+    flush()
+    return blocks
+end
+
+function RawBlock(el)
+    if (el.format == "tex" or el.format == "latex") and is_marker(el.text) then
+        return break_block() or el
+    end
+    return nil
+end
+
+-- Is this block a page break — in any of the forms it can take: the raw marker
+-- (\newpage as a RawBlock or a lone-marker paragraph) or the break this filter
+-- emits (LaTeX \newpage, or the DOCX openxml page break)? Matching every form
+-- keeps the adjacency cleanup below correct regardless of filter traversal order.
+local function is_break_block(b)
+    if not b then return false end
+    if b.t == "RawBlock" then
+        local f = (b.format or ""):lower()
+        if f == "latex" or f == "tex" or f == "beamer" then return is_marker(b.text) end
+        if f == "openxml" then
+            return b.text:find('w:type="page"', 1, true) ~= nil
+                or b.text:find("pageBreakBefore", 1, true) ~= nil
+        end
+        return false
+    end
+    if b.t == "Para" and #b.content == 1 then return inline_is_marker(b.content[1]) end
+    return false
+end
+
+-- A paragraph with no visible content (only whitespace inlines) — the kind a
+-- "quirky" Markdown formatter can leave behind next to a break.
+local function is_empty_para(b)
+    if not b or (b.t ~= "Para" and b.t ~= "Plain") then return false end
+    for _, inl in ipairs(b.content) do
+        local t = inl.t
+        if t ~= "Space" and t ~= "SoftBreak" and t ~= "LineBreak" then return false end
+    end
+    return true
+end
+
+-- Drop a HorizontalRule (Markdown `---`) or empty paragraph sitting immediately
+-- next to a page break. In DOCX both render as an extra empty paragraph, which
+-- pushes a blank line onto the top of the new page — and occasionally spills to
+-- a whole blank page. The break already provides the separation, so the rule /
+-- blank is redundant. Leaves rules/blanks that are NOT next to a break alone.
+function Blocks(blocks)
+    if not supported_format() then return nil end
+    local out = {}
+    for i = 1, #blocks do
+        local b = blocks[i]
+        local drop = false
+        if b.t == "HorizontalRule" or is_empty_para(b) then
+            if is_break_block(out[#out]) or is_break_block(blocks[i + 1]) then
+                drop = true
+            end
+        end
+        if not drop then out[#out + 1] = b end
+    end
+    return out
+end
+EOF
+
+    if [[ ! -f "$pagebreak_lua" ]] || ! cmp -s "$tmp" "$pagebreak_lua"; then
+        mv "$tmp" "$pagebreak_lua"
+        success "Wrote ${pagebreak_lua}."
+    else
+        rm -f "$tmp"
+    fi
 }
 
 select_pdf_engine() {
@@ -651,6 +852,17 @@ select_pdf_engine() {
     info "PDF engine: ${PDF_ENGINE}"
 }
 
+# Is a font family installed? Uses fontconfig when available (reliable on
+# Linux and macOS-with-Homebrew-fontconfig); optimistic when fc-list is absent.
+font_installed() {
+    local family="$1"
+    if command -v fc-list &>/dev/null; then
+        fc-list : family | tr ',' '\n' | grep -qixF "$family"
+        return
+    fi
+    return 0
+}
+
 select_pdf_font() {
     PDF_FONT=""
 
@@ -659,19 +871,28 @@ select_pdf_font() {
         return
     fi
 
+    # Only offer installed fonts — a missing font makes xelatex abort the run.
+    local candidates=("JetBrains Mono" "Fira Code" "Inconsolata" "Source Code Pro" \
+                      "Courier New" "Monaco" "Menlo" "Helvetica")
+    local avail=()
+    local c
+    for c in "${candidates[@]}"; do
+        font_installed "$c" && avail+=("$c")
+    done
+
+    if [[ ${#avail[@]} -eq 0 ]]; then
+        warn "None of the preset fonts are installed — using pandoc default."
+        PDF_FONT=""
+        return
+    fi
+    avail+=("None (pandoc default)")
+
     local font
-    font=$(gum choose \
-        "JetBrains Mono" \
-        "Fira Code" \
-        "Inconsolata" \
-        "Source Code Pro" \
-        "Courier New" \
-        "Monaco" \
-        "Menlo" \
-        "Helvetica" \
-        --header "Select monofont:") || true
+    font=$(printf '%s\n' "${avail[@]}" | gum choose \
+        --header "Select font — only installed fonts shown:") || true
 
     [[ -z "$font" ]] && { gum style --faint "Cancelled."; exit 0; }
+    [[ "$font" == "None (pandoc default)" ]] && { PDF_FONT=""; return; }
 
     PDF_FONT="$font"
     info "Font: ${PDF_FONT}"
@@ -728,9 +949,6 @@ convert_md_to_pdf() {
         "$input_file"
         -o "$output_file"
         --pdf-engine="$PDF_ENGINE"
-        --syntax-highlighting="${FCC_DIR}/pdf/p10k.theme"
-        --lua-filter="${FCC_DIR}/pdf/widen-tables.lua"
-        --lua-filter="${FCC_DIR}/pdf/render-mermaid.lua"
         -H "$HEADER_TEX"
         -H "${FCC_DIR}/pdf/monofont.tex"
         -V colorlinks=true
@@ -739,8 +957,22 @@ convert_md_to_pdf() {
         -V citecolor=blue
     )
 
+    # Add optional assets only when present, so a missing file degrades
+    # gracefully instead of failing the whole conversion.
+    [[ -f "${FCC_DIR}/pdf/p10k.theme" ]] && \
+        pandoc_args+=(--syntax-highlighting="${FCC_DIR}/pdf/p10k.theme")
+    local lf
+    for lf in widen-tables.lua render-mermaid.lua pagebreak.lua; do
+        [[ -f "${FCC_DIR}/pdf/${lf}" ]] && pandoc_args+=(--lua-filter="${FCC_DIR}/pdf/${lf}")
+    done
+
     if [[ -n "$PDF_FONT" ]]; then
         pandoc_args+=(-V "mainfont=${PDF_FONT}")
+    fi
+
+    # Table of contents (opt-in) — pandoc builds it from the headers.
+    if [[ "$USE_TOC" == "true" ]]; then
+        pandoc_args+=(--toc --toc-depth="$TOC_DEPTH" -V "toc-title=${TOC_TITLE}")
     fi
 
     pandoc "${pandoc_args[@]}" 2>&1
@@ -767,8 +999,16 @@ check_deps_md_docx() {
 select_docx_reference_doc() {
     DOCX_REFERENCE_DOC=""
 
-    if ! gum confirm "Use a reference .docx template for styling?"; then
-        info "No reference doc — using pandoc defaults."
+    local have_default=false
+    [[ -f "$DOCX_DEFAULT_REFERENCE" ]] && have_default=true
+
+    if ! gum confirm "Use a custom reference .docx template? (No = built-in styled template)"; then
+        if [[ "$have_default" == "true" ]]; then
+            DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
+            info "Using built-in styled reference: ${DOCX_REFERENCE_DOC}"
+        else
+            warn "Built-in reference template unavailable — using pandoc defaults (plain code blocks, unstyled TOC)."
+        fi
         return
     fi
 
@@ -811,11 +1051,85 @@ select_docx_reference_doc() {
         if [[ ! -f "$manual" ]]; then
             error_exit "File not found: ${manual}"
         fi
-        selected="$manual"
+        # Manual paths are stored as-is (already directly usable).
+        DOCX_REFERENCE_DOC="$manual"
+        info "Reference doc: ${DOCX_REFERENCE_DOC}"
+        return
     fi
 
-    DOCX_REFERENCE_DOC="$selected"
+    # Scanned entries are relative to DOCS_DIR — resolve to a directly usable path.
+    DOCX_REFERENCE_DOC="${DOCS_DIR}/${selected}"
     info "Reference doc: ${DOCX_REFERENCE_DOC}"
+}
+
+# Post-process a generated .docx: fold each pageBreakBefore break paragraph onto
+# the following paragraph, so a heading after \newpage starts the new page with
+# no blank line above it. Skipped cleanly if python3 is unavailable (the break
+# paragraph then remains — no blank page, just a blank line; nothing is dropped).
+# NOTE: keep this logic in sync with starlight/.fcc/docx/fold_pagebreaks.py.
+fold_docx_pagebreaks() {
+    local docx="$1"
+    command -v python3 &>/dev/null || {
+        info "python3 not found — leaving page-break paragraphs as-is (a blank line may show above headings)."
+        return 0
+    }
+    python3 - "$docx" <<'PYEOF'
+import re, sys, os, zipfile
+BREAK = '<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>'
+PREFIX = re.compile(r'(\s*(?:<w:bookmark(?:Start|End)\b[^>]*>\s*)*)')
+
+def fold(xml):
+    out, pos, n = [], 0, 0
+    while True:
+        idx = xml.find(BREAK, pos)
+        if idx == -1:
+            out.append(xml[pos:]); break
+        out.append(xml[pos:idx])
+        after = idx + len(BREAK)
+        pm = PREFIX.match(xml[after:])
+        prefix = pm.group(1)
+        p_at = after + pm.end()
+        m = re.match(r'<w:p\b[^>]*>', xml[p_at:])
+        if not m:
+            out.append(BREAK); pos = after; continue
+        out.append(prefix)
+        popen = m.group(0)
+        rest_start = p_at + m.end()
+        mppr = re.match(r'\s*<w:pPr>(.*?)</w:pPr>', xml[rest_start:], re.S)
+        if mppr:
+            inner = mppr.group(1)
+            if '<w:pageBreakBefore' not in inner:
+                ms = re.match(r'(<w:pStyle\b[^>]*>)', inner)
+                inner = (ms.group(1) + '<w:pageBreakBefore/>' + inner[ms.end():]) if ms \
+                        else '<w:pageBreakBefore/>' + inner
+            out.append(popen + '<w:pPr>' + inner + '</w:pPr>')
+            pos = rest_start + mppr.end()
+        else:
+            out.append(popen + '<w:pPr><w:pageBreakBefore/></w:pPr>')
+            pos = rest_start
+        n += 1
+    return ''.join(out), n
+
+path = sys.argv[1]
+try:
+    with zipfile.ZipFile(path) as z:
+        infos = z.infolist()
+        data = {i.filename: z.read(i.filename) for i in infos}
+except (OSError, zipfile.BadZipFile):
+    sys.exit(0)
+key = 'word/document.xml'
+if key in data:
+    xml = data[key].decode('utf-8')
+    new, n = fold(xml)
+    if n and new != xml:
+        data[key] = new.encode('utf-8')
+        tmp = path + '.tmp'
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
+            for i in infos:
+                z.writestr(i, data[i.filename])
+        os.replace(tmp, path)
+        print(f'folded {n} page break(s)')
+PYEOF
 }
 
 convert_md_to_docx() {
@@ -832,14 +1146,27 @@ convert_md_to_docx() {
         --to=docx
     )
 
+    # Format-aware filters that also benefit DOCX: cross-format page breaks,
+    # mermaid-as-image, and even column widths. Added only when present.
+    local lf
+    for lf in pagebreak.lua render-mermaid.lua widen-tables.lua; do
+        [[ -f "${FCC_DIR}/pdf/${lf}" ]] && pandoc_args+=(--lua-filter="${FCC_DIR}/pdf/${lf}")
+    done
+
+    # Table of contents (opt-in) — Word builds a native TOC field.
+    if [[ "$USE_TOC" == "true" ]]; then
+        pandoc_args+=(--toc --toc-depth="$TOC_DEPTH")
+    fi
+
     if [[ -n "$DOCX_REFERENCE_DOC" ]]; then
-        pandoc_args+=(--reference-doc="${DOCS_DIR}/${DOCX_REFERENCE_DOC}")
+        pandoc_args+=(--reference-doc="$DOCX_REFERENCE_DOC")
     fi
 
     gum spin --spinner dot --title "Converting $(basename "$input_file") → $(basename "$output_file") ..." -- \
         pandoc "${pandoc_args[@]}"
 
     if [[ $? -eq 0 ]]; then
+        fold_docx_pagebreaks "$output_file"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
@@ -1062,6 +1389,7 @@ dispatch() {
             ;;
         "md→docx")
             check_deps_md_docx
+            ensure_pagebreak_filter
             select_docx_reference_doc
             ;;
         "docx→md")
@@ -1161,6 +1489,7 @@ main_full() {
     select_files
     select_output_format
     select_strip_rules
+    select_toc
     select_title_page
 
     # Dep check for md→pdf must run before dispatch so AVAILABLE_ENGINES is set
@@ -1179,13 +1508,22 @@ main_fast() {
         --align center --width 60 --margin "1 2" --padding "1 4" \
         'Convert to PDF'
 
-    # Hardcoded: md → pdf via xelatex, Helvetica, with title page, rules stripped
+    # Hardcoded: md → pdf via xelatex, Helvetica, with title page + TOC, rules stripped
     SOURCE_FORMAT="md"
     OUTPUT_FORMAT="pdf"
     PDF_ENGINE="xelatex"
     PDF_FONT="Helvetica"
     USE_TITLE_PAGE=true
     STRIP_RULES=true
+    USE_TOC=true
+    TOC_DEPTH="$DEFAULT_DEPTH"
+
+    # Fall back to the pandoc default if Helvetica isn't installed, so xelatex
+    # never aborts on a missing font in fast mode.
+    if ! font_installed "$PDF_FONT"; then
+        warn "Font '${PDF_FONT}' not installed — using pandoc default."
+        PDF_FONT=""
+    fi
 
     check_deps_md_pdf_fast
 
