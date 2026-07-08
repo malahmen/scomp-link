@@ -370,37 +370,22 @@ ensure_fcc_pdf_assets() {
     local src="${CANONICAL_FCC}/pdf"
     mkdir -p "$pdf_config_dir"
 
-    # The lua filters are behaviour-critical *code*, not user config — keep them
-    # in sync with the bundle so a stale copy from an older run never lingers
-    # (e.g. an old pagebreak.lua that missed markers adjacent to text). Config
-    # assets (header.tex, p10k.theme) are user-editable → created only if absent.
-    local managed=" widen-tables.lua render-mermaid.lua pagebreak.lua "
-
+    # ALL PDF assets are behaviour-critical and kept in sync with the bundle, so
+    # a stale copy from an older run never lingers. This specifically prevents
+    # the old basic `listings` header.tex (no fvextra line-breaking) from
+    # surviving and making code blocks overflow the box.
     local a dest
     for a in "${assets[@]}"; do
         dest="${pdf_config_dir}/${a}"
-
-        if [[ "$managed" == *" ${a} "* ]]; then
-            if [[ -f "${src}/${a}" ]]; then
-                if [[ ! -f "$dest" ]] || ! cmp -s "${src}/${a}" "$dest"; then
-                    cp "${src}/${a}" "$dest"
-                    info "Synced ${dest} (bundled)."
-                fi
-            elif [[ ! -f "$dest" ]]; then
-                warn "Bundled asset '${a}' not found at ${src}/ — feature relying on it will be skipped."
-            fi
-            continue
-        fi
-
-        # Config asset — create only when missing.
-        [[ -f "$dest" ]] && continue
         if [[ -f "${src}/${a}" ]]; then
-            cp "${src}/${a}" "$dest"
-            info "Installed ${dest} (bundled)."
-        elif [[ "$a" == "header.tex" ]]; then
+            if [[ ! -f "$dest" ]] || ! cmp -s "${src}/${a}" "$dest"; then
+                cp "${src}/${a}" "$dest"
+                info "Synced ${dest} (bundled)."
+            fi
+        elif [[ "$a" == "header.tex" && ! -f "$dest" ]]; then
             _write_basic_header "$dest"
             warn "Bundled header.tex not found — wrote minimal fallback to ${dest}."
-        else
+        elif [[ ! -f "$dest" ]]; then
             warn "Bundled asset '${a}' not found at ${src}/ — feature relying on it will be skipped."
         fi
     done
@@ -429,23 +414,49 @@ resolve_lua_filter() {
     fi
 }
 
+# Same, but for the DOCX asset tree (.fcc/docx/) — kept separate from PDF so the
+# two paths never share files.
+resolve_docx_asset() {
+    local name="$1"
+    if [[ -f "${FCC_DIR}/docx/${name}" ]]; then
+        printf '%s' "${FCC_DIR}/docx/${name}"
+    elif [[ -f "${CANONICAL_FCC}/docx/${name}" ]]; then
+        printf '%s' "${CANONICAL_FCC}/docx/${name}"
+    fi
+}
+
 # -----------------------------------------------------------------------------
-# Ensure the bundled DOCX reference doc exists in .fcc/docx/.
-# Copies it from the canonical bundle when missing. Returns non-zero if it
-# cannot be made available (bundle absent), so callers can fall back cleanly.
+# Ensure the DOCX asset tree (.fcc/docx/) is present AND current.
+#
+# DOCX is kept COMPLETELY SEPARATE from the PDF assets (.fcc/pdf/): it has its
+# own copies of the reference doc, the lua filters it uses, and the syntax
+# theme. This way PDF changes can never affect DOCX and vice-versa. All are
+# managed (synced from the bundle) so stale copies self-heal.
+#
+# Returns non-zero only if the bundle is absent and no local reference exists,
+# so the caller can fall back to pandoc defaults.
 # -----------------------------------------------------------------------------
 
 ensure_fcc_docx_assets() {
-    local dest="$DOCX_DEFAULT_REFERENCE"
-    [[ -f "$dest" ]] && return 0
+    local docx_dir="${FCC_DIR}/docx"
+    local src="${CANONICAL_FCC}/docx"
+    mkdir -p "$docx_dir"
 
-    local src="${CANONICAL_FCC}/docx/reference.docx"
-    if [[ -f "$src" ]]; then
-        mkdir -p "$(dirname "$dest")"
-        cp "$src" "$dest"
-        info "Installed ${dest} (bundled)."
-        return 0
-    fi
+    local a dest
+    for a in reference.docx pagebreak.lua render-mermaid.lua p10k.theme; do
+        dest="${docx_dir}/${a}"
+        if [[ -f "${src}/${a}" ]]; then
+            if [[ ! -f "$dest" ]] || ! cmp -s "${src}/${a}" "$dest"; then
+                cp "${src}/${a}" "$dest"
+                info "Synced ${dest} (bundled)."
+            fi
+        elif [[ ! -f "$dest" ]]; then
+            warn "Bundled DOCX asset '${a}' not found at ${src}/ — related styling will be skipped."
+        fi
+    done
+
+    # Usable if the reference doc ended up available (bundle or pre-existing).
+    [[ -f "$DOCX_DEFAULT_REFERENCE" ]] && return 0
     return 1
 }
 
@@ -476,6 +487,36 @@ fold_docx_pagebreaks() {
     local script="$dest"
     [[ -f "$script" ]] || script="$src"
     [[ -f "$script" ]] || { warn "fold_pagebreaks.py not found — skipping page-break tidy."; return 0; }
+
+    python3 "$script" "$docx"
+}
+
+# -----------------------------------------------------------------------------
+# Post-process a generated .docx: write explicit header + alternating-row cell
+# shading onto every table, matching the PDF's row colours. Word — and
+# especially LibreOffice / previewers — don't reliably render the reference
+# table style's conditional banding, so we set it per cell instead.
+# Skipped cleanly if python3 is unavailable (tables just stay unbanded).
+# -----------------------------------------------------------------------------
+
+shade_docx_tables() {
+    local docx="$1"
+    command -v python3 &>/dev/null || {
+        info "python3 not found — leaving table rows unbanded."
+        return 0
+    }
+
+    local dest="${FCC_DIR}/docx/shade_tables.py"
+    local src="${CANONICAL_FCC}/docx/shade_tables.py"
+    mkdir -p "$(dirname "$dest")"
+    if [[ -f "$src" ]] && { [[ ! -f "$dest" ]] || ! cmp -s "$src" "$dest"; }; then
+        cp "$src" "$dest"
+        info "Synced ${dest} (bundled)."
+    fi
+
+    local script="$dest"
+    [[ -f "$script" ]] || script="$src"
+    [[ -f "$script" ]] || { warn "shade_tables.py not found — skipping table shading."; return 0; }
 
     python3 "$script" "$docx"
 }
@@ -1001,12 +1042,12 @@ convert_md_to_docx() {
         --to=docx
     )
 
-    # Format-aware filters that also benefit DOCX: cross-format page breaks,
-    # mermaid-as-image, and even column widths. Falls back to the bundle so a
-    # missing .fcc copy never silently drops \newpage from the output.
+    # DOCX filters — resolved from the DOCX asset tree (.fcc/docx/), kept fully
+    # separate from the PDF assets. Falls back to the bundle so a missing copy
+    # never silently drops \newpage from the output.
     local lf lf_path
-    for lf in pagebreak.lua render-mermaid.lua widen-tables.lua; do
-        lf_path="$(resolve_lua_filter "$lf")"
+    for lf in pagebreak.lua render-mermaid.lua; do
+        lf_path="$(resolve_docx_asset "$lf")"
         [[ -n "$lf_path" ]] && pandoc_args+=(--lua-filter="$lf_path")
     done
 
@@ -1019,12 +1060,24 @@ convert_md_to_docx() {
         pandoc_args+=(--reference-doc="$DOCX_REFERENCE_DOC")
     fi
 
+    # The p10k syntax theme for code — from the DOCX tree, only with the built-in
+    # reference (whose code styles are dark to suit it). A custom template keeps
+    # its own code styling.
+    if [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" ]]; then
+        local theme_path
+        theme_path="$(resolve_docx_asset "p10k.theme")"
+        [[ -n "$theme_path" ]] && pandoc_args+=(--syntax-highlighting="$theme_path")
+    fi
+
     gum spin --spinner dot --title "Converting $(basename "$input_file") → $(basename "$output_file") ..." -- \
         pandoc "${pandoc_args[@]}"
 
     if [[ $? -eq 0 ]]; then
         fold_docx_pagebreaks "$output_file"
         apply_docx_fonts "$output_file"
+        # Explicit table banding — only with the built-in reference (a custom
+        # template owns its own table styling).
+        [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" ]] && shade_docx_tables "$output_file"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
@@ -1525,7 +1578,7 @@ dispatch() {
             ;;
         "md→docx")
             check_deps_md_docx
-            ensure_fcc_pdf_assets pagebreak.lua render-mermaid.lua widen-tables.lua
+            ensure_fcc_docx_assets   # DOCX-only asset tree; never touches .fcc/pdf/
             select_docx_reference_doc
             select_docx_font
             detect_docx_mono
