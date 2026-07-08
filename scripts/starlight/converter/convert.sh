@@ -845,6 +845,32 @@ EOF
     fi
 }
 
+# -----------------------------------------------------------------------------
+# Ensure the DOCX asset tree (.fcc/docx/) exists, kept SEPARATE from .fcc/pdf/
+# so the PDF and DOCX paths never share files.
+#
+# New scaffolds ship .fcc/docx/{pagebreak,render-mermaid,p10k} directly. For
+# older scaffolds that lack them, seed once from .fcc/pdf/ (the only in-project
+# source); afterwards the copies live independently. pagebreak.lua is also
+# refreshed from the embedded current version so it self-heals.
+# reference.docx is shipped by the scaffolder.
+# -----------------------------------------------------------------------------
+ensure_fcc_docx_assets() {
+    local docx_dir="${FCC_DIR}/docx"
+    mkdir -p "$docx_dir"
+    ensure_pagebreak_filter   # writes/heals .fcc/pdf/pagebreak.lua from embedded
+
+    local a
+    for a in pagebreak.lua render-mermaid.lua p10k.theme; do
+        [[ -f "${FCC_DIR}/pdf/${a}" ]] || continue
+        # seed when missing; also keep the managed pagebreak filter current
+        if [[ ! -f "${docx_dir}/${a}" ]] || \
+           { [[ "$a" == "pagebreak.lua" ]] && ! cmp -s "${FCC_DIR}/pdf/${a}" "${docx_dir}/${a}"; }; then
+            cp "${FCC_DIR}/pdf/${a}" "${docx_dir}/${a}"
+        fi
+    done
+}
+
 select_pdf_engine() {
     local engine
     engine=$(printf '%s\n' "${AVAILABLE_ENGINES[@]}" | gum choose \
@@ -1252,6 +1278,76 @@ if changed:
 PYEOF
 }
 
+# Write explicit header + alternating-row cell shading onto every table, matching
+# the PDF's row colours. Word — and especially LibreOffice / previewers — don't
+# reliably render the reference table style's conditional banding.
+# NOTE: keep this logic in sync with starlight/.fcc/docx/shade_tables.py.
+shade_docx_tables() {
+    local docx="$1"
+    command -v python3 &>/dev/null || {
+        info "python3 not found — leaving table rows unbanded."
+        return 0
+    }
+    python3 - "$docx" <<'PYEOF'
+import re, sys, os, zipfile
+HEADER_FILL, BAND_FILL = "CCCCCC", "F5F5F5"
+SHD_RE = re.compile(r'<w:shd\b[^>]*/>')
+TCW_RE = re.compile(r'<w:tcW\b[^>]*/>')
+TC_RE  = re.compile(r'<w:tc\b[^>]*>.*?</w:tc>', re.S)
+TR_RE  = re.compile(r'<w:tr\b.*?</w:tr>', re.S)
+TBL_RE = re.compile(r'<w:tbl\b.*?</w:tbl>', re.S)
+
+def set_cell_shd(tc, fill):
+    shd = '<w:shd w:val="clear" w:color="auto" w:fill="%s"/>' % fill if fill else ''
+    m = re.search(r'<w:tcPr>(.*?)</w:tcPr>', tc, re.S)
+    if m:
+        pr = SHD_RE.sub('', m.group(1))
+        if shd:
+            tcw = TCW_RE.search(pr)
+            pr = pr[:tcw.end()] + shd + pr[tcw.end():] if tcw else shd + pr
+        return tc[:m.start(1)] + pr + tc[m.end(1):]
+    if not shd:
+        return tc
+    return re.sub(r'(<w:tc\b[^>]*>)', r'\1<w:tcPr>' + shd + '</w:tcPr>', tc, count=1)
+
+def process_table(tbl):
+    out, last, di = [], 0, 0
+    for i, rm in enumerate(TR_RE.finditer(tbl)):
+        row = rm.group(0)
+        is_header = ('<w:tblHeader' in row) or (i == 0 and '<w:tblHeader' not in tbl)
+        if is_header:
+            fill = HEADER_FILL
+        else:
+            fill = BAND_FILL if di % 2 == 0 else None
+            di += 1
+        out.append(tbl[last:rm.start()])
+        out.append(TC_RE.sub(lambda mm: set_cell_shd(mm.group(0), fill), row))
+        last = rm.end()
+    out.append(tbl[last:])
+    return ''.join(out)
+
+path = sys.argv[1]
+try:
+    with zipfile.ZipFile(path) as z:
+        infos = z.infolist()
+        data = {i.filename: z.read(i.filename) for i in infos}
+except (OSError, zipfile.BadZipFile):
+    sys.exit(0)
+key = 'word/document.xml'
+if key in data:
+    xml = data[key].decode('utf-8')
+    new = TBL_RE.sub(lambda m: process_table(m.group(0)), xml)
+    if new != xml:
+        data[key] = new.encode('utf-8')
+        tmp = path + '.tmp'
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED) as z:
+            for i in infos:
+                z.writestr(i, data[i.filename])
+        os.replace(tmp, path)
+        print('shaded table rows: header=%s band=%s' % (HEADER_FILL, BAND_FILL))
+PYEOF
+}
+
 convert_md_to_docx() {
     local input_file="$1"
     local name_source="${2:-$input_file}"
@@ -1266,11 +1362,11 @@ convert_md_to_docx() {
         --to=docx
     )
 
-    # Format-aware filters that also benefit DOCX: cross-format page breaks,
-    # mermaid-as-image, and even column widths. Added only when present.
+    # DOCX filters — from the DOCX asset tree (.fcc/docx/), kept fully separate
+    # from the PDF assets so the two paths never share files.
     local lf
-    for lf in pagebreak.lua render-mermaid.lua widen-tables.lua; do
-        [[ -f "${FCC_DIR}/pdf/${lf}" ]] && pandoc_args+=(--lua-filter="${FCC_DIR}/pdf/${lf}")
+    for lf in pagebreak.lua render-mermaid.lua; do
+        [[ -f "${FCC_DIR}/docx/${lf}" ]] && pandoc_args+=(--lua-filter="${FCC_DIR}/docx/${lf}")
     done
 
     # Table of contents (opt-in) — Word builds a native TOC field.
@@ -1282,12 +1378,22 @@ convert_md_to_docx() {
         pandoc_args+=(--reference-doc="$DOCX_REFERENCE_DOC")
     fi
 
+    # The p10k syntax theme for code — from the DOCX tree, only with the built-in
+    # reference (whose code styles are dark to suit it). A custom template keeps
+    # its own code styling.
+    if [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" && -f "${FCC_DIR}/docx/p10k.theme" ]]; then
+        pandoc_args+=(--syntax-highlighting="${FCC_DIR}/docx/p10k.theme")
+    fi
+
     gum spin --spinner dot --title "Converting $(basename "$input_file") → $(basename "$output_file") ..." -- \
         pandoc "${pandoc_args[@]}"
 
     if [[ $? -eq 0 ]]; then
         fold_docx_pagebreaks "$output_file"
         apply_docx_fonts "$output_file"
+        # Explicit table banding — only with the built-in reference (a custom
+        # template owns its own table styling).
+        [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" ]] && shade_docx_tables "$output_file"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
@@ -1510,7 +1616,7 @@ dispatch() {
             ;;
         "md→docx")
             check_deps_md_docx
-            ensure_pagebreak_filter
+            ensure_fcc_docx_assets   # DOCX-only asset tree; never reads .fcc/pdf/ at convert time
             select_docx_reference_doc
             select_docx_font
             detect_docx_mono
