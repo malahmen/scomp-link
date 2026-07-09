@@ -41,6 +41,14 @@ INPUT_EXTS=(pdf docx pptx xlsx html epub png jpg jpeg tiff tif webp gif bmp)
 
 PIPX=""   # resolved to "pipx" or "python3 -m pipx" by resolve_pipx()
 
+# Containerized service (Docker/K8s) — the scalable RAG-ingestion deployment.
+SERVICE_DIR="${SCRIPT_DIR}/templates/service"
+COMPOSE_FILE="${SERVICE_DIR}/docker-compose.yaml"
+K8S_DIR="${SERVICE_DIR}/k8s"
+MARKER_IMAGE="marker-service:latest"
+K8S_NS="marker"
+SVC_TARGET=""   # "docker" or "k8s", chosen in menu_service
+
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
 # -----------------------------------------------------------------------------
@@ -567,6 +575,175 @@ action_uninstall() {
     $PIPX uninstall "$MARKER_PKG" && success "marker uninstalled."
 }
 
+# =============================================================================
+# SERVICE — deploy marker as a scalable containerized ingestion service
+# (Redis queue + HTTP enqueue API + worker replicas + batch enqueuer).
+# Templates live in templates/service/ (+ k8s/). Static — this drives docker
+# compose / kubectl; it does not run the heavy image build here.
+# =============================================================================
+
+svc_build() {
+    command -v docker &>/dev/null || { warn "docker not found — needed to build the image."; return 0; }
+    info "Building ${MARKER_IMAGE} (large: installs torch + deps)..."
+    if docker build -t "$MARKER_IMAGE" "$SERVICE_DIR"; then
+        success "Built ${MARKER_IMAGE}."
+        [[ "$SVC_TARGET" == k8s ]] && info "For K8s, load/push it to the cluster (e.g. 'kind load docker-image ${MARKER_IMAGE}')."
+    else
+        warn "Build failed."
+    fi
+}
+
+svc_deploy() {
+    if [[ "$SVC_TARGET" == docker ]]; then
+        local indir outdir
+        indir=$(gum input --value "./input"  --header "Host folder with source documents:") || true
+        outdir=$(gum input --value "./output" --header "Host folder for converted output:") || true
+        info "Building image + starting stack (first run downloads models — several GB)..."
+        MARKER_INPUT="${indir:-./input}" MARKER_OUTPUT="${outdir:-./output}" \
+            docker compose -f "$COMPOSE_FILE" up -d --build \
+            && success "Service up — API at http://localhost:8000 (POST /jobs)." \
+            || warn "docker compose up failed."
+    else
+        info "Applying manifests to namespace '${K8S_NS}'..."
+        kubectl apply -f "${K8S_DIR}/namespace.yaml" || { warn "apply failed."; return 0; }
+        kubectl apply -f "${K8S_DIR}/pvc.yaml" -f "${K8S_DIR}/redis.yaml" \
+                      -f "${K8S_DIR}/api.yaml" -f "${K8S_DIR}/worker.yaml" \
+            && success "Applied. Make image '${MARKER_IMAGE}' available to the cluster (push/registry or 'kind load')." \
+            || warn "kubectl apply failed."
+        info "Reach the API: kubectl -n ${K8S_NS} port-forward svc/marker-api 8000:8000"
+    fi
+}
+
+svc_status() {
+    if [[ "$SVC_TARGET" == docker ]]; then
+        docker compose -f "$COMPOSE_FILE" ps || warn "Is the stack deployed?"
+    else
+        kubectl -n "$K8S_NS" get pods,svc,pvc || warn "Is the namespace deployed?"
+    fi
+}
+
+svc_logs() {
+    info "Streaming worker logs — Ctrl-C to stop and return."
+    if [[ "$SVC_TARGET" == docker ]]; then
+        run_foreground docker compose -f "$COMPOSE_FILE" logs -f worker
+    else
+        run_foreground kubectl -n "$K8S_NS" logs -f deploy/marker-worker
+    fi
+}
+
+svc_scale() {
+    local n
+    n=$(gum input --value "2" --header "Number of worker replicas:") || true
+    [[ "$n" =~ ^[0-9]+$ ]] || { warn "Not a number: '${n}'."; return 0; }
+    if [[ "$SVC_TARGET" == docker ]]; then
+        docker compose -f "$COMPOSE_FILE" up -d --scale worker="$n" \
+            && success "Workers scaled to ${n}." || warn "Scale failed."
+    else
+        kubectl -n "$K8S_NS" scale deploy/marker-worker --replicas="$n" \
+            && success "Workers scaled to ${n}." || warn "Scale failed."
+    fi
+}
+
+svc_ingest() {
+    if [[ "$SVC_TARGET" == docker ]]; then
+        info "Enqueuing every supported file under the mounted /data/input ..."
+        docker compose -f "$COMPOSE_FILE" run --rm api python enqueue_batch.py /data/input \
+            || warn "Batch enqueue failed (is the stack up?)."
+    else
+        warn "First ensure your documents are on the 'marker-input' PVC (e.g. via 'kubectl cp')."
+        gum confirm "Start the batch enqueue job now?" || return 0
+        kubectl -n "$K8S_NS" delete job/marker-batch --ignore-not-found >/dev/null 2>&1
+        kubectl apply -f "${K8S_DIR}/batch-job.yaml" \
+            && success "Batch job started — watch: kubectl -n ${K8S_NS} logs -f job/marker-batch" \
+            || warn "Failed to start batch job."
+    fi
+}
+
+svc_teardown() {
+    if [[ "$SVC_TARGET" == docker ]]; then
+        gum confirm "Stop and remove the Docker stack? (named volumes kept)" || return 0
+        docker compose -f "$COMPOSE_FILE" down && success "Stack stopped." || warn "compose down failed."
+    else
+        gum confirm "Delete the marker workloads in namespace '${K8S_NS}'? (PVCs/namespace kept)" || return 0
+        kubectl delete -f "${K8S_DIR}/worker.yaml" -f "${K8S_DIR}/api.yaml" -f "${K8S_DIR}/redis.yaml" --ignore-not-found
+        info "Data kept. To remove everything: kubectl delete ns ${K8S_NS}"
+    fi
+}
+
+menu_service() {
+    header "Deploy marker as a service"
+    if [[ ! -d "$SERVICE_DIR" ]]; then
+        warn "Service templates not found at ${SERVICE_DIR}."
+        return 0
+    fi
+
+    local target
+    target=$(gum choose "Docker (compose)" "Kubernetes (kubectl)" \
+        --header "Deploy target:") || true
+    case "$target" in
+        "Docker (compose)")
+            command -v docker &>/dev/null || { warn "docker not found."; return 0; }
+            docker compose version &>/dev/null || { warn "'docker compose' plugin not available."; return 0; }
+            SVC_TARGET=docker ;;
+        "Kubernetes (kubectl)")
+            command -v kubectl &>/dev/null || { warn "kubectl not found."; return 0; }
+            SVC_TARGET=k8s ;;
+        *) return 0 ;;
+    esac
+
+    while true; do
+        local action
+        action=$(gum choose \
+            "Build image" \
+            "Deploy / update" \
+            "Status" \
+            "Logs (workers)" \
+            "Scale workers" \
+            "Ingest a folder (batch)" \
+            "Tear down" \
+            "Back" \
+            --header "marker service — ${SVC_TARGET}:") || true
+        case "$action" in
+            "Build image")               svc_build ;;
+            "Deploy / update")           svc_deploy ;;
+            "Status")                    svc_status ;;
+            "Logs (workers)")            svc_logs ;;
+            "Scale workers")             svc_scale ;;
+            "Ingest a folder (batch)")   svc_ingest ;;
+            "Tear down")                 svc_teardown ;;
+            "Back"|"")                   return 0 ;;
+        esac
+        echo ""
+    done
+}
+
+# -----------------------------------------------------------------------------
+# Local-tool submenu (pipx install on this machine)
+# -----------------------------------------------------------------------------
+
+menu_local() {
+    while true; do
+        local choice
+        choice=$(gum choose \
+            "Setup / install / upgrade" \
+            "Status" \
+            "Launch GUI (Streamlit)" \
+            "Launch API server" \
+            "Uninstall" \
+            "Back" \
+            --header "Local marker (pipx):") || true
+        case "$choice" in
+            "Setup / install / upgrade") action_setup ;;
+            "Status")                    action_status ;;
+            "Launch GUI (Streamlit)")    action_gui ;;
+            "Launch API server")         action_server ;;
+            "Uninstall")                 action_uninstall ;;
+            "Back"|"")                   return 0 ;;
+        esac
+        echo ""
+    done
+}
+
 # -----------------------------------------------------------------------------
 # Main menu loop
 # -----------------------------------------------------------------------------
@@ -581,22 +758,16 @@ main() {
         local choice
         choice=$(gum choose \
             "Convert documents" \
-            "Setup / install / upgrade" \
-            "Status" \
-            "Launch GUI (Streamlit)" \
-            "Launch API server" \
-            "Uninstall" \
+            "Local tool  (setup · status · GUI · server · uninstall)" \
+            "Deploy as a service  (Docker / K8s)" \
             "Quit" \
             --header "What would you like to do?") || true
 
         case "$choice" in
-            "Convert documents")        action_convert ;;
-            "Setup / install / upgrade") action_setup ;;
-            "Status")                   action_status ;;
-            "Launch GUI (Streamlit)")   action_gui ;;
-            "Launch API server")        action_server ;;
-            "Uninstall")                action_uninstall ;;
-            "Quit"|"")                  gum style --faint "Bye."; exit 0 ;;
+            "Convert documents")   action_convert ;;
+            "Local tool"*)         menu_local ;;
+            "Deploy as a service"*) menu_service ;;
+            "Quit"|"")             gum style --faint "Bye."; exit 0 ;;
         esac
         echo ""
     done
