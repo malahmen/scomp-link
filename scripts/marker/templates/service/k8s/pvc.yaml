@@ -1,0 +1,40 @@
+# Shared storage. ReadWriteMany lets multiple worker replicas (possibly on
+# different nodes) share the model cache + input + output. RWX needs a capable
+# StorageClass (NFS, CephFS, EFS, Filestore, …). If you only have RWO, either
+# run the workers on a single node, give each its own cache, or bake models
+# into the image. Set `storageClassName` to match your cluster.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marker-models
+  namespace: marker
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: <your-rwx-class>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marker-input
+  namespace: marker
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: <your-rwx-class>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marker-output
+  namespace: marker
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: <your-rwx-class>

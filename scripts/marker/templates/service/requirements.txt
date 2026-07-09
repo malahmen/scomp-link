@@ -1,0 +1,7 @@
+marker-pdf[full]
+psutil
+rq
+redis
+fastapi
+uvicorn[standard]
+python-multipart

@@ -1,0 +1,51 @@
+# Scalable conversion workers. `replicas` IS your horizontal scale — each worker
+# loads marker's models once and consumes jobs from the Redis queue.
+#
+# Image: build scripts/marker/templates/service/ and make it available to the
+# cluster (push to a registry, or `kind load` / `minikube image load`), then set
+# it below. Default assumes a locally-loaded `marker-service:latest`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marker-worker
+  namespace: marker
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: marker-worker }
+  template:
+    metadata:
+      labels: { app: marker-worker }
+    spec:
+      # --- GPU nodes (uncomment on a cluster with the NVIDIA device plugin) ---
+      # nodeSelector: { "nvidia.com/gpu.present": "true" }
+      # tolerations:
+      #   - key: "nvidia.com/gpu"
+      #     operator: "Exists"
+      #     effect: "NoSchedule"
+      containers:
+        - name: worker
+          image: marker-service:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "worker.py"]
+          env:
+            - { name: REDIS_URL, value: "redis://redis:6379/0" }
+            - { name: OUTPUT_DIR, value: "/data/output" }
+            - { name: HF_HOME, value: "/models" }
+          resources:
+            requests: { cpu: "1", memory: "4Gi" }
+            limits: { cpu: "4", memory: "8Gi" }
+            # GPU: uncomment to request one GPU per worker.
+            # limits:
+            #   nvidia.com/gpu: 1
+          volumeMounts:
+            - { name: models, mountPath: /models }
+            - { name: input, mountPath: /data/input }
+            - { name: output, mountPath: /data/output }
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: marker-models }
+        - name: input
+          persistentVolumeClaim: { claimName: marker-input }
+        - name: output
+          persistentVolumeClaim: { claimName: marker-output }
