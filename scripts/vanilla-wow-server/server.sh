@@ -1007,6 +1007,41 @@ cmd_delete_account() {
     success "Delete command sent for '${user_input}'."
 }
 
+cmd_set_account_level() {
+    header "vanilla-wow — Set account GM level"
+    _settings
+
+    local target
+    target=$(_detect_running_target) || return 1
+
+    _print_accounts_table "$target"
+    echo ""
+
+    local user_input
+    user_input=$(gum input --placeholder "username" --header "Account to change:") || true
+    [[ -z "$user_input" ]] && { info "Cancelled."; return 1; }
+
+    local gm_choice gm_num=0
+    gm_choice=$(printf '%s\n' "Player (no GM powers)" "Moderator" "Gamemaster" "Admin (full GM)" \
+        | gum choose --header "New access level:") || true
+    [[ -z "$gm_choice" ]] && { info "Cancelled."; return 1; }
+    case "$gm_choice" in
+        Moderator*)  gm_num=1 ;;
+        Gamemaster*) gm_num=2 ;;
+        Admin*)      gm_num=3 ;;
+    esac
+
+    _send_console_cmd "$target" "account set gmlevel ${user_input} ${gm_num}" || return 1
+
+    case "$target" in
+        local)  info "Check ${INSTALL_DIR}/logs/mangosd.out to confirm." ;;
+        docker) info "Check: docker logs ${SERVER_CONTAINER_NAME}" ;;
+        k8s)    info "Check: kubectl -n ${K8S_NAMESPACE} logs ${K8S_POD}" ;;
+    esac
+
+    success "GM level command sent for '${user_input}' (level: ${gm_num})."
+}
+
 # -----------------------------------------------------------------------------
 # search — name lookup for items, NPCs, GM teleport locations, and player
 # characters. All four are plain reference-data reads (no SRP6/console
@@ -1429,9 +1464,10 @@ _run_category_menu() {
             build-image)    cmd_build_image    || true ;;
             run-docker)     cmd_run_docker     || true ;;
             run-k8s)        cmd_run_k8s        || true ;;
-            create-account) cmd_create_account || true ;;
-            list-accounts)  cmd_list_accounts  || true ;;
-            delete-account) cmd_delete_account || true ;;
+            create-account)     cmd_create_account     || true ;;
+            list-accounts)      cmd_list_accounts      || true ;;
+            delete-account)     cmd_delete_account     || true ;;
+            set-account-level)  cmd_set_account_level  || true ;;
         esac
         echo ""
     done
@@ -1440,20 +1476,21 @@ _run_category_menu() {
 main() {
     if [[ $# -gt 0 ]]; then
         case "$1" in
-            install-deps)   cmd_install_deps ;;
-            configure)      cmd_configure ;;
-            start)          cmd_start ;;
-            stop)           cmd_stop ;;
-            status)         cmd_status ;;
-            edit)           cmd_edit ;;
-            create-account) cmd_create_account ;;
-            list-accounts)  cmd_list_accounts ;;
-            delete-account) cmd_delete_account ;;
-            search)         cmd_search ;;
-            build-image)    cmd_build_image ;;
-            run-docker)     cmd_run_docker ;;
-            run-k8s)        cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|search|build-image|run-docker|run-k8s)" ;;
+            install-deps)       cmd_install_deps ;;
+            configure)          cmd_configure ;;
+            start)              cmd_start ;;
+            stop)               cmd_stop ;;
+            status)             cmd_status ;;
+            edit)               cmd_edit ;;
+            create-account)     cmd_create_account ;;
+            list-accounts)      cmd_list_accounts ;;
+            delete-account)     cmd_delete_account ;;
+            set-account-level)  cmd_set_account_level ;;
+            search)             cmd_search ;;
+            build-image)        cmd_build_image ;;
+            run-docker)         cmd_run_docker ;;
+            run-k8s)            cmd_run_k8s ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|search|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1470,7 +1507,7 @@ main() {
             Setup)    _run_category_menu "Setup"    install-deps configure edit ;;
             Local)    _run_category_menu "Local"    start stop ;;
             Deploy)   _run_category_menu "Deploy"   build-image run-docker run-k8s ;;
-            Accounts) _run_category_menu "Accounts" create-account list-accounts delete-account ;;
+            Accounts) _run_category_menu "Accounts" create-account list-accounts delete-account set-account-level ;;
             Search)   cmd_search || true ;;
             Status)   cmd_status || true ;;
         esac
