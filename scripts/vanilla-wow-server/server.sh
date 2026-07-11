@@ -1051,35 +1051,63 @@ cmd_set_account_level() {
     success "GM level command sent for '${user_input}' (level: ${gm_num})."
 }
 
-# rename-character — 'character rename <name>' (confirmed directly in the
-# source, CharacterCommands.cpp) doesn't take a new name as an argument at
-# all. It flags the character (CHARACTER_FLAG_RENAME in the characters
-# table) and the actual rename happens through the client's own name-picker
-# UI the next time that character logs in, the same flow as a Blizzard-
-# initiated forced rename. There's no official command to set an exact new
-# name directly from the admin side, and hand-editing characters.name via
-# raw SQL would bypass the server's own name-uniqueness/validation checks,
-# so this only exposes the official, flag-based mechanism.
+# rename-character — a direct, immediate rename, not the server's own
+# 'character rename <name>' console command. That command (confirmed in
+# CharacterCommands.cpp) only flags the character; the actual new name gets
+# picked through the client's own name-picker UI at next login, which
+# re-enforces the same server-side naming rules this exists to deliberately
+# sidestep for a specific character on a case-by-case basis, without
+# touching those rules for everyone else. This is a pure database
+# operation, not a console command, so it works even if mangosd isn't
+# running at all (_detect_db_target, not _detect_running_target) — but the
+# character must be offline: mangosd only reads a character's row from the
+# database at login, an online character's data lives in memory and a
+# logout would overwrite this change with whatever's already loaded there.
 cmd_rename_character() {
     header "vanilla-wow — Rename character"
     _settings
 
     local target
-    target=$(_detect_running_target) || return 1
+    target=$(_detect_db_target) || return 1
 
-    local char_input
-    char_input=$(gum input --placeholder "character name" --header "Character to flag for rename (use 'search' to find one):") || true
-    [[ -z "$char_input" ]] && { info "Cancelled."; return 1; }
+    local old_name
+    old_name=$(gum input --placeholder "current name" --header "Character to rename (use 'search' to find one):") || true
+    [[ -z "$old_name" ]] && { info "Cancelled."; return 1; }
 
-    _send_console_cmd "$target" "character rename ${char_input}" || return 1
+    local old_name_escaped; old_name_escaped="$(_sql_escape "$old_name")"
+    local row guid online
+    row=$(_db_query_raw "$target" "SELECT guid, online FROM characters.characters WHERE name='${old_name_escaped}';" 2>/dev/null)
+    if [[ -z "$row" ]]; then
+        warn "No character named '${old_name}' found."
+        return 1
+    fi
+    guid="${row%%$'\t'*}"
+    online="${row##*$'\t'}"
 
-    case "$target" in
-        local)  info "Check ${INSTALL_DIR}/logs/mangosd.out to confirm." ;;
-        docker) info "Check: docker logs ${SERVER_CONTAINER_NAME}" ;;
-        k8s)    info "Check: kubectl -n ${K8S_NAMESPACE} logs ${K8S_POD}" ;;
-    esac
+    if [[ "$online" != "0" ]]; then
+        warn "'${old_name}' is currently online — log them out first. A live session holds its own copy of the name in memory, and logging out afterward would overwrite this change with the old one."
+        return 1
+    fi
 
-    success "'${char_input}' flagged for rename. They'll be prompted to choose a new name next time they log in."
+    local new_name
+    new_name=$(gum input --placeholder "new name" --header "New name for '${old_name}' (up to 12 characters, bypasses normal naming rules):") || true
+    [[ -z "$new_name" ]] && { info "Cancelled."; return 1; }
+
+    if [[ ${#new_name} -gt 12 ]]; then
+        warn "'${new_name}' is ${#new_name} characters — the characters.name column allows at most 12."
+        return 1
+    fi
+
+    local new_name_escaped; new_name_escaped="$(_sql_escape "$new_name")"
+    local existing
+    existing=$(_db_query_raw "$target" "SELECT guid FROM characters.characters WHERE name='${new_name_escaped}';" 2>/dev/null)
+    if [[ -n "$existing" && "$existing" != "$guid" ]]; then
+        warn "'${new_name}' is already taken by another character."
+        return 1
+    fi
+
+    _db_query "$target" "UPDATE characters.characters SET name='${new_name_escaped}' WHERE guid=${guid};" &>/dev/null || return 1
+    success "'${old_name}' renamed to '${new_name}'."
 }
 
 # -----------------------------------------------------------------------------
