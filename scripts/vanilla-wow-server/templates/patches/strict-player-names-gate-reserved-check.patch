@@ -1,0 +1,18 @@
+--- a/src/game/ObjectMgr.cpp	2025-12-31 05:49:10.000000000 +0000
++++ b/src/game/ObjectMgr.cpp	2026-07-11 06:18:42.552951497 +0100
+@@ -9309,6 +9309,15 @@
+     if (!isValidString(wname, strictMask, false, create))
+         return CHAR_NAME_MIXED_LANGUAGES;
+ 
++    // Profanity/reserved-name checks (ValidateName, sourced from the client's
++    // NamesProfanity.dbc/NamesReserved.dbc) previously ran unconditionally
++    // regardless of this same StrictPlayerNames setting, even though it
++    // already gates the character-set check just above. Gate it too, so
++    // disabling strict name checking actually disables all of it, not just
++    // half of it.
++    if (strictMask == 0)
++        return CHAR_NAME_SUCCESS;
++
+     return ValidateName(wname);
+ }
+ 
