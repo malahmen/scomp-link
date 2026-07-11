@@ -312,19 +312,51 @@ _db_bootstrap() {
     done < <(find "${sql_dir}/Migrations" -maxdepth 1 -name "[0-9]*.sql" 2>/dev/null | sort)
     info "Migrations: ${applied} applied, ${skipped} already up to date."
 
-    if [[ -d "${sql_dir}/Custom" ]] && gum confirm "Apply optional custom content (GM Island vendors/trainers, custom items)?"; then
+    # Custom/*.sql is a grab-bag, not one coherent feature — this repack's
+    # own copy includes both ADD_GM_ISLAND_VENDORS.sql and its counterpart
+    # REMOVE_GM_ISLAND_VENDORS.sql (applying both back-to-back in filename
+    # order is a no-op at best), several bonus legendary items, and
+    # START_ON_GM_ISLAND.sql, a one-line blanket UPDATE with no WHERE
+    # clause that overwrites playercreateinfo for every race/class to the
+    # same coordinates — every new character, GM or not, spawns on GM
+    # Island instead of its actual racial starting zone. A single
+    # "apply optional custom content?" yes/no (what this used to be) hides
+    # that entirely behind vague wording ("vendors/trainers, custom items")
+    # and applies everything found, found live when a user asked why every
+    # character was spawning in the wrong place. Listing each file lets the
+    # operator actually choose, and skips files already applied so a later
+    # 'configure' run doesn't re-prompt for the same ones.
+    if [[ -d "${sql_dir}/Custom" ]]; then
+        local -a cfiles=() cnames=() clabels=()
         local cfile cname
         while IFS= read -r cfile; do
             [[ -z "$cfile" ]] && continue
-            cname="$(basename "$cfile")"
-            if [[ -f "${MIGRATIONS_MARKER_DIR}/custom-${cname}.done" ]]; then
-                continue
-            fi
-            _db_import mangos "$cfile" || warn "Custom script failed (continuing): ${cname}"
-            touch "${MIGRATIONS_MARKER_DIR}/custom-${cname}.done"
-            info "Applied: ${cname}"
+            cname="$(basename "$cfile" .sql)"
+            [[ -f "${MIGRATIONS_MARKER_DIR}/custom-${cname}.sql.done" ]] && continue
+            cfiles+=("$cfile")
+            cnames+=("$cname")
+            clabels+=("${cname//_/ }")
         done < <(find "${sql_dir}/Custom" -maxdepth 1 -name "*.sql" 2>/dev/null | sort)
-        success "Custom content applied."
+
+        if [[ ${#cfiles[@]} -gt 0 ]]; then
+            local -a chosen_labels=()
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && chosen_labels+=("$line")
+            done < <(printf '%s\n' "${clabels[@]}" \
+                | gum choose --no-limit --header "Optional custom content — space to select, enter to apply only what's checked:")
+
+            local i j
+            for i in "${!clabels[@]}"; do
+                for j in "${!chosen_labels[@]}"; do
+                    if [[ "${clabels[$i]}" == "${chosen_labels[$j]}" ]]; then
+                        _db_import mangos "${cfiles[$i]}" || warn "Custom script failed (continuing): ${cnames[$i]}.sql"
+                        touch "${MIGRATIONS_MARKER_DIR}/custom-${cnames[$i]}.sql.done"
+                        info "Applied: ${cnames[$i]}.sql"
+                    fi
+                done
+            done
+            [[ ${#chosen_labels[@]} -gt 0 ]] && success "Custom content applied (${#chosen_labels[@]} of ${#cfiles[@]})."
+        fi
     fi
 
     _ensure_realmlist
