@@ -146,6 +146,13 @@ _settings() {
     # Controls both Warden.WinEnabled/Warden.OSXEnabled together, a private
     # LAN server has no real use for per-platform cheat detection control.
     WARDEN_ENABLED="$(cfg_default WARDEN_ENABLED 1)"
+    # StrictPlayerNames — matches the repack's own stock default (disabled).
+    # As of the strict-player-names-gate-reserved-check.patch applied during
+    # build (see _apply_source_patches), 0 also disables the DBC-based
+    # profanity/reserved-name check, not just the character-set check —
+    # before that patch, that check ran unconditionally regardless of this
+    # setting.
+    STRICT_PLAYER_NAMES="$(cfg_default STRICT_PLAYER_NAMES 0)"
     IMAGE_TAG="$(cfg_default IMAGE_TAG vanilla-wow-server:latest)"
     SERVER_CONTAINER_NAME="$(cfg_default SERVER_CONTAINER_NAME vanilla-wow-server)"
     K8S_NAMESPACE="$(cfg_default K8S_NAMESPACE vanilla-wow)"
@@ -400,6 +407,7 @@ _render_mangosd_conf() {
         -e "s|^Warden\.ModuleDir[[:space:]]*=.*|Warden.ModuleDir             = \"${warden_dir}\"|" \
         -e "s|^Warden\.WinEnabled[[:space:]]*=.*|Warden.WinEnabled            = ${WARDEN_ENABLED}|" \
         -e "s|^Warden\.OSXEnabled[[:space:]]*=.*|Warden.OSXEnabled            = ${WARDEN_ENABLED}|" \
+        -e "s|^StrictPlayerNames[[:space:]]*=.*|StrictPlayerNames = ${STRICT_PLAYER_NAMES}|" \
         -e "s|^LoginDatabase\.Info[[:space:]]*=.*|LoginDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};realmd\"|" \
         -e "s|^WorldDatabase\.Info[[:space:]]*=.*|WorldDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};mangos\"|" \
         -e "s|^CharacterDatabase\.Info[[:space:]]*=.*|CharacterDatabase.Info          = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};characters\"|" \
@@ -597,6 +605,10 @@ _prompt_server_settings() {
     WARDEN_ENABLED=$(_pick_value_label "Warden anti-cheat (client-side scans; irrelevant on a private/trusted LAN server)" "$WARDEN_ENABLED" "Enabled" \
         "1|Enabled" "0|Disabled")
     cfg_set WARDEN_ENABLED "$WARDEN_ENABLED"
+
+    STRICT_PLAYER_NAMES=$(_pick_value_label "Strict player names (character-set + profanity/reserved-name checks on every login)" "$STRICT_PLAYER_NAMES" "Disabled" \
+        "0|Disabled" "1|Basic Latin only" "2|Realm zone specific" "3|Basic Latin + server timezone")
+    cfg_set STRICT_PLAYER_NAMES "$STRICT_PLAYER_NAMES"
 }
 
 cmd_configure() {
@@ -639,16 +651,51 @@ cmd_configure() {
 # -----------------------------------------------------------------------------
 
 _unpack_source() {
-    if [[ -f "${SRC_UNPACK_DIR}/CMakeLists.txt" ]]; then
-        return 0
+    if [[ ! -f "${SRC_UNPACK_DIR}/CMakeLists.txt" ]]; then
+        local zip="${SOURCE_DIR}/source/Repack 25 Source.zip"
+        [[ -f "$zip" ]] || error_exit "Source zip not found: ${zip}"
+        mkdir -p "$SRC_UNPACK_DIR"
+        info "Unpacking VMaNGOS source (one-time)..."
+        gum spin --spinner dot --title "Unzipping source..." -- \
+            unzip -q -o "$zip" -d "$SRC_UNPACK_DIR" \
+            || error_exit "Failed to unpack ${zip}"
     fi
-    local zip="${SOURCE_DIR}/source/Repack 25 Source.zip"
-    [[ -f "$zip" ]] || error_exit "Source zip not found: ${zip}"
-    mkdir -p "$SRC_UNPACK_DIR"
-    info "Unpacking VMaNGOS source (one-time)..."
-    gum spin --spinner dot --title "Unzipping source..." -- \
-        unzip -q -o "$zip" -d "$SRC_UNPACK_DIR" \
-        || error_exit "Failed to unpack ${zip}"
+
+    _apply_source_patches
+}
+
+# _apply_source_patches — scomp-link-maintained fixes to the repack's own
+# source, layered on top of the pristine unzip. Currently one: gates the
+# DBC-based profanity/reserved-name check (ValidateName, in ObjectMgr.cpp's
+# CheckPlayerName) behind StrictPlayerNames, the same setting that already
+# gates the character-set check right next to it — found live, with
+# StrictPlayerNames=0 that check still ran unconditionally on every login,
+# permanently blocking any character whose name matched an entry in the
+# client's NamesReserved.dbc/NamesProfanity.dbc (Blizzard's own original
+# content filter), with no config toggle to turn it off — before this fix
+# existed, working around it meant binary-editing the DBC file itself.
+# Idempotent via a marker per patch, independent of whether the unzip step
+# above actually ran this time — a source tree unpacked before this fix
+# existed (already has CMakeLists.txt, skips the unzip) still needs the
+# patch applied on its next build.
+_apply_source_patches() {
+    local patch_dir="${TEMPLATES_DIR}/patches"
+    [[ -d "$patch_dir" ]] || return 0
+
+    local patch_file pname marker_dir="${SRC_UNPACK_DIR}/.scomp-link-patches-applied"
+    mkdir -p "$marker_dir"
+    for patch_file in "$patch_dir"/*.patch; do
+        [[ -f "$patch_file" ]] || continue
+        pname="$(basename "$patch_file")"
+        [[ -f "${marker_dir}/${pname}" ]] && continue
+
+        info "Applying source patch: ${pname}"
+        (cd "$SRC_UNPACK_DIR" && git apply --check "$patch_file") \
+            || error_exit "Patch doesn't apply cleanly: ${pname} — the repack source may have changed, or it's already partially applied outside this marker."
+        (cd "$SRC_UNPACK_DIR" && git apply "$patch_file") \
+            || error_exit "Failed to apply patch: ${pname}"
+        touch "${marker_dir}/${pname}"
+    done
 }
 
 _build_native() {
