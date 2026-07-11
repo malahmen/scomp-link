@@ -462,6 +462,23 @@ _pick_value_label() {
     echo "$current"
 }
 
+# _pick_gm_level <header> <current> — account security level picker, using
+# the actual scale confirmed directly from src/shared/Common.h's
+# AccountTypes enum (0 Player, 1 Moderator, 2 Ticketmaster, 3 Gamemaster,
+# 4 Basic Admin, 5 Developer, 6 Administrator), not the 4-level Player/
+# Moderator/Gamemaster/Admin scale this originally (and wrongly) exposed —
+# found live when a user needed level 6 for most in-game GM commands and
+# the old picker topped out at what was actually level 3 (Gamemaster).
+# SEC_CONSOLE (7) is deliberately excluded — the source itself says real
+# accounts must stay below it ("must be always last in list, accounts must
+# have less security level always also").
+_pick_gm_level() {
+    local hdr="$1" current="$2"
+    _pick_value_label "$hdr" "$current" "Player" \
+        "0|Player (no GM powers)" "1|Moderator" "2|Ticketmaster" "3|Gamemaster" \
+        "4|Basic Admin" "5|Developer" "6|Administrator (full GM access)"
+}
+
 # Prompts for the server-identity/gameplay settings mangosd.conf actually
 # needs beyond DB wiring — realm name/zone, game type, player cap, and the
 # progression content patch. Values persist and pre-fill on future runs, so
@@ -907,14 +924,8 @@ cmd_create_account() {
     pass_input=$(gum input --password --placeholder "password" --header "New account password:") || true
     [[ -z "$pass_input" ]] && { info "Cancelled."; return 1; }
 
-    local gm_choice gm_num=0
-    gm_choice=$(printf '%s\n' "Player (no GM powers)" "Moderator" "Gamemaster" "Admin (full GM)" \
-        | gum choose --header "Account access level:") || true
-    case "$gm_choice" in
-        Moderator*)  gm_num=1 ;;
-        Gamemaster*) gm_num=2 ;;
-        Admin*)      gm_num=3 ;;
-    esac
+    local gm_num
+    gm_num=$(_pick_gm_level "Account access level" "0")
 
     # 'account create' and 'account set gmlevel' can't be sent as one burst:
     # live-tested, sending both in a single write reliably fails the gmlevel
@@ -1021,15 +1032,13 @@ cmd_set_account_level() {
     user_input=$(gum input --placeholder "username" --header "Account to change:") || true
     [[ -z "$user_input" ]] && { info "Cancelled."; return 1; }
 
-    local gm_choice gm_num=0
-    gm_choice=$(printf '%s\n' "Player (no GM powers)" "Moderator" "Gamemaster" "Admin (full GM)" \
-        | gum choose --header "New access level:") || true
-    [[ -z "$gm_choice" ]] && { info "Cancelled."; return 1; }
-    case "$gm_choice" in
-        Moderator*)  gm_num=1 ;;
-        Gamemaster*) gm_num=2 ;;
-        Admin*)      gm_num=3 ;;
-    esac
+    local current_level
+    current_level=$(_db_query_raw "$target" \
+        "SELECT COALESCE(aa.gmlevel,0) FROM realmd.account a LEFT JOIN realmd.account_access aa ON aa.id=a.id AND aa.RealmID=${REALM_ID} WHERE a.username='${user_input^^}';" 2>/dev/null)
+    [[ "$current_level" =~ ^[0-9]+$ ]] || current_level=0
+
+    local gm_num
+    gm_num=$(_pick_gm_level "New access level" "$current_level")
 
     _send_console_cmd "$target" "account set gmlevel ${user_input} ${gm_num}" || return 1
 
