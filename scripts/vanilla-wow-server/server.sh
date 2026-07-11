@@ -1106,7 +1106,13 @@ cmd_rename_character() {
         return 1
     fi
 
-    _db_query "$target" "UPDATE characters.characters SET name='${new_name_escaped}' WHERE guid=${guid};" &>/dev/null || return 1
+    # & ~0x4000 clears CHARACTER_FLAG_RENAME (Player.h) alongside the name
+    # itself — found live: a character renamed this way still hit the
+    # client's own "you must rename" prompt on login, because that flag
+    # was already set (from an earlier attempt, or any other GM action)
+    # and this UPDATE only ever touched the name column, never the flag
+    # that actually drives the client's rename prompt.
+    _db_query "$target" "UPDATE characters.characters SET name='${new_name_escaped}', character_flags = character_flags & ~0x4000 WHERE guid=${guid};" &>/dev/null || return 1
     success "'${old_name}' renamed to '${new_name}'."
 }
 
