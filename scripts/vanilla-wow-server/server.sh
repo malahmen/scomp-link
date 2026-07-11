@@ -1083,6 +1083,71 @@ cmd_set_account_level() {
     success "GM level command sent for '${user_input}' (level: ${gm_num})."
 }
 
+# rename-character — a direct, immediate rename, not the server's own
+# 'character rename <name>' console command. That command (confirmed in
+# CharacterCommands.cpp) only flags the character; the actual new name gets
+# picked through the client's own name-picker UI at next login, which
+# re-enforces the same server-side naming rules this exists to deliberately
+# sidestep for a specific character on a case-by-case basis, without
+# touching those rules for everyone else. This is a pure database
+# operation, not a console command, so it works even if mangosd isn't
+# running at all (_detect_db_target, not _detect_running_target) — but the
+# character must be offline: mangosd only reads a character's row from the
+# database at login, an online character's data lives in memory and a
+# logout would overwrite this change with whatever's already loaded there.
+cmd_rename_character() {
+    header "vanilla-wow — Rename character"
+    _settings
+
+    local target
+    target=$(_detect_db_target) || return 1
+
+    local old_name
+    old_name=$(gum input --placeholder "current name" --header "Character to rename (use 'search' to find one):") || true
+    [[ -z "$old_name" ]] && { info "Cancelled."; return 1; }
+
+    local old_name_escaped; old_name_escaped="$(_sql_escape "$old_name")"
+    local row guid online
+    row=$(_db_query_raw "$target" "SELECT guid, online FROM characters.characters WHERE name='${old_name_escaped}';" 2>/dev/null)
+    if [[ -z "$row" ]]; then
+        warn "No character named '${old_name}' found."
+        return 1
+    fi
+    guid="${row%%$'\t'*}"
+    online="${row##*$'\t'}"
+
+    if [[ "$online" != "0" ]]; then
+        warn "'${old_name}' is currently online — log them out first. A live session holds its own copy of the name in memory, and logging out afterward would overwrite this change with the old one."
+        return 1
+    fi
+
+    local new_name
+    new_name=$(gum input --placeholder "new name" --header "New name for '${old_name}' (up to 12 characters, bypasses normal naming rules):") || true
+    [[ -z "$new_name" ]] && { info "Cancelled."; return 1; }
+
+    if [[ ${#new_name} -gt 12 ]]; then
+        warn "'${new_name}' is ${#new_name} characters — the characters.name column allows at most 12."
+        return 1
+    fi
+
+    local new_name_escaped; new_name_escaped="$(_sql_escape "$new_name")"
+    local existing
+    existing=$(_db_query_raw "$target" "SELECT guid FROM characters.characters WHERE name='${new_name_escaped}';" 2>/dev/null)
+    if [[ -n "$existing" && "$existing" != "$guid" ]]; then
+        warn "'${new_name}' is already taken by another character."
+        return 1
+    fi
+
+    # & ~0x4000 clears CHARACTER_FLAG_RENAME (Player.h) alongside the name
+    # itself — found live: a character renamed this way still hit the
+    # client's own "you must rename" prompt on login, because that flag
+    # was already set (from an earlier attempt, or any other GM action)
+    # and this UPDATE only ever touched the name column, never the flag
+    # that actually drives the client's rename prompt.
+    _db_query "$target" "UPDATE characters.characters SET name='${new_name_escaped}', character_flags = character_flags & ~0x4000 WHERE guid=${guid};" &>/dev/null || return 1
+    success "'${old_name}' renamed to '${new_name}'."
+}
+
 # -----------------------------------------------------------------------------
 # search — name lookup for items, NPCs, GM teleport locations, and player
 # characters. All four are plain reference-data reads (no SRP6/console
@@ -1509,6 +1574,7 @@ _run_category_menu() {
             list-accounts)      cmd_list_accounts      || true ;;
             delete-account)     cmd_delete_account     || true ;;
             set-account-level)  cmd_set_account_level  || true ;;
+            rename-character)   cmd_rename_character   || true ;;
         esac
         echo ""
     done
@@ -1527,11 +1593,12 @@ main() {
             list-accounts)      cmd_list_accounts ;;
             delete-account)     cmd_delete_account ;;
             set-account-level)  cmd_set_account_level ;;
+            rename-character)   cmd_rename_character ;;
             search)             cmd_search ;;
             build-image)        cmd_build_image ;;
             run-docker)         cmd_run_docker ;;
             run-k8s)            cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|search|build-image|run-docker|run-k8s)" ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|rename-character|search|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1539,16 +1606,17 @@ main() {
     while true; do
         header "Vanilla WoW (VMaNGOS) Manager"
         local category
-        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Search" "Status" "Quit" \
+        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Characters" "Search" "Status" "Quit" \
             --header "Choose a category:") || true
 
         [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
 
         case "$category" in
-            Setup)    _run_category_menu "Setup"    install-deps configure edit ;;
-            Local)    _run_category_menu "Local"    start stop ;;
-            Deploy)   _run_category_menu "Deploy"   build-image run-docker run-k8s ;;
-            Accounts) _run_category_menu "Accounts" create-account list-accounts delete-account set-account-level ;;
+            Setup)      _run_category_menu "Setup"      install-deps configure edit ;;
+            Local)      _run_category_menu "Local"      start stop ;;
+            Deploy)     _run_category_menu "Deploy"     build-image run-docker run-k8s ;;
+            Accounts)   _run_category_menu "Accounts"   create-account list-accounts delete-account set-account-level ;;
+            Characters) _run_category_menu "Characters" rename-character ;;
             Search)   cmd_search || true ;;
             Status)   cmd_status || true ;;
         esac
