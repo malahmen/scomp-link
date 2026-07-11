@@ -1051,6 +1051,37 @@ cmd_set_account_level() {
     success "GM level command sent for '${user_input}' (level: ${gm_num})."
 }
 
+# rename-character — 'character rename <name>' (confirmed directly in the
+# source, CharacterCommands.cpp) doesn't take a new name as an argument at
+# all. It flags the character (CHARACTER_FLAG_RENAME in the characters
+# table) and the actual rename happens through the client's own name-picker
+# UI the next time that character logs in, the same flow as a Blizzard-
+# initiated forced rename. There's no official command to set an exact new
+# name directly from the admin side, and hand-editing characters.name via
+# raw SQL would bypass the server's own name-uniqueness/validation checks,
+# so this only exposes the official, flag-based mechanism.
+cmd_rename_character() {
+    header "vanilla-wow — Rename character"
+    _settings
+
+    local target
+    target=$(_detect_running_target) || return 1
+
+    local char_input
+    char_input=$(gum input --placeholder "character name" --header "Character to flag for rename (use 'search' to find one):") || true
+    [[ -z "$char_input" ]] && { info "Cancelled."; return 1; }
+
+    _send_console_cmd "$target" "character rename ${char_input}" || return 1
+
+    case "$target" in
+        local)  info "Check ${INSTALL_DIR}/logs/mangosd.out to confirm." ;;
+        docker) info "Check: docker logs ${SERVER_CONTAINER_NAME}" ;;
+        k8s)    info "Check: kubectl -n ${K8S_NAMESPACE} logs ${K8S_POD}" ;;
+    esac
+
+    success "'${char_input}' flagged for rename. They'll be prompted to choose a new name next time they log in."
+}
+
 # -----------------------------------------------------------------------------
 # search — name lookup for items, NPCs, GM teleport locations, and player
 # characters. All four are plain reference-data reads (no SRP6/console
@@ -1477,6 +1508,7 @@ _run_category_menu() {
             list-accounts)      cmd_list_accounts      || true ;;
             delete-account)     cmd_delete_account     || true ;;
             set-account-level)  cmd_set_account_level  || true ;;
+            rename-character)   cmd_rename_character   || true ;;
         esac
         echo ""
     done
@@ -1495,11 +1527,12 @@ main() {
             list-accounts)      cmd_list_accounts ;;
             delete-account)     cmd_delete_account ;;
             set-account-level)  cmd_set_account_level ;;
+            rename-character)   cmd_rename_character ;;
             search)             cmd_search ;;
             build-image)        cmd_build_image ;;
             run-docker)         cmd_run_docker ;;
             run-k8s)            cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|search|build-image|run-docker|run-k8s)" ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|rename-character|search|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1507,16 +1540,17 @@ main() {
     while true; do
         header "Vanilla WoW (VMaNGOS) Manager"
         local category
-        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Search" "Status" "Quit" \
+        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Characters" "Search" "Status" "Quit" \
             --header "Choose a category:") || true
 
         [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
 
         case "$category" in
-            Setup)    _run_category_menu "Setup"    install-deps configure edit ;;
-            Local)    _run_category_menu "Local"    start stop ;;
-            Deploy)   _run_category_menu "Deploy"   build-image run-docker run-k8s ;;
-            Accounts) _run_category_menu "Accounts" create-account list-accounts delete-account set-account-level ;;
+            Setup)      _run_category_menu "Setup"      install-deps configure edit ;;
+            Local)      _run_category_menu "Local"      start stop ;;
+            Deploy)     _run_category_menu "Deploy"     build-image run-docker run-k8s ;;
+            Accounts)   _run_category_menu "Accounts"   create-account list-accounts delete-account set-account-level ;;
+            Characters) _run_category_menu "Characters" rename-character ;;
             Search)   cmd_search || true ;;
             Status)   cmd_status || true ;;
         esac
