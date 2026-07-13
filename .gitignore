@@ -8,3 +8,4 @@ temp/
 *.swo
 ~
 scripts/starlight/.fcc/docx/__pycache__
+marker-output
