@@ -354,6 +354,32 @@ Then re-run setup.sh."
     ok "Node.js installed: node $(node --version)  npm $(npm --version)"
 }
 
+# bash 4+ — macOS ships bash 3.2 forever; several scripts (starlight_astro.sh and
+# its converter) require >= 4, and init.sh prefers /opt/homebrew/bin/bash. Linux
+# distros already ship 4+, so this is a no-op there.
+ensure_bash() {
+    [ "$OS" = "macos" ] || return 0
+    info "Checking for bash 4+ (macOS system bash is 3.2)..."
+    for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [ -x "$b" ]; then
+            ok "bash 4+ present: $b ($("$b" -c 'echo $BASH_VERSION'))"
+            return 0
+        fi
+    done
+    if command_exists brew; then
+        info "Installing bash 4+ via Homebrew..."
+        brew install bash
+    else
+        warn "Homebrew not found — install bash manually: brew install bash"
+        return 0
+    fi
+    if [ -x /opt/homebrew/bin/bash ] || [ -x /usr/local/bin/bash ]; then
+        ok "bash 4+ installed — init.sh will run scripts with it automatically."
+    else
+        warn "bash install didn't land where expected; some scripts may still report 'bash 4+ required'."
+    fi
+}
+
 # Main
 detect_os
 info "Detected OS: $OS, package manager: $PKG_MANAGER"
@@ -361,6 +387,7 @@ info "Detected OS: $OS, package manager: $PKG_MANAGER"
 ensure_curl
 ensure_mise
 ensure_mise_activation
+ensure_bash
 ensure_gum
 ensure_gum_width
 ensure_vim
