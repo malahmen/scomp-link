@@ -38,6 +38,12 @@ realmd_pid=$!
 # FIFO from ever reporting EOF to a reader, same effect as the process
 # substitution above, but it's also externally writable, e.g.
 # `docker exec <container> sh -c 'echo "account create bob pass" > /app/mangosd.stdin'`.
+# rm -f first: a plain `docker restart` reuses this same container's
+# filesystem (unlike a fresh `docker run`), so a FIFO created by a
+# previous run of this same script is still sitting there — mkfifo on an
+# existing path fails, which crash-looped the container the first time
+# this happened live.
+rm -f /app/mangosd.stdin
 mkfifo /app/mangosd.stdin
 exec 9<>/app/mangosd.stdin
 ./mangosd < /app/mangosd.stdin &

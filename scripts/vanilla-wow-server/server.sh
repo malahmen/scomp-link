@@ -146,6 +146,13 @@ _settings() {
     # Controls both Warden.WinEnabled/Warden.OSXEnabled together, a private
     # LAN server has no real use for per-platform cheat detection control.
     WARDEN_ENABLED="$(cfg_default WARDEN_ENABLED 1)"
+    # StrictPlayerNames — matches the repack's own stock default (disabled).
+    # As of the strict-player-names-gate-reserved-check.patch applied during
+    # build (see _apply_source_patches), 0 also disables the DBC-based
+    # profanity/reserved-name check, not just the character-set check —
+    # before that patch, that check ran unconditionally regardless of this
+    # setting.
+    STRICT_PLAYER_NAMES="$(cfg_default STRICT_PLAYER_NAMES 0)"
     IMAGE_TAG="$(cfg_default IMAGE_TAG vanilla-wow-server:latest)"
     SERVER_CONTAINER_NAME="$(cfg_default SERVER_CONTAINER_NAME vanilla-wow-server)"
     K8S_NAMESPACE="$(cfg_default K8S_NAMESPACE vanilla-wow)"
@@ -312,19 +319,51 @@ _db_bootstrap() {
     done < <(find "${sql_dir}/Migrations" -maxdepth 1 -name "[0-9]*.sql" 2>/dev/null | sort)
     info "Migrations: ${applied} applied, ${skipped} already up to date."
 
-    if [[ -d "${sql_dir}/Custom" ]] && gum confirm "Apply optional custom content (GM Island vendors/trainers, custom items)?"; then
+    # Custom/*.sql is a grab-bag, not one coherent feature — this repack's
+    # own copy includes both ADD_GM_ISLAND_VENDORS.sql and its counterpart
+    # REMOVE_GM_ISLAND_VENDORS.sql (applying both back-to-back in filename
+    # order is a no-op at best), several bonus legendary items, and
+    # START_ON_GM_ISLAND.sql, a one-line blanket UPDATE with no WHERE
+    # clause that overwrites playercreateinfo for every race/class to the
+    # same coordinates — every new character, GM or not, spawns on GM
+    # Island instead of its actual racial starting zone. A single
+    # "apply optional custom content?" yes/no (what this used to be) hides
+    # that entirely behind vague wording ("vendors/trainers, custom items")
+    # and applies everything found, found live when a user asked why every
+    # character was spawning in the wrong place. Listing each file lets the
+    # operator actually choose, and skips files already applied so a later
+    # 'configure' run doesn't re-prompt for the same ones.
+    if [[ -d "${sql_dir}/Custom" ]]; then
+        local -a cfiles=() cnames=() clabels=()
         local cfile cname
         while IFS= read -r cfile; do
             [[ -z "$cfile" ]] && continue
-            cname="$(basename "$cfile")"
-            if [[ -f "${MIGRATIONS_MARKER_DIR}/custom-${cname}.done" ]]; then
-                continue
-            fi
-            _db_import mangos "$cfile" || warn "Custom script failed (continuing): ${cname}"
-            touch "${MIGRATIONS_MARKER_DIR}/custom-${cname}.done"
-            info "Applied: ${cname}"
+            cname="$(basename "$cfile" .sql)"
+            [[ -f "${MIGRATIONS_MARKER_DIR}/custom-${cname}.sql.done" ]] && continue
+            cfiles+=("$cfile")
+            cnames+=("$cname")
+            clabels+=("${cname//_/ }")
         done < <(find "${sql_dir}/Custom" -maxdepth 1 -name "*.sql" 2>/dev/null | sort)
-        success "Custom content applied."
+
+        if [[ ${#cfiles[@]} -gt 0 ]]; then
+            local -a chosen_labels=()
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && chosen_labels+=("$line")
+            done < <(printf '%s\n' "${clabels[@]}" \
+                | gum choose --no-limit --header "Optional custom content — space to select, enter to apply only what's checked:")
+
+            local i j
+            for i in "${!clabels[@]}"; do
+                for j in "${!chosen_labels[@]}"; do
+                    if [[ "${clabels[$i]}" == "${chosen_labels[$j]}" ]]; then
+                        _db_import mangos "${cfiles[$i]}" || warn "Custom script failed (continuing): ${cnames[$i]}.sql"
+                        touch "${MIGRATIONS_MARKER_DIR}/custom-${cnames[$i]}.sql.done"
+                        info "Applied: ${cnames[$i]}.sql"
+                    fi
+                done
+            done
+            [[ ${#chosen_labels[@]} -gt 0 ]] && success "Custom content applied (${#chosen_labels[@]} of ${#cfiles[@]})."
+        fi
     fi
 
     _ensure_realmlist
@@ -368,6 +407,7 @@ _render_mangosd_conf() {
         -e "s|^Warden\.ModuleDir[[:space:]]*=.*|Warden.ModuleDir             = \"${warden_dir}\"|" \
         -e "s|^Warden\.WinEnabled[[:space:]]*=.*|Warden.WinEnabled            = ${WARDEN_ENABLED}|" \
         -e "s|^Warden\.OSXEnabled[[:space:]]*=.*|Warden.OSXEnabled            = ${WARDEN_ENABLED}|" \
+        -e "s|^StrictPlayerNames[[:space:]]*=.*|StrictPlayerNames = ${STRICT_PLAYER_NAMES}|" \
         -e "s|^LoginDatabase\.Info[[:space:]]*=.*|LoginDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};realmd\"|" \
         -e "s|^WorldDatabase\.Info[[:space:]]*=.*|WorldDatabase.Info              = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};mangos\"|" \
         -e "s|^CharacterDatabase\.Info[[:space:]]*=.*|CharacterDatabase.Info          = \"${DB_HOST};${DB_PORT};${DB_USER};${DB_PASS};characters\"|" \
@@ -462,6 +502,23 @@ _pick_value_label() {
     echo "$current"
 }
 
+# _pick_gm_level <header> <current> — account security level picker, using
+# the actual scale confirmed directly from src/shared/Common.h's
+# AccountTypes enum (0 Player, 1 Moderator, 2 Ticketmaster, 3 Gamemaster,
+# 4 Basic Admin, 5 Developer, 6 Administrator), not the 4-level Player/
+# Moderator/Gamemaster/Admin scale this originally (and wrongly) exposed —
+# found live when a user needed level 6 for most in-game GM commands and
+# the old picker topped out at what was actually level 3 (Gamemaster).
+# SEC_CONSOLE (7) is deliberately excluded — the source itself says real
+# accounts must stay below it ("must be always last in list, accounts must
+# have less security level always also").
+_pick_gm_level() {
+    local hdr="$1" current="$2"
+    _pick_value_label "$hdr" "$current" "Player" \
+        "0|Player (no GM powers)" "1|Moderator" "2|Ticketmaster" "3|Gamemaster" \
+        "4|Basic Admin" "5|Developer" "6|Administrator (full GM access)"
+}
+
 # Prompts for the server-identity/gameplay settings mangosd.conf actually
 # needs beyond DB wiring — realm name/zone, game type, player cap, and the
 # progression content patch. Values persist and pre-fill on future runs, so
@@ -548,6 +605,10 @@ _prompt_server_settings() {
     WARDEN_ENABLED=$(_pick_value_label "Warden anti-cheat (client-side scans; irrelevant on a private/trusted LAN server)" "$WARDEN_ENABLED" "Enabled" \
         "1|Enabled" "0|Disabled")
     cfg_set WARDEN_ENABLED "$WARDEN_ENABLED"
+
+    STRICT_PLAYER_NAMES=$(_pick_value_label "Strict player names (character-set + profanity/reserved-name checks on every login)" "$STRICT_PLAYER_NAMES" "Disabled" \
+        "0|Disabled" "1|Basic Latin only" "2|Realm zone specific" "3|Basic Latin + server timezone")
+    cfg_set STRICT_PLAYER_NAMES "$STRICT_PLAYER_NAMES"
 }
 
 cmd_configure() {
@@ -590,16 +651,51 @@ cmd_configure() {
 # -----------------------------------------------------------------------------
 
 _unpack_source() {
-    if [[ -f "${SRC_UNPACK_DIR}/CMakeLists.txt" ]]; then
-        return 0
+    if [[ ! -f "${SRC_UNPACK_DIR}/CMakeLists.txt" ]]; then
+        local zip="${SOURCE_DIR}/source/Repack 25 Source.zip"
+        [[ -f "$zip" ]] || error_exit "Source zip not found: ${zip}"
+        mkdir -p "$SRC_UNPACK_DIR"
+        info "Unpacking VMaNGOS source (one-time)..."
+        gum spin --spinner dot --title "Unzipping source..." -- \
+            unzip -q -o "$zip" -d "$SRC_UNPACK_DIR" \
+            || error_exit "Failed to unpack ${zip}"
     fi
-    local zip="${SOURCE_DIR}/source/Repack 25 Source.zip"
-    [[ -f "$zip" ]] || error_exit "Source zip not found: ${zip}"
-    mkdir -p "$SRC_UNPACK_DIR"
-    info "Unpacking VMaNGOS source (one-time)..."
-    gum spin --spinner dot --title "Unzipping source..." -- \
-        unzip -q -o "$zip" -d "$SRC_UNPACK_DIR" \
-        || error_exit "Failed to unpack ${zip}"
+
+    _apply_source_patches
+}
+
+# _apply_source_patches — scomp-link-maintained fixes to the repack's own
+# source, layered on top of the pristine unzip. Currently one: gates the
+# DBC-based profanity/reserved-name check (ValidateName, in ObjectMgr.cpp's
+# CheckPlayerName) behind StrictPlayerNames, the same setting that already
+# gates the character-set check right next to it — found live, with
+# StrictPlayerNames=0 that check still ran unconditionally on every login,
+# permanently blocking any character whose name matched an entry in the
+# client's NamesReserved.dbc/NamesProfanity.dbc (Blizzard's own original
+# content filter), with no config toggle to turn it off — before this fix
+# existed, working around it meant binary-editing the DBC file itself.
+# Idempotent via a marker per patch, independent of whether the unzip step
+# above actually ran this time — a source tree unpacked before this fix
+# existed (already has CMakeLists.txt, skips the unzip) still needs the
+# patch applied on its next build.
+_apply_source_patches() {
+    local patch_dir="${TEMPLATES_DIR}/patches"
+    [[ -d "$patch_dir" ]] || return 0
+
+    local patch_file pname marker_dir="${SRC_UNPACK_DIR}/.scomp-link-patches-applied"
+    mkdir -p "$marker_dir"
+    for patch_file in "$patch_dir"/*.patch; do
+        [[ -f "$patch_file" ]] || continue
+        pname="$(basename "$patch_file")"
+        [[ -f "${marker_dir}/${pname}" ]] && continue
+
+        info "Applying source patch: ${pname}"
+        (cd "$SRC_UNPACK_DIR" && git apply --check "$patch_file") \
+            || error_exit "Patch doesn't apply cleanly: ${pname} — the repack source may have changed, or it's already partially applied outside this marker."
+        (cd "$SRC_UNPACK_DIR" && git apply "$patch_file") \
+            || error_exit "Failed to apply patch: ${pname}"
+        touch "${marker_dir}/${pname}"
+    done
 }
 
 _build_native() {
@@ -907,14 +1003,8 @@ cmd_create_account() {
     pass_input=$(gum input --password --placeholder "password" --header "New account password:") || true
     [[ -z "$pass_input" ]] && { info "Cancelled."; return 1; }
 
-    local gm_choice gm_num=0
-    gm_choice=$(printf '%s\n' "Player (no GM powers)" "Moderator" "Gamemaster" "Admin (full GM)" \
-        | gum choose --header "Account access level:") || true
-    case "$gm_choice" in
-        Moderator*)  gm_num=1 ;;
-        Gamemaster*) gm_num=2 ;;
-        Admin*)      gm_num=3 ;;
-    esac
+    local gm_num
+    gm_num=$(_pick_gm_level "Account access level" "0")
 
     # 'account create' and 'account set gmlevel' can't be sent as one burst:
     # live-tested, sending both in a single write reliably fails the gmlevel
@@ -1005,6 +1095,104 @@ cmd_delete_account() {
     esac
 
     success "Delete command sent for '${user_input}'."
+}
+
+cmd_set_account_level() {
+    header "vanilla-wow — Set account GM level"
+    _settings
+
+    local target
+    target=$(_detect_running_target) || return 1
+
+    _print_accounts_table "$target"
+    echo ""
+
+    local user_input
+    user_input=$(gum input --placeholder "username" --header "Account to change:") || true
+    [[ -z "$user_input" ]] && { info "Cancelled."; return 1; }
+
+    local current_level
+    current_level=$(_db_query_raw "$target" \
+        "SELECT COALESCE(aa.gmlevel,0) FROM realmd.account a LEFT JOIN realmd.account_access aa ON aa.id=a.id AND aa.RealmID=${REALM_ID} WHERE a.username='${user_input^^}';" 2>/dev/null)
+    [[ "$current_level" =~ ^[0-9]+$ ]] || current_level=0
+
+    local gm_num
+    gm_num=$(_pick_gm_level "New access level" "$current_level")
+
+    _send_console_cmd "$target" "account set gmlevel ${user_input} ${gm_num}" || return 1
+
+    case "$target" in
+        local)  info "Check ${INSTALL_DIR}/logs/mangosd.out to confirm." ;;
+        docker) info "Check: docker logs ${SERVER_CONTAINER_NAME}" ;;
+        k8s)    info "Check: kubectl -n ${K8S_NAMESPACE} logs ${K8S_POD}" ;;
+    esac
+
+    success "GM level command sent for '${user_input}' (level: ${gm_num})."
+}
+
+# rename-character — a direct, immediate rename, not the server's own
+# 'character rename <name>' console command. That command (confirmed in
+# CharacterCommands.cpp) only flags the character; the actual new name gets
+# picked through the client's own name-picker UI at next login, which
+# re-enforces the same server-side naming rules this exists to deliberately
+# sidestep for a specific character on a case-by-case basis, without
+# touching those rules for everyone else. This is a pure database
+# operation, not a console command, so it works even if mangosd isn't
+# running at all (_detect_db_target, not _detect_running_target) — but the
+# character must be offline: mangosd only reads a character's row from the
+# database at login, an online character's data lives in memory and a
+# logout would overwrite this change with whatever's already loaded there.
+cmd_rename_character() {
+    header "vanilla-wow — Rename character"
+    _settings
+
+    local target
+    target=$(_detect_db_target) || return 1
+
+    local old_name
+    old_name=$(gum input --placeholder "current name" --header "Character to rename (use 'search' to find one):") || true
+    [[ -z "$old_name" ]] && { info "Cancelled."; return 1; }
+
+    local old_name_escaped; old_name_escaped="$(_sql_escape "$old_name")"
+    local row guid online
+    row=$(_db_query_raw "$target" "SELECT guid, online FROM characters.characters WHERE name='${old_name_escaped}';" 2>/dev/null)
+    if [[ -z "$row" ]]; then
+        warn "No character named '${old_name}' found."
+        return 1
+    fi
+    guid="${row%%$'\t'*}"
+    online="${row##*$'\t'}"
+
+    if [[ "$online" != "0" ]]; then
+        warn "'${old_name}' is currently online — log them out first. A live session holds its own copy of the name in memory, and logging out afterward would overwrite this change with the old one."
+        return 1
+    fi
+
+    local new_name
+    new_name=$(gum input --placeholder "new name" --header "New name for '${old_name}' (up to 12 characters, bypasses normal naming rules):") || true
+    [[ -z "$new_name" ]] && { info "Cancelled."; return 1; }
+
+    if [[ ${#new_name} -gt 12 ]]; then
+        warn "'${new_name}' is ${#new_name} characters — the characters.name column allows at most 12."
+        return 1
+    fi
+
+    local new_name_escaped; new_name_escaped="$(_sql_escape "$new_name")"
+    local existing
+    existing=$(_db_query_raw "$target" "SELECT guid FROM characters.characters WHERE name='${new_name_escaped}';" 2>/dev/null)
+    if [[ -n "$existing" && "$existing" != "$guid" ]]; then
+        warn "'${new_name}' is already taken by another character."
+        return 1
+    fi
+
+    # & ~0x4000 clears CHARACTER_FLAG_RENAME (Player.h) alongside the name
+    # itself — found live: a character renamed this way still hit the
+    # client's own "you must rename" prompt on login, because that flag
+    # was already set (from an earlier attempt, or any other GM action)
+    # and this UPDATE only ever touched the name column, never the flag
+    # that actually drives the client's rename prompt.
+    _db_query "$target" "UPDATE characters.characters SET name='${new_name_escaped}', character_flags = character_flags & ~0x4000 WHERE guid=${guid};" &>/dev/null || return 1
+    success "'${old_name}' renamed to '${new_name}'."
 }
 
 # -----------------------------------------------------------------------------
@@ -1429,9 +1617,11 @@ _run_category_menu() {
             build-image)    cmd_build_image    || true ;;
             run-docker)     cmd_run_docker     || true ;;
             run-k8s)        cmd_run_k8s        || true ;;
-            create-account) cmd_create_account || true ;;
-            list-accounts)  cmd_list_accounts  || true ;;
-            delete-account) cmd_delete_account || true ;;
+            create-account)     cmd_create_account     || true ;;
+            list-accounts)      cmd_list_accounts      || true ;;
+            delete-account)     cmd_delete_account     || true ;;
+            set-account-level)  cmd_set_account_level  || true ;;
+            rename-character)   cmd_rename_character   || true ;;
         esac
         echo ""
     done
@@ -1440,20 +1630,22 @@ _run_category_menu() {
 main() {
     if [[ $# -gt 0 ]]; then
         case "$1" in
-            install-deps)   cmd_install_deps ;;
-            configure)      cmd_configure ;;
-            start)          cmd_start ;;
-            stop)           cmd_stop ;;
-            status)         cmd_status ;;
-            edit)           cmd_edit ;;
-            create-account) cmd_create_account ;;
-            list-accounts)  cmd_list_accounts ;;
-            delete-account) cmd_delete_account ;;
-            search)         cmd_search ;;
-            build-image)    cmd_build_image ;;
-            run-docker)     cmd_run_docker ;;
-            run-k8s)        cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|search|build-image|run-docker|run-k8s)" ;;
+            install-deps)       cmd_install_deps ;;
+            configure)          cmd_configure ;;
+            start)              cmd_start ;;
+            stop)               cmd_stop ;;
+            status)             cmd_status ;;
+            edit)               cmd_edit ;;
+            create-account)     cmd_create_account ;;
+            list-accounts)      cmd_list_accounts ;;
+            delete-account)     cmd_delete_account ;;
+            set-account-level)  cmd_set_account_level ;;
+            rename-character)   cmd_rename_character ;;
+            search)             cmd_search ;;
+            build-image)        cmd_build_image ;;
+            run-docker)         cmd_run_docker ;;
+            run-k8s)            cmd_run_k8s ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|rename-character|search|build-image|run-docker|run-k8s)" ;;
         esac
         exit 0
     fi
@@ -1461,16 +1653,17 @@ main() {
     while true; do
         header "Vanilla WoW (VMaNGOS) Manager"
         local category
-        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Search" "Status" "Quit" \
+        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Characters" "Search" "Status" "Quit" \
             --header "Choose a category:") || true
 
         [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
 
         case "$category" in
-            Setup)    _run_category_menu "Setup"    install-deps configure edit ;;
-            Local)    _run_category_menu "Local"    start stop ;;
-            Deploy)   _run_category_menu "Deploy"   build-image run-docker run-k8s ;;
-            Accounts) _run_category_menu "Accounts" create-account list-accounts delete-account ;;
+            Setup)      _run_category_menu "Setup"      install-deps configure edit ;;
+            Local)      _run_category_menu "Local"      start stop ;;
+            Deploy)     _run_category_menu "Deploy"     build-image run-docker run-k8s ;;
+            Accounts)   _run_category_menu "Accounts"   create-account list-accounts delete-account set-account-level ;;
+            Characters) _run_category_menu "Characters" rename-character ;;
             Search)   cmd_search || true ;;
             Status)   cmd_status || true ;;
         esac
