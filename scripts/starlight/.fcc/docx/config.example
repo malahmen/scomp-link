@@ -1,0 +1,7 @@
+# Copy to .fcc/docx/config — letterhead defaults for DOCX conversion.
+# Any key left out (or the whole file absent) → the TUI prompts for it.
+author=Platform Infrastructure Team
+classification=INTERNAL USE ONLY
+version=v1.0
+date=auto
+# logo=/absolute/path/to/logo.png   # baked in via build-reference.py --logo
