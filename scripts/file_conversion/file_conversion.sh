@@ -36,8 +36,19 @@ TITLE_PAGES_DIR=".fcc/title-pages"
 OUTPUT_DIR="./output"
 DEFAULT_DEPTH=3
 
-# Built-in DOCX reference doc: shaded code blocks + aligned table of contents.
-DOCX_DEFAULT_REFERENCE=".fcc/docx/reference.docx"
+# Built-in DOCX reference docs. Both carry the shaded code + aligned TOC styling;
+# the letterhead one adds a running header (logo + title) + footer (date ·
+# classification · Page X/Y). reference-plain has no header/footer.
+DOCX_DEFAULT_REFERENCE=".fcc/docx/reference.docx"          # letterhead
+DOCX_PLAIN_REFERENCE=".fcc/docx/reference-plain.docx"      # no header/footer
+DOCX_CONFIG=".fcc/docx/config"                             # key=value defaults
+
+# Letterhead token state (set by select_docx_reference_doc → resolve_letterhead)
+DOCX_LETTERHEAD=false
+DOCX_AUTHOR=""
+DOCX_CLASSIFICATION=""
+DOCX_VERSION=""
+DOCX_DATE=""
 
 
 # Title page state (set by select_title_page)
@@ -443,7 +454,7 @@ ensure_fcc_docx_assets() {
     mkdir -p "$docx_dir"
 
     local a dest
-    for a in reference.docx pagebreak.lua render-mermaid.lua p10k.theme; do
+    for a in reference.docx reference-plain.docx stamp_docx_tokens.py pagebreak.lua render-mermaid.lua p10k.theme; do
         dest="${docx_dir}/${a}"
         if [[ -f "${src}/${a}" ]]; then
             if [[ ! -f "$dest" ]] || ! cmp -s "${src}/${a}" "$dest"; then
@@ -519,6 +530,42 @@ shade_docx_tables() {
     [[ -f "$script" ]] || { warn "shade_tables.py not found — skipping table shading."; return 0; }
 
     python3 "$script" "$docx"
+}
+
+# True when the chosen reference is one of our built-ins (letterhead or plain) —
+# gates the p10k theme + explicit table banding.
+is_builtin_docx_ref() {
+    [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" \
+       || "$DOCX_REFERENCE_DOC" == "$DOCX_PLAIN_REFERENCE" ]]
+}
+
+# -----------------------------------------------------------------------------
+# Letterhead: fill the reference doc's header/footer {{TOKENS}} for this doc.
+# Title comes from the document (front-matter title: or first #); author /
+# classification / version / date come from the session defaults, overridden by
+# this file's YAML front matter when it sets them. Date defaults to today.
+# -----------------------------------------------------------------------------
+
+stamp_docx_letterhead() {
+    local docx="$1" source="$2"
+    command -v python3 &>/dev/null || { warn "python3 not found — letterhead tokens left unstamped."; return 0; }
+    local script; script="$(resolve_docx_asset stamp_docx_tokens.py)"
+    [[ -n "$script" ]] || { warn "stamp_docx_tokens.py not found — skipping letterhead."; return 0; }
+
+    # `|| true` on each: an absent front-matter key exits non-zero (pipefail),
+    # which a bare x="$(...)" assignment propagates into set -e.
+    local title author classification version date vsuffix
+    title="$(extract_title "$source" || true)"
+    author="$(parse_yaml_field "$source" author || true)";                author="${author:-$DOCX_AUTHOR}"
+    classification="$(parse_yaml_field "$source" classification || true)"; classification="${classification:-$DOCX_CLASSIFICATION}"
+    version="$(parse_yaml_field "$source" version || true)";               version="${version:-$DOCX_VERSION}"
+    date="$(parse_yaml_field "$source" date || true)";                     date="${date:-$DOCX_DATE}"
+    [[ -z "$date" || "$date" == "auto" ]] && date="$(date +'%d %B %Y' | sed 's/^0//')"
+    [[ -n "$version" ]] && vsuffix=", ${version}" || vsuffix=""
+
+    python3 "$script" "$docx" \
+        --title "$title" --version-suffix "$vsuffix" \
+        --author "$author" --date "$date" --classification "$classification"
 }
 
 # -----------------------------------------------------------------------------
@@ -949,6 +996,44 @@ Install it from: https://pandoc.org/installing.html
 }
 
 # -----------------------------------------------------------------------------
+# Letterhead config + token resolution
+# Read a value from .fcc/docx/config (key=value). Empty if absent.
+# -----------------------------------------------------------------------------
+
+docx_cfg() {
+    [[ -f "$DOCX_CONFIG" ]] || return 0
+    # `|| true`: a missing key makes grep exit non-zero which, under pipefail,
+    # would fail the whole substitution and trip set -e in the caller.
+    { grep -E "^${1}=" "$DOCX_CONFIG" | head -1 | sed "s/^${1}=//" | tr -d '\r'; } || true
+}
+
+# Resolve the letterhead tokens once per run: config file → prompt for anything
+# still missing. Title is per-document (from the file) and date defaults to
+# today, so we only prompt for author / classification / version here. A
+# per-file YAML front-matter override is applied later, at stamp time.
+resolve_letterhead() {
+    DOCX_AUTHOR="$(docx_cfg author)"
+    DOCX_CLASSIFICATION="$(docx_cfg classification)"
+    DOCX_VERSION="$(docx_cfg version)"
+    DOCX_DATE="$(docx_cfg date)"
+    [[ "$DOCX_DATE" == "auto" ]] && DOCX_DATE=""   # empty → today, stamped later
+
+    if [[ -z "$DOCX_AUTHOR" ]]; then
+        DOCX_AUTHOR=$(gum input --header "Author (header 'Created By'), blank to omit:" \
+            --placeholder "e.g. Platform Team") || true
+    fi
+    if [[ -z "$DOCX_CLASSIFICATION" ]]; then
+        DOCX_CLASSIFICATION=$(gum input --header "Classification (footer), blank to omit:" \
+            --placeholder "e.g. INTERNAL USE ONLY") || true
+    fi
+    if [[ -z "$DOCX_VERSION" ]]; then
+        DOCX_VERSION=$(gum input --header "Version (footer/header), blank to omit:" \
+            --placeholder "e.g. v1.0") || true
+    fi
+    info "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}'"
+}
+
+# -----------------------------------------------------------------------------
 # Reference doc selection for md → docx
 # Scans for .docx files up to SEARCH_DEPTH, offers a manual path escape hatch.
 # Sets DOCX_REFERENCE_DOC (empty string = no reference doc).
@@ -956,22 +1041,52 @@ Install it from: https://pandoc.org/installing.html
 
 select_docx_reference_doc() {
     DOCX_REFERENCE_DOC=""
+    DOCX_LETTERHEAD=false
 
-    # Make the built-in styled template available (shaded code + aligned TOC).
+    # Make the built-in templates available (shaded code + aligned TOC; the
+    # letterhead one adds header/footer/page numbers).
     local have_default=false
     if ensure_fcc_docx_assets; then
         have_default=true
     fi
 
-    if ! gum confirm "Use a custom reference .docx template? (No = built-in styled template)"; then
-        if [[ "$have_default" == "true" ]]; then
-            DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
-            info "Using built-in styled reference: ${DOCX_REFERENCE_DOC}"
-        else
-            warn "Built-in reference template unavailable — using pandoc defaults (plain code blocks, unstyled TOC)."
-        fi
-        return
-    fi
+    local choice
+    choice=$(gum choose \
+        "Built-in — letterhead (header + footer + page numbers)" \
+        "Built-in — plain (no header/footer)" \
+        "Custom template (.docx)" \
+        "None (pandoc default)" \
+        --header "DOCX styling / reference template:") || true
+    [[ -z "$choice" ]] && { gum style --faint "Cancelled."; return 0; }
+
+    case "$choice" in
+        "Built-in — letterhead"*)
+            if [[ "$have_default" == true && -f "$DOCX_DEFAULT_REFERENCE" ]]; then
+                DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
+                DOCX_LETTERHEAD=true
+                resolve_letterhead
+                info "Using built-in letterhead reference."
+            else
+                warn "Letterhead reference unavailable — using pandoc defaults."
+            fi
+            return ;;
+        "Built-in — plain"*)
+            if [[ -f "$DOCX_PLAIN_REFERENCE" ]]; then
+                DOCX_REFERENCE_DOC="$DOCX_PLAIN_REFERENCE"
+                info "Using built-in plain reference."
+            elif [[ "$have_default" == true ]]; then
+                DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
+                warn "Plain reference missing — falling back to the letterhead one (header/footer will show)."
+            else
+                warn "Built-in reference unavailable — using pandoc defaults."
+            fi
+            return ;;
+        "None (pandoc default)")
+            info "No reference doc — pandoc defaults."
+            return ;;
+        "Custom template (.docx)")
+            : ;;  # fall through to the scan/pick below
+    esac
 
     info "Scanning for .docx files (depth ${SEARCH_DEPTH})..."
 
@@ -1060,10 +1175,9 @@ convert_md_to_docx() {
         pandoc_args+=(--reference-doc="$DOCX_REFERENCE_DOC")
     fi
 
-    # The p10k syntax theme for code — from the DOCX tree, only with the built-in
-    # reference (whose code styles are dark to suit it). A custom template keeps
-    # its own code styling.
-    if [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" ]]; then
+    # The p10k syntax theme for code — with either built-in reference (whose code
+    # styles suit it). A custom template keeps its own code styling.
+    if is_builtin_docx_ref; then
         local theme_path
         theme_path="$(resolve_docx_asset "p10k.theme")"
         [[ -n "$theme_path" ]] && pandoc_args+=(--syntax-highlighting="$theme_path")
@@ -1075,9 +1189,11 @@ convert_md_to_docx() {
     if [[ $? -eq 0 ]]; then
         fold_docx_pagebreaks "$output_file"
         apply_docx_fonts "$output_file"
-        # Explicit table banding — only with the built-in reference (a custom
+        # Explicit table banding — only with a built-in reference (a custom
         # template owns its own table styling).
-        [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" ]] && shade_docx_tables "$output_file"
+        is_builtin_docx_ref && shade_docx_tables "$output_file"
+        # Letterhead: fill the header/footer tokens (+ core props) per document.
+        [[ "$DOCX_LETTERHEAD" == true ]] && stamp_docx_letterhead "$output_file" "$name_source"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
