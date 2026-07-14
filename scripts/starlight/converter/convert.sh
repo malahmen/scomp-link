@@ -77,7 +77,7 @@ DEFAULT_DEPTH=3
 
 # Built-in DOCX reference doc: shaded code blocks + aligned table of contents.
 # Shipped into the project by the scaffolder alongside the rest of .fcc/.
-DOCX_DEFAULT_REFERENCE=".fcc/docx/reference.docx"
+DOCX_DEFAULT_REFERENCE=".fcc/docx/reference-plain.docx"
 
 # Conversion state globals
 SOURCE_FORMAT=""
@@ -1121,7 +1121,7 @@ select_docx_reference_doc() {
 # the following paragraph, so a heading after \newpage starts the new page with
 # no blank line above it. Skipped cleanly if python3 is unavailable (the break
 # paragraph then remains — no blank page, just a blank line; nothing is dropped).
-# NOTE: keep this logic in sync with starlight/.fcc/docx/fold_pagebreaks.py.
+# NOTE: keep this logic in sync with file_conversion/.fcc/docx/fold_pagebreaks.py.
 fold_docx_pagebreaks() {
     local docx="$1"
     command -v python3 &>/dev/null || {
@@ -1223,7 +1223,7 @@ detect_docx_mono() {
 # Apply DOCX_FONT (prose, via theme) + DOCX_MONO (code, via styles) to a
 # generated .docx so it uses installed fonts. No-op for prose if DOCX_FONT is
 # empty. Skipped cleanly if python3 is unavailable.
-# NOTE: keep this logic in sync with starlight/.fcc/docx/apply_docx_fonts.py.
+# NOTE: keep this logic in sync with file_conversion/.fcc/docx/apply_docx_fonts.py.
 apply_docx_fonts() {
     local docx="$1"
     [[ -z "$DOCX_FONT" && -z "$DOCX_MONO" ]] && return 0
@@ -1281,7 +1281,7 @@ PYEOF
 # Write explicit header + alternating-row cell shading onto every table, matching
 # the PDF's row colours. Word — and especially LibreOffice / previewers — don't
 # reliably render the reference table style's conditional banding.
-# NOTE: keep this logic in sync with starlight/.fcc/docx/shade_tables.py.
+# NOTE: keep this logic in sync with file_conversion/.fcc/docx/shade_tables.py.
 shade_docx_tables() {
     local docx="$1"
     command -v python3 &>/dev/null || {
