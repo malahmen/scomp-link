@@ -167,26 +167,35 @@ create_scaffold() {
 
     mkdir -p converter
 
-    # Copy convert.sh from alongside starlight_astro.sh
+    # Vendor the converter bundle so the scaffolded project is self-contained
+    # (no runtime dependency on scomp-link): the shim (convert.sh), the shared
+    # implementation (file_conversion.sh), and ui.sh — all sourced from the
+    # converter's own directory.
     local converter_script="${SCRIPT_DIR}/converter/convert.sh"
+    local impl_script="${SCRIPT_DIR}/../file_conversion/file_conversion.sh"
+    local ui_source="${SCRIPT_DIR}/../_common/ui.sh"
+
     if [[ -f "$converter_script" ]]; then
         cp "$converter_script" converter/convert.sh
         chmod +x converter/convert.sh
-        success "convert.sh copied to converter/"
+        success "convert.sh (shim) copied to converter/"
     else
         warn "converter/convert.sh not found at ${converter_script} — skipping."
-        warn "Copy it manually before running mise tasks."
     fi
 
-    # Vendor ui.sh alongside convert.sh so the scaffolded project is
-    # self-contained (no dependency on the scomp-link repo layout). convert.sh
-    # sources this from its own SCRIPT_DIR.
-    local ui_source="${SCRIPT_DIR}/../_common/ui.sh"
+    if [[ -f "$impl_script" ]]; then
+        cp "$impl_script" converter/file_conversion.sh
+        chmod +x converter/file_conversion.sh
+        success "file_conversion.sh (implementation) vendored into converter/"
+    else
+        warn "file_conversion.sh not found at ${impl_script} — the converter will not run until it's copied in."
+    fi
+
     if [[ -f "$ui_source" ]]; then
         cp "$ui_source" converter/ui.sh
         success "ui.sh vendored into converter/"
     else
-        warn "ui.sh not found at ${ui_source} — convert.sh will fail until it's copied in."
+        warn "ui.sh not found at ${ui_source} — the converter will fail until it's copied in."
     fi
 
     # Copy the canonical .fcc/ asset bundle (lives with file_conversion.sh).
