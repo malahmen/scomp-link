@@ -39,7 +39,7 @@ Convert documents between formats with extensive customization:
 - **Local `.svg` → PNG** rasterization (via `rsvg-convert`) so images embed in DOCX/PDF
 - **Image fit + centering**: wide images are scaled to the text column and centred
 - The built-in `reference.docx` is generated reproducibly by
-  [`build-reference.py`](../../scripts/starlight/.fcc/docx/build-reference.py) from
+  [`build-reference.py`](../../scripts/file_conversion/.fcc/docx/build-reference.py) from
   declarative specs (fonts/colours/spacing + header/footer XML + optional logo)
 
 **Modes:**

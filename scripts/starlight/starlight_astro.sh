@@ -189,8 +189,8 @@ create_scaffold() {
         warn "ui.sh not found at ${ui_source} — convert.sh will fail until it's copied in."
     fi
 
-    # Copy .fcc/ assets if they exist next to starlight_astro.sh
-    local fcc_source="${SCRIPT_DIR}/.fcc"
+    # Copy the canonical .fcc/ asset bundle (lives with file_conversion.sh).
+    local fcc_source="${SCRIPT_DIR}/../file_conversion/.fcc"
     if [[ -d "$fcc_source" ]]; then
         cp -r "$fcc_source" converter/.fcc
         success ".fcc/ assets copied to converter/.fcc/"

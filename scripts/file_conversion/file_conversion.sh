@@ -13,11 +13,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Canonical .fcc assets shipped inside the repo (single source of truth).
-# ensure_fcc_pdf_assets copies missing pieces from here into the working
-# ./.fcc/ so the good code theme, table/pagebreak/mermaid filters travel with
-# the script instead of only existing in Starlight scaffolds.
-CANONICAL_FCC="${SCRIPT_DIR}/../starlight/.fcc"
+# Canonical .fcc assets — the single source of truth, co-located with this
+# script. ensure_fcc_*_assets copy missing pieces from here into the working
+# ./.fcc/ so the code theme, filters, and reference docs travel with the tool.
+# (The Starlight scaffolder also copies this bundle into project converters.)
+CANONICAL_FCC="${SCRIPT_DIR}/.fcc"
 
 COMMON_DIR="${SCRIPT_DIR}/../_common"
 if [[ ! -d "$COMMON_DIR" ]]; then
