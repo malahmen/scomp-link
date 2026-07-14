@@ -1738,7 +1738,10 @@ resolve_title_page_yaml() {
 parse_yaml_field() {
     local file="$1"
     local field="$2"
-    grep -E "^${field}:" "$file" | head -1 | sed "s/^${field}:[[:space:]]*//" | tr -d '\r'
+    # `|| true`: a missing key means grep exits non-zero, which under
+    # `set -euo pipefail` would abort the caller's `x=$(parse_yaml_field …)`.
+    # A missing field is a normal "unset" here, not an error.
+    grep -E "^${field}:" "$file" | head -1 | sed "s/^${field}:[[:space:]]*//" | tr -d '\r' || true
 }
 
 # -----------------------------------------------------------------------------
@@ -1765,8 +1768,8 @@ extract_title() {
         fi
     fi
 
-    # Fall back to first # H1
-    grep -m1 '^# ' "$file" | sed 's/^# //'
+    # Fall back to first # H1 (|| true: no H1 is "no title", not a fatal error)
+    grep -m1 '^# ' "$file" | sed 's/^# //' || true
 }
 
 # -----------------------------------------------------------------------------
