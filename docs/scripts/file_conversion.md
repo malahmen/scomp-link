@@ -23,6 +23,25 @@ Convert documents between formats with extensive customization:
 - Character substitution options
 - Collision-safe output filenames
 
+**DOCX letterhead & document features:**
+
+- **Reference styles**: choose **letterhead** (running header with optional logo +
+  title/version, footer with date · classification · `Page X / Y`), **plain** (styled,
+  no header/footer), a **custom** `.docx` template, or **none**
+- **Configurable metadata**: author / classification / version resolve from
+  `.fcc/docx/config` (key=value) → per-file YAML front matter → TUI prompt for anything
+  missing (title auto-extracts from the first `#`; date defaults to today). Filled into
+  the header/footer + core document properties after conversion
+- **Page size**: A4 or Letter for the built-in references
+- **Concatenate** several selected Markdown files into one document (optional page break
+  between; the first `#` becomes the document Title)
+- **`[[wikilink]]` unwrapping** to plain text
+- **Local `.svg` → PNG** rasterization (via `rsvg-convert`) so images embed in DOCX/PDF
+- **Image fit + centering**: wide images are scaled to the text column and centred
+- The built-in `reference.docx` is generated reproducibly by
+  [`build-reference.py`](../../scripts/starlight/.fcc/docx/build-reference.py) from
+  declarative specs (fonts/colours/spacing + header/footer XML + optional logo)
+
 **Modes:**
 
 - Full mode: All options interactive
