@@ -19,13 +19,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # (The Starlight scaffolder also copies this bundle into project converters.)
 CANONICAL_FCC="${SCRIPT_DIR}/.fcc"
 
-COMMON_DIR="${SCRIPT_DIR}/../_common"
-if [[ ! -d "$COMMON_DIR" ]]; then
-    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+# UI helpers. In the scomp-link repo they live in ../_common/ui.sh; when this
+# script is vendored (e.g. into a Starlight project's converter/), a copy sits
+# next to it. Prefer the repo location, fall back to the co-located one — so the
+# same script works both in-repo and standalone.
+if [[ -f "${SCRIPT_DIR}/../_common/ui.sh" ]]; then
+    # shellcheck source=../_common/ui.sh
+    source "${SCRIPT_DIR}/../_common/ui.sh"
+elif [[ -f "${SCRIPT_DIR}/ui.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${SCRIPT_DIR}/ui.sh"
+else
+    printf "\033[0;31m[ERROR] ui.sh not found (looked in ../_common/ and alongside this script)\033[0m\n" >&2
     exit 1
 fi
-# shellcheck source=../_common/ui.sh
-source "${COMMON_DIR}/ui.sh"
+
+# Source root for the file picker. Default: the current directory. A vendored /
+# embedding caller (e.g. the Starlight shim) can export SOURCE_ROOT to point at
+# its docs directory before sourcing/running this script.
+SOURCE_ROOT="${SOURCE_ROOT:-.}"
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -162,10 +174,13 @@ select_depth() {
 select_files() {
     local pattern="*.${SOURCE_FORMAT}"
 
-    info "Scanning for .${SOURCE_FORMAT} files (depth ${SEARCH_DEPTH})..."
+    info "Scanning ${SOURCE_ROOT} for .${SOURCE_FORMAT} files (depth ${SEARCH_DEPTH})..."
 
+    # Paths are kept relative to the current directory (SOURCE_ROOT may be "."
+    # for the repo tool, or e.g. ../src/content/docs when vendored) so they're
+    # usable directly at conversion time. Only a leading "./" is stripped.
     local found
-    found=$(find . -maxdepth "$SEARCH_DEPTH" -name "$pattern" \
+    found=$(find "$SOURCE_ROOT" -maxdepth "$SEARCH_DEPTH" -name "$pattern" \
         ! -path "*/node_modules/*" \
         ! -path "*/.git/*" \
         ! -path "*/.astro/*" \
@@ -176,7 +191,7 @@ select_files() {
         | sort)
 
     if [[ -z "$found" ]]; then
-        error_exit "No .${SOURCE_FORMAT} files found within depth ${SEARCH_DEPTH}."
+        error_exit "No .${SOURCE_FORMAT} files found in ${SOURCE_ROOT} (depth ${SEARCH_DEPTH})."
     fi
 
     local file_count
@@ -2009,4 +2024,44 @@ main() {
     run_conversions
 }
 
-main "$@"
+# Fast preset: md → PDF with sensible defaults (xelatex, Helvetica, title page +
+# TOC, rules stripped), only the file picker is interactive. Reuses the same
+# functions as the full flow. Used by the Starlight shim's `pdf` mode.
+main_fast() {
+    gum style \
+        --foreground "$CYAN" --border-foreground "$CYAN" --border double \
+        --align center --width 60 --margin "1 2" --padding "1 4" \
+        'Convert to PDF'
+
+    SOURCE_FORMAT="md"
+    OUTPUT_FORMAT="pdf"
+    SEARCH_DEPTH="$DEFAULT_DEPTH"
+    USE_TITLE_PAGE=true
+    STRIP_RULES=true
+    USE_TOC=true
+    TOC_DEPTH="$DEFAULT_DEPTH"
+    PDF_FONT="Helvetica"
+
+    select_files
+    check_deps_md_pdf   # sets AVAILABLE_ENGINES (offers install if none)
+    if printf '%s\n' "${AVAILABLE_ENGINES[@]}" | grep -qx "xelatex"; then
+        PDF_ENGINE="xelatex"
+    else
+        PDF_ENGINE="${AVAILABLE_ENGINES[0]}"
+        warn "xelatex not available — using ${PDF_ENGINE}."
+    fi
+    font_installed "$PDF_FONT" || { warn "Font '${PDF_FONT}' not installed — using pandoc default."; PDF_FONT=""; }
+    ensure_pdf_config
+    detect_mono_font
+    run_conversions
+}
+
+# Only auto-run when executed directly. When sourced (e.g. by the Starlight
+# converter shim), the caller drives main / main_fast itself.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-full}" in
+        full) main ;;
+        pdf)  main_fast ;;
+        *) error_exit "Unknown mode '${1}'. Valid modes: full | pdf" ;;
+    esac
+fi
