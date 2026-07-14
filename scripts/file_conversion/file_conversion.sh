@@ -77,6 +77,11 @@ TP_HEADER=true
 TP_FOOTER=true
 TP_PAGENUM=true
 
+# Set by apply_title_page (per file) when it emits the TOC itself, after the
+# title page. The converters then skip pandoc's --toc so it isn't ALSO placed
+# at the very top (above the cover).
+TOC_PLACED_IN_TITLE=false
+
 # Substitution pass state (set by select_apply_substitutions)
 APPLY_SUBSTITUTIONS=false
 
@@ -1045,8 +1050,10 @@ convert_md_to_pdf() {
         pandoc_args+=(-V "mainfont=${PDF_FONT}")
     fi
 
-    # Table of contents (opt-in) — pandoc builds it from the headers.
-    if [[ "$USE_TOC" == "true" ]]; then
+    # Table of contents (opt-in) — pandoc builds it from the headers. Skipped
+    # when a title page already emitted \tableofcontents after the cover (else
+    # pandoc would ALSO place one above the title page).
+    if [[ "$USE_TOC" == "true" && "$TOC_PLACED_IN_TITLE" != "true" ]]; then
         pandoc_args+=(--toc --toc-depth="$TOC_DEPTH" -V "toc-title=${TOC_TITLE}")
     fi
 
@@ -1321,8 +1328,10 @@ convert_md_to_docx() {
         [[ -n "$lf_path" ]] && pandoc_args+=(--lua-filter="$lf_path")
     done
 
-    # Table of contents (opt-in) — Word builds a native TOC field.
-    if [[ "$USE_TOC" == "true" ]]; then
+    # Table of contents (opt-in) — Word builds a native TOC field. Skipped when
+    # a title page already emitted the TOC after the cover (else it'd double up
+    # at the top of the document).
+    if [[ "$USE_TOC" == "true" && "$TOC_PLACED_IN_TITLE" != "true" ]]; then
         pandoc_args+=(--toc --toc-depth="$TOC_DEPTH")
     fi
 
@@ -1979,6 +1988,21 @@ apply_title_page() {
         [[ "${TP_PAGENUM:-true}" == "false" ]] && rendered=$'\\thispagestyle{empty}\n'"$rendered"
     fi
 
+    # Table of contents belongs AFTER the title page. pandoc's --toc always puts
+    # it at the very top (above the cover), so when a title page is active we
+    # emit the TOC right here and the converter skips --toc (TOC_PLACED_IN_TITLE).
+    if [[ "$USE_TOC" == "true" ]]; then
+        local _depth="${TOC_DEPTH:-3}"
+        if [[ "$OUTPUT_FORMAT" == "docx" ]]; then
+            local _toc
+            _toc=$(printf '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/><w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:pPr><w:pStyle w:val="TOCHeading"/></w:pPr><w:r><w:t xml:space="preserve">Table of Contents</w:t></w:r></w:p><w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/><w:instrText xml:space="preserve">TOC \\o "1-%s" \\h \\z \\u</w:instrText><w:fldChar w:fldCharType="separate"/><w:fldChar w:fldCharType="end"/></w:r></w:p></w:sdtContent></w:sdt>' "$_depth")
+            rendered="${rendered}"$'\n\n```{=openxml}\n'"${_toc}"$'\n```\n\n\\newpage'
+        else
+            rendered="${rendered}"$'\n\\setcounter{tocdepth}{'"${_depth}"$'}\n\\tableofcontents\n\\newpage'
+        fi
+        TOC_PLACED_IN_TITLE=true
+    fi
+
     # --- Rewrite tmp file: title page + stripped source ---
     # strip_title reads from tmp_file — substitutions and rule stripping have
     # already been applied to it. Reading source_path here would discard that work.
@@ -2037,6 +2061,7 @@ dispatch() {
 # title page (skipped in concat mode — the letterhead Title covers it).
 preprocess_md_tmp() {
     local tmp="$1" input="$2" do_tp="$3"
+    TOC_PLACED_IN_TITLE=false
     [[ "$APPLY_SUBSTITUTIONS" == "true" ]] && apply_substitutions "$tmp"
     [[ "$STRIP_RULES" == "true" ]]         && apply_strip_rules "$tmp"
     [[ "$UNWRAP_WIKILINKS" == "true" ]]    && apply_wikilink_unwrap "$tmp"
