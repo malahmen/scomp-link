@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
-"""Stamp letterhead tokens into a generated .docx (runtime post-processor).
+"""Stamp letterhead tokens (and optionally a header logo) into a generated .docx.
 
 The built-in reference doc carries {{TOKENS}} in its running header/footer
 (see build-reference.py). This replaces them with the resolved per-document
-values, and stamps the core document properties (Title / Author) so the file's
-metadata matches. Stdlib only (zipfile + regex) — no lxml at runtime.
+values, stamps the core document properties (Title / Author), and — when a
+--logo is given — injects that image into the header at conversion time (so the
+logo is config/prompt-driven, not baked into the reference). Stdlib only.
 
 Usage:
     stamp_docx_tokens.py <file.docx> \\
         --title "…" --version-suffix ", v1.0" \\
-        --author "…" --date "13 July 2026" --classification "INTERNAL USE ONLY"
+        --author "…" --date "13 July 2026" --classification "INTERNAL USE ONLY" \\
+        [--logo /path/to/logo.png]
 
-Any token left unset stamps to an empty string (so a minimal letterhead — just
-title + page numbers — still renders cleanly).
+Any token left unset stamps to an empty string; --logo omitted/missing → no logo.
 """
 import argparse
 import os
 import re
-import sys
 import zipfile
 
+R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+PR = "http://schemas.openxmlformats.org/package/2006/relationships"
 HF_RE = re.compile(r"word/(header|footer)\d+\.xml$")
+HDR_RE = re.compile(r"word/header\d+\.xml$")
+
+LOGO_W_EMU = 1280160  # ~1.4in wide; height derived from the PNG's aspect ratio
+LOGO_MEDIA = "media/logo_letterhead.png"
+LOGO_RID = "rIdLetterheadLogo"
 
 
 def xml_escape(s: str) -> str:
@@ -37,9 +44,77 @@ def stamp_core_props(xml: str, title: str, author: str) -> str:
         if pat.search(x):
             return pat.sub(f"<{tag}>{val}</{tag}>", x, count=1)
         return x.replace("</cp:coreProperties>", f"<{tag}>{val}</{tag}></cp:coreProperties>")
-    xml = set_tag(xml, "dc:title", title)
-    xml = set_tag(xml, "dc:creator", author)
-    return xml
+    return set_tag(set_tag(xml, "dc:title", title), "dc:creator", author)
+
+
+def png_dims(path):
+    with open(path, "rb") as f:
+        b = f.read(24)
+    if len(b) < 24 or b[:8] != b"\x89PNG\r\n\x1a\n":
+        return 0, 0
+    return int.from_bytes(b[16:20], "big"), int.from_bytes(b[20:24], "big")
+
+
+def logo_drawing(cx, cy):
+    return (
+        '<w:r><w:rPr><w:noProof/></w:rPr><w:drawing>'
+        '<wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" '
+        'relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">'
+        '<wp:simplePos x="0" y="0"/>'
+        '<wp:positionH relativeFrom="margin"><wp:posOffset>0</wp:posOffset></wp:positionH>'
+        '<wp:positionV relativeFrom="paragraph"><wp:posOffset>-63500</wp:posOffset></wp:positionV>'
+        f'<wp:extent cx="{cx}" cy="{cy}"/>'
+        '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>'
+        '<wp:docPr id="1" name="Logo"/>'
+        '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="logo.png"/><pic:cNvPicPr/></pic:nvPicPr>'
+        f'<pic:blipFill><a:blip r:embed="{LOGO_RID}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+        f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
+        '</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>'
+    )
+
+
+def inject_logo(data, logo_path):
+    """Embed logo_path into the first header part. Returns True on change."""
+    headers = sorted(n for n in data if HDR_RE.match(n))
+    if not headers:
+        return False
+    hdr = headers[0]
+    hs = data[hdr].decode("utf-8")
+    if LOGO_RID in hs:            # already injected
+        return False
+    pw, ph = png_dims(logo_path)
+    cx = LOGO_W_EMU
+    cy = int(cx * ph / pw) if pw else 588872
+
+    with open(logo_path, "rb") as f:
+        data["word/" + LOGO_MEDIA] = f.read()
+
+    # header rels
+    relname = "word/_rels/" + os.path.basename(hdr) + ".rels"
+    rel = f'<Relationship Id="{LOGO_RID}" Type="{R}/image" Target="{LOGO_MEDIA}"/>'
+    if relname in data:
+        s = data[relname].decode("utf-8")
+        if LOGO_RID not in s:
+            s = s.replace("</Relationships>", rel + "</Relationships>")
+        data[relname] = s.encode("utf-8")
+    else:
+        data[relname] = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            f'<Relationships xmlns="{PR}">{rel}</Relationships>'
+        ).encode("utf-8")
+
+    # insert the drawing at the start of the header's first paragraph
+    data[hdr] = hs.replace("</w:pPr>", "</w:pPr>" + logo_drawing(cx, cy), 1).encode("utf-8")
+
+    # png content type
+    ct = data["[Content_Types].xml"].decode("utf-8")
+    if 'Extension="png"' not in ct:
+        ct = ct.replace("</Types>", '<Default Extension="png" ContentType="image/png"/></Types>')
+        data["[Content_Types].xml"] = ct.encode("utf-8")
+    return True
 
 
 def main():
@@ -50,14 +125,12 @@ def main():
     ap.add_argument("--author", default="")
     ap.add_argument("--date", default="")
     ap.add_argument("--classification", default="")
+    ap.add_argument("--logo", default="")
     args = ap.parse_args()
 
     tokens = {
-        "TITLE": args.title,
-        "VERSION_SUFFIX": args.version_suffix,
-        "AUTHOR": args.author,
-        "DATE": args.date,
-        "CLASSIFICATION": args.classification,
+        "TITLE": args.title, "VERSION_SUFFIX": args.version_suffix,
+        "AUTHOR": args.author, "DATE": args.date, "CLASSIFICATION": args.classification,
     }
 
     try:
@@ -85,14 +158,22 @@ def main():
             data[core] = ns.encode("utf-8")
             changed = True
 
+    if args.logo and os.path.isfile(args.logo):
+        changed = inject_logo(data, args.logo) or changed
+
     if not changed:
         return
     tmp = args.docx + ".tmp"
+    written = set()
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        for i in infos:
+        for i in infos:                       # preserve original entries/metadata
             z.writestr(i, data[i.filename])
+            written.add(i.filename)
+        for name, content in data.items():    # plus any parts we added (media/rels)
+            if name not in written:
+                z.writestr(name, content)
     os.replace(tmp, args.docx)
-    print("stamped letterhead tokens")
+    print("stamped letterhead" + (" + logo" if (args.logo and os.path.isfile(args.logo)) else ""))
 
 
 if __name__ == "__main__":
