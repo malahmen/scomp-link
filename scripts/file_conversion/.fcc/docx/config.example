@@ -8,3 +8,13 @@ date=auto
 # Header logo (PNG), embedded into the header at conversion time. If unset or
 # the file is missing, the TUI prompts for a path (blank = no logo).
 # logo=/absolute/path/to/logo.png
+
+# Title-page chrome (only applies when a title page is enabled). Each controls
+# whether that element appears on the FIRST page; the rest of the document is
+# unaffected. Values: true/false (yes/no, show/hide). Any key left out -> the
+# TUI asks (Yes = show). The page number lives in the footer, so it only shows
+# when the footer does. DOCX honours all three; the PDF title page has only a
+# page number to hide (it has no running header/footer).
+# title_page_header=true
+# title_page_footer=true
+# title_page_page_number=true

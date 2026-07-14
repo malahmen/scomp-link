@@ -28,6 +28,17 @@ HDR_RE = re.compile(r"word/header\d+\.xml$")
 LOGO_W_EMU = 1280160  # ~1.4in wide; height derived from the PNG's aspect ratio
 LOGO_MEDIA = "media/logo_letterhead.png"
 LOGO_RID = "rIdLetterheadLogo"
+FTR_RE = re.compile(r"word/footer\d+\.xml$")
+
+HDR_TYPE = R + "/header"
+FTR_TYPE = R + "/footer"
+FIRST_HDR = "word/header_first.xml"
+FIRST_FTR = "word/footer_first.xml"
+RID_HDR_FIRST = "rIdHdrFirst"
+RID_FTR_FIRST = "rIdFtrFirst"
+_WNS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+EMPTY_HDR = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr {_WNS}><w:p/></w:hdr>'
+EMPTY_FTR = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:ftr {_WNS}><w:p/></w:ftr>'
 
 
 def xml_escape(s: str) -> str:
@@ -116,6 +127,88 @@ def inject_logo(data, logo_path):
     return True
 
 
+def strip_pagenum(ftr):
+    """Drop the 'Page N / M' cluster from a footer, keeping date/classification."""
+    pat = re.compile(
+        r'<w:r>(?:(?!</w:r>).)*?<w:t[^>]*>Page\s*</w:t></w:r>'
+        r'\s*<w:fldSimple w:instr=" PAGE ">.*?</w:fldSimple>'
+        r'\s*<w:r>.*?</w:r>'
+        r'\s*<w:fldSimple w:instr=" NUMPAGES ">.*?</w:fldSimple>',
+        re.S)
+    return pat.sub("", ftr, count=1)
+
+
+def add_first_page_chrome(data, show_header, show_footer, show_pagenum):
+    """Give page 1 (the title page) its own header/footer via <w:titlePg/>, so
+    the letterhead header / footer / page number can each be suppressed there
+    while the rest of the document keeps them. Returns True if it changed the doc.
+
+    With titlePg set, page 1 uses the 'first'-type parts; a 'first' part we leave
+    empty shows nothing, and one we copy from the default looks identical. The
+    page number lives in the footer, so it only survives when the footer does.
+    """
+    doc_key = "word/document.xml"
+    if doc_key not in data:
+        return False
+    doc = data[doc_key].decode("utf-8")
+    if "<w:titlePg" in doc:
+        return False
+    # Insert the first-page references just before <w:pgSz>. Anchoring on pgSz
+    # (rather than the default footerReference) is robust to attribute reordering
+    # by upstream post-processors AND keeps the refs in their schema-required slot
+    # (all header/footer references precede pgSz). Bail if there's no section.
+    doc, n = re.subn(
+        r"(<w:pgSz\b)",
+        f'<w:headerReference w:type="first" r:id="{RID_HDR_FIRST}"/>'
+        f'<w:footerReference w:type="first" r:id="{RID_FTR_FIRST}"/>' + r"\1",
+        doc, count=1)
+    if n == 0:
+        return False
+    doc = doc.replace("</w:sectPr>", "<w:titlePg/></w:sectPr>", 1)
+
+    hdrs = sorted(n for n in data if HDR_RE.match(n))
+    ftrs = sorted(n for n in data if FTR_RE.match(n))
+    def_hdr = hdrs[0] if hdrs else None
+    def_ftr = ftrs[0] if ftrs else None
+
+    # First-page header: copy the default (incl. any injected logo) or leave empty.
+    if show_header and def_hdr:
+        data[FIRST_HDR] = data[def_hdr]
+        src_rels = "word/_rels/" + os.path.basename(def_hdr) + ".rels"
+        if src_rels in data:                      # carry the logo relationship over
+            data["word/_rels/header_first.xml.rels"] = data[src_rels]
+    else:
+        data[FIRST_HDR] = EMPTY_HDR.encode("utf-8")
+
+    # First-page footer: empty / page-number-stripped / full copy.
+    if not show_footer or not def_ftr:
+        data[FIRST_FTR] = EMPTY_FTR.encode("utf-8")
+    elif not show_pagenum:
+        data[FIRST_FTR] = strip_pagenum(data[def_ftr].decode("utf-8")).encode("utf-8")
+    else:
+        data[FIRST_FTR] = data[def_ftr]
+
+    # document rels → the two first-page references
+    rels_key = "word/_rels/document.xml.rels"
+    rels = data[rels_key].decode("utf-8")
+    rels = rels.replace("</Relationships>",
+        f'<Relationship Id="{RID_HDR_FIRST}" Type="{HDR_TYPE}" Target="header_first.xml"/>'
+        f'<Relationship Id="{RID_FTR_FIRST}" Type="{FTR_TYPE}" Target="footer_first.xml"/>'
+        "</Relationships>")
+    data[rels_key] = rels.encode("utf-8")
+
+    # content-type overrides for the new parts
+    ct = data["[Content_Types].xml"].decode("utf-8")
+    ct = ct.replace("</Types>",
+        '<Override PartName="/word/header_first.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'
+        '<Override PartName="/word/footer_first.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>'
+        "</Types>")
+    data["[Content_Types].xml"] = ct.encode("utf-8")
+
+    data[doc_key] = doc.encode("utf-8")
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("docx")
@@ -125,6 +218,11 @@ def main():
     ap.add_argument("--date", default="")
     ap.add_argument("--classification", default="")
     ap.add_argument("--logo", default="")
+    # Title-page chrome — passed only when a title page is active. "show" keeps
+    # page 1 identical to the rest; "hide" suppresses that element on page 1.
+    ap.add_argument("--tp-header", choices=["show", "hide"], default="show")
+    ap.add_argument("--tp-footer", choices=["show", "hide"], default="show")
+    ap.add_argument("--tp-pagenum", choices=["show", "hide"], default="show")
     args = ap.parse_args()
 
     tokens = {
@@ -159,6 +257,15 @@ def main():
 
     if args.logo and os.path.isfile(args.logo):
         changed = inject_logo(data, args.logo) or changed
+
+    # First-page chrome — only when something is actually being suppressed.
+    if "hide" in (args.tp_header, args.tp_footer, args.tp_pagenum):
+        changed = add_first_page_chrome(
+            data,
+            args.tp_header != "hide",
+            args.tp_footer != "hide",
+            args.tp_pagenum != "hide",
+        ) or changed
 
     if not changed:
         return
