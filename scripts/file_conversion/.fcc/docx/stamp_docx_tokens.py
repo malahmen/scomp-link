@@ -55,29 +55,27 @@ def png_dims(path):
     return int.from_bytes(b[16:20], "big"), int.from_bytes(b[20:24], "big")
 
 
-def logo_drawing(cx, cy):
+def logo_paragraph(cx, cy):
+    # Inline (not floating) image in its own header paragraph: the header grows
+    # to fit it, so every renderer pushes the body below it — no overlap, no
+    # top-margin math (a floating anchor can spill over the body instead).
     return (
+        '<w:p><w:pPr><w:jc w:val="left"/><w:spacing w:before="0" w:after="40" w:line="240" w:lineRule="auto"/></w:pPr>'
         '<w:r><w:rPr><w:noProof/></w:rPr><w:drawing>'
-        '<wp:anchor distT="0" distB="0" distL="114300" distR="114300" simplePos="0" '
-        'relativeHeight="251659264" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1">'
-        '<wp:simplePos x="0" y="0"/>'
-        '<wp:positionH relativeFrom="margin"><wp:posOffset>0</wp:posOffset></wp:positionH>'
-        '<wp:positionV relativeFrom="paragraph"><wp:posOffset>-63500</wp:posOffset></wp:positionV>'
-        f'<wp:extent cx="{cx}" cy="{cy}"/>'
-        '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/>'
-        '<wp:docPr id="1" name="Logo"/>'
+        f'<wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/>'
+        '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="1" name="Logo"/>'
         '<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>'
         '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
         f'<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="logo.png"/><pic:cNvPicPr/></pic:nvPicPr>'
         f'<pic:blipFill><a:blip r:embed="{LOGO_RID}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
         f'<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
         '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic>'
-        '</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>'
+        '</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>'
     )
 
 
 def inject_logo(data, logo_path):
-    """Embed logo_path into the first header part. Returns True on change."""
+    """Embed logo_path as an inline image in a new first paragraph of the header."""
     headers = sorted(n for n in data if HDR_RE.match(n))
     if not headers:
         return False
@@ -106,8 +104,9 @@ def inject_logo(data, logo_path):
             f'<Relationships xmlns="{PR}">{rel}</Relationships>'
         ).encode("utf-8")
 
-    # insert the drawing at the start of the header's first paragraph
-    data[hdr] = hs.replace("</w:pPr>", "</w:pPr>" + logo_drawing(cx, cy), 1).encode("utf-8")
+    # prepend a dedicated logo paragraph as the header's first block
+    hs = re.sub(r"(<w:hdr\b[^>]*>)", lambda m: m.group(1) + logo_paragraph(cx, cy), hs, count=1)
+    data[hdr] = hs.encode("utf-8")
 
     # png content type
     ct = data["[Content_Types].xml"].decode("utf-8")
