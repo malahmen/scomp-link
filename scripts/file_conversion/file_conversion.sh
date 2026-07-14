@@ -71,6 +71,12 @@ TITLE_IMG_CACHE=""
 # Title page state (set by select_title_page)
 USE_TITLE_PAGE=false
 
+# Title-page letterhead chrome (resolved by resolve_title_page_chrome when a
+# title page is active). Default = show everything, i.e. current behaviour.
+TP_HEADER=true
+TP_FOOTER=true
+TP_PAGENUM=true
+
 # Substitution pass state (set by select_apply_substitutions)
 APPLY_SUBSTITUTIONS=false
 
@@ -623,10 +629,22 @@ stamp_docx_letterhead() {
 
     local logo_args=()
     [[ -n "$logo" ]] && logo_args=(--logo "$logo")
+
+    # Title-page chrome: only when a title page is active (it owns page 1). Maps
+    # the TP_* booleans to the stamper's show/hide flags.
+    local tp_args=()
+    if [[ "$USE_TITLE_PAGE" == "true" ]]; then
+        local _sh _sf _sp
+        [[ "$TP_HEADER"  == true ]] && _sh=show || _sh=hide
+        [[ "$TP_FOOTER"  == true ]] && _sf=show || _sf=hide
+        [[ "$TP_PAGENUM" == true ]] && _sp=show || _sp=hide
+        tp_args=(--tp-header "$_sh" --tp-footer "$_sf" --tp-pagenum "$_sp")
+    fi
+
     python3 "$script" "$docx" \
         --title "$title" --version-suffix "$vsuffix" \
         --author "$author" --date "$date" --classification "$classification" \
-        "${logo_args[@]}"
+        "${logo_args[@]}" "${tp_args[@]}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1126,6 +1144,48 @@ resolve_letterhead() {
     fi
 
     info "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}' logo='${DOCX_LOGO:-none}'"
+
+    resolve_title_page_chrome docx
+}
+
+# Read a boolean-ish config key from .fcc/docx/config → prints "true"/"false".
+# Recognised true: true/yes/1/on/show; false: false/no/0/off/hide. Anything else
+# (incl. an absent key) → prompt via gum confirm (Yes = true), matching how the
+# other letterhead keys fall back to the TUI when not configured.
+resolve_bool_cfg() {
+    local key="$1" prompt="$2" val
+    val="$(docx_cfg "$key")"
+    case "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')" in
+        true|yes|1|on|show)  printf 'true';  return ;;
+        false|no|0|off|hide) printf 'false'; return ;;
+    esac
+    if gum confirm "$prompt"; then printf 'true'; else printf 'false'; fi
+}
+
+# Resolve which letterhead chrome appears on the title page (page 1). Only
+# meaningful when a title page is enabled.
+#   mode=docx — header + footer + page number (page number nested under footer:
+#               no footer ⇒ no page number).
+#   mode=pdf  — the PDF has no running header/footer, only a page number, so
+#               that is the only thing to (optionally) suppress.
+# Sets TP_HEADER / TP_FOOTER / TP_PAGENUM (true/false).
+resolve_title_page_chrome() {
+    local mode="$1"
+    TP_HEADER=true; TP_FOOTER=true; TP_PAGENUM=true
+    [[ "$USE_TITLE_PAGE" == "true" ]] || return 0
+
+    if [[ "$mode" == "docx" ]]; then
+        TP_HEADER=$(resolve_bool_cfg title_page_header "Show the header on the title page?")
+        TP_FOOTER=$(resolve_bool_cfg title_page_footer "Show the footer on the title page?")
+        if [[ "$TP_FOOTER" == "true" ]]; then
+            TP_PAGENUM=$(resolve_bool_cfg title_page_page_number "Show the page number on the title page?")
+        else
+            TP_PAGENUM=false   # nested: no footer → no page number
+        fi
+    else
+        TP_PAGENUM=$(resolve_bool_cfg title_page_page_number "Show the page number on the title page?")
+    fi
+    info "Title-page chrome — header=${TP_HEADER} footer=${TP_FOOTER} page#=${TP_PAGENUM}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1914,6 +1974,9 @@ apply_title_page() {
             -v image="$image_awk" \
             '{gsub(/\{\{TITLE\}\}/, title); gsub(/\{\{IMAGE\}\}/, image); print}' \
             "$template_path")
+        # The PDF has no running header/footer — only a page number (plain
+        # style). Suppress it on the title page via \thispagestyle{empty}.
+        [[ "${TP_PAGENUM:-true}" == "false" ]] && rendered=$'\\thispagestyle{empty}\n'"$rendered"
     fi
 
     # --- Rewrite tmp file: title page + stripped source ---
@@ -1946,6 +2009,7 @@ dispatch() {
             detect_mono_font
             select_pdf_engine
             select_pdf_font
+            resolve_title_page_chrome pdf
             ;;
         "md→docx")
             check_deps_md_docx
