@@ -1890,22 +1890,31 @@ apply_title_page() {
         [[ -n "$TITLE_IMG_CACHE" ]] && image_abs="$TITLE_IMG_CACHE"
     fi
 
-    if [[ -n "$image_abs" ]]; then
-        local image_path_escaped="${image_abs//_/\\_}"
-        image_md="\\includegraphics[width=0.3\\textwidth]{${image_path_escaped}}"
-    fi
-
-    # --- Render template ---
+    # --- Build the title-page content (format-specific) ---
+    # The LaTeX template (\includegraphics, \textbf, \begin{center}) renders in
+    # PDF but is dropped wholesale by pandoc for DOCX, so DOCX gets a native
+    # block instead: a markdown image (centered by the layout post-processor) +
+    # a Title-styled heading + a page break — all first-class in .docx.
     local rendered
-    # awk gsub eats single backslashes in replacement strings — double them first
-    local title_awk="${title//\\/\\\\}"
-    local image_awk="${image_md//\\/\\\\}"
-
-    rendered=$(awk \
-        -v title="$title_awk" \
-        -v image="$image_awk" \
-        '{gsub(/\{\{TITLE\}\}/, title); gsub(/\{\{IMAGE\}\}/, image); print}' \
-        "$template_path")
+    if [[ "$OUTPUT_FORMAT" == "docx" ]]; then
+        local img_line=""
+        [[ -n "$image_abs" ]] && img_line="![](${image_abs}){width=35%}"
+        rendered=$(printf '%s\n\n::: {custom-style="Title"}\n%s\n:::\n\n\\newpage\n' \
+            "$img_line" "$title")
+    else
+        if [[ -n "$image_abs" ]]; then
+            local image_path_escaped="${image_abs//_/\\_}"
+            image_md="\\includegraphics[width=0.3\\textwidth]{${image_path_escaped}}"
+        fi
+        # awk gsub eats single backslashes in replacement strings — double first
+        local title_awk="${title//\\/\\\\}"
+        local image_awk="${image_md//\\/\\\\}"
+        rendered=$(awk \
+            -v title="$title_awk" \
+            -v image="$image_awk" \
+            '{gsub(/\{\{TITLE\}\}/, title); gsub(/\{\{IMAGE\}\}/, image); print}' \
+            "$template_path")
+    fi
 
     # --- Rewrite tmp file: title page + stripped source ---
     # strip_title reads from tmp_file — substitutions and rule stripping have
