@@ -1,7 +1,10 @@
-# Copy to .fcc/docx/config — letterhead defaults for DOCX conversion.
-# Any key left out (or the whole file absent) → the TUI prompts for it.
+# Copy to .fcc/docx/config - letterhead defaults for DOCX conversion.
+# Any key left out (or the whole file absent) -> the TUI prompts for it.
+# Per-file YAML front matter (author:/classification:/version:/date:/logo:) overrides these.
 author=Platform Infrastructure Team
 classification=INTERNAL USE ONLY
 version=v1.0
 date=auto
-# logo=/absolute/path/to/logo.png   # baked in via build-reference.py --logo
+# Header logo (PNG), embedded into the header at conversion time. If unset or
+# the file is missing, the TUI prompts for a path (blank = no logo).
+# logo=/absolute/path/to/logo.png

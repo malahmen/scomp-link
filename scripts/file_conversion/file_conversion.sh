@@ -61,6 +61,11 @@ DOCX_AUTHOR=""
 DOCX_CLASSIFICATION=""
 DOCX_VERSION=""
 DOCX_DATE=""
+DOCX_LOGO=""
+
+# Title-page image prompt cache (so batch runs ask at most once)
+TITLE_IMG_ASKED=false
+TITLE_IMG_CACHE=""
 
 
 # Title page state (set by select_title_page)
@@ -582,18 +587,24 @@ stamp_docx_letterhead() {
 
     # `|| true` on each: an absent front-matter key exits non-zero (pipefail),
     # which a bare x="$(...)" assignment propagates into set -e.
-    local title author classification version date vsuffix
+    local title author classification version date vsuffix logo
     title="$(extract_title "$source" || true)"
     author="$(parse_yaml_field "$source" author || true)";                author="${author:-$DOCX_AUTHOR}"
     classification="$(parse_yaml_field "$source" classification || true)"; classification="${classification:-$DOCX_CLASSIFICATION}"
     version="$(parse_yaml_field "$source" version || true)";               version="${version:-$DOCX_VERSION}"
     date="$(parse_yaml_field "$source" date || true)";                     date="${date:-$DOCX_DATE}"
+    logo="$(parse_yaml_field "$source" logo || true)";                     logo="${logo:-$DOCX_LOGO}"
+    logo="${logo/#\~/$HOME}"
+    [[ -n "$logo" && ! -f "$logo" ]] && { warn "Logo not found: ${logo} — skipping."; logo=""; }
     [[ -z "$date" || "$date" == "auto" ]] && date="$(date +'%d %B %Y' | sed 's/^0//')"
     [[ -n "$version" ]] && vsuffix=", ${version}" || vsuffix=""
 
+    local logo_args=()
+    [[ -n "$logo" ]] && logo_args=(--logo "$logo")
     python3 "$script" "$docx" \
         --title "$title" --version-suffix "$vsuffix" \
-        --author "$author" --date "$date" --classification "$classification"
+        --author "$author" --date "$date" --classification "$classification" \
+        "${logo_args[@]}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1071,7 +1082,28 @@ resolve_letterhead() {
         DOCX_VERSION=$(gum input --header "Version (footer/header), blank to omit:" \
             --placeholder "e.g. v1.0") || true
     fi
-    info "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}'"
+
+    # Header logo: config → validate → prompt for a path if unset or missing.
+    # Blank prompt = no logo (text-only header).
+    DOCX_LOGO="$(docx_cfg logo)"
+    DOCX_LOGO="${DOCX_LOGO/#\~/$HOME}"
+    if [[ -n "$DOCX_LOGO" && ! -f "$DOCX_LOGO" ]]; then
+        warn "Configured logo not found: ${DOCX_LOGO}"
+        DOCX_LOGO=""
+    fi
+    if [[ -z "$DOCX_LOGO" ]]; then
+        local p
+        p=$(gum input --header "Header logo image path (blank = no logo):" \
+            --placeholder "/path/to/logo.png") || true
+        p="${p/#\~/$HOME}"
+        if [[ -n "$p" && -f "$p" ]]; then
+            DOCX_LOGO="$p"
+        elif [[ -n "$p" ]]; then
+            warn "Logo not found: ${p} — skipping."
+        fi
+    fi
+
+    info "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}' logo='${DOCX_LOGO:-none}'"
 }
 
 # -----------------------------------------------------------------------------
@@ -1794,35 +1826,44 @@ apply_title_page() {
     #   2. Relative to yaml file directory
     #   3. Relative to PWD (project root where the script is invoked)
     local image_md=""
+    local image_abs=""
     if [[ -n "$image_rel" ]]; then
         local image_expanded="${image_rel/#\~/$HOME}"
-        local image_abs=""
         local candidate
         if [[ "$image_expanded" = /* && -f "$image_expanded" ]]; then
-            # Already absolute
-            image_abs="$image_expanded"
+            image_abs="$image_expanded"                          # absolute
         else
-            # Relative to yaml dir
-            candidate="${yaml_dir}/${image_expanded}"
-            candidate=$(realpath "$candidate" 2>/dev/null || echo "")
+            candidate=$(realpath "${yaml_dir}/${image_expanded}" 2>/dev/null || echo "")
             if [[ -n "$candidate" && -f "$candidate" ]]; then
-                image_abs="$candidate"
+                image_abs="$candidate"                           # relative to yaml dir
             else
-                # Relative to invocation dir (PWD)
-                candidate="${PWD}/${image_expanded}"
-                candidate=$(realpath "$candidate" 2>/dev/null || echo "")
-                if [[ -n "$candidate" && -f "$candidate" ]]; then
-                    image_abs="$candidate"
-                fi
+                candidate=$(realpath "${PWD}/${image_expanded}" 2>/dev/null || echo "")
+                [[ -n "$candidate" && -f "$candidate" ]] && image_abs="$candidate"  # relative to PWD
             fi
         fi
-        if [[ -n "$image_abs" ]]; then
-            local image_path_escaped="${image_abs//_/\\_}"
-            image_md="\\includegraphics[width=0.3\\textwidth]{${image_path_escaped}}"
-        else
-            warn "Image not found: '${image_rel}' — {{IMAGE}} will be empty."
-            warn "Checked: ${yaml_dir}/${image_rel} and ${PWD}/${image_rel}"
+        [[ -z "$image_abs" ]] && warn "Configured title-page image not found: '${image_rel}'."
+    fi
+
+    # Not configured or not found → prompt once (cached across files); blank = skip.
+    if [[ -z "$image_abs" ]]; then
+        if [[ "$TITLE_IMG_ASKED" != "true" ]]; then
+            TITLE_IMG_ASKED=true
+            local p
+            p=$(gum input --header "Title-page image path (blank = none):" \
+                --placeholder "/path/to/logo.png") || true
+            p="${p/#\~/$HOME}"
+            if [[ -n "$p" && -f "$p" ]]; then
+                TITLE_IMG_CACHE="$p"
+            elif [[ -n "$p" ]]; then
+                warn "Image not found: ${p} — skipping."
+            fi
         fi
+        [[ -n "$TITLE_IMG_CACHE" ]] && image_abs="$TITLE_IMG_CACHE"
+    fi
+
+    if [[ -n "$image_abs" ]]; then
+        local image_path_escaped="${image_abs//_/\\_}"
+        image_md="\\includegraphics[width=0.3\\textwidth]{${image_path_escaped}}"
     fi
 
     # --- Render template ---
