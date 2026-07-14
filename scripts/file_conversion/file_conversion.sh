@@ -13,19 +13,31 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Canonical .fcc assets shipped inside the repo (single source of truth).
-# ensure_fcc_pdf_assets copies missing pieces from here into the working
-# ./.fcc/ so the good code theme, table/pagebreak/mermaid filters travel with
-# the script instead of only existing in Starlight scaffolds.
-CANONICAL_FCC="${SCRIPT_DIR}/../starlight/.fcc"
+# Canonical .fcc assets — the single source of truth, co-located with this
+# script. ensure_fcc_*_assets copy missing pieces from here into the working
+# ./.fcc/ so the code theme, filters, and reference docs travel with the tool.
+# (The Starlight scaffolder also copies this bundle into project converters.)
+CANONICAL_FCC="${SCRIPT_DIR}/.fcc"
 
-COMMON_DIR="${SCRIPT_DIR}/../_common"
-if [[ ! -d "$COMMON_DIR" ]]; then
-    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+# UI helpers. In the scomp-link repo they live in ../_common/ui.sh; when this
+# script is vendored (e.g. into a Starlight project's converter/), a copy sits
+# next to it. Prefer the repo location, fall back to the co-located one — so the
+# same script works both in-repo and standalone.
+if [[ -f "${SCRIPT_DIR}/../_common/ui.sh" ]]; then
+    # shellcheck source=../_common/ui.sh
+    source "${SCRIPT_DIR}/../_common/ui.sh"
+elif [[ -f "${SCRIPT_DIR}/ui.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${SCRIPT_DIR}/ui.sh"
+else
+    printf "\033[0;31m[ERROR] ui.sh not found (looked in ../_common/ and alongside this script)\033[0m\n" >&2
     exit 1
 fi
-# shellcheck source=../_common/ui.sh
-source "${COMMON_DIR}/ui.sh"
+
+# Source root for the file picker. Default: the current directory. A vendored /
+# embedding caller (e.g. the Starlight shim) can export SOURCE_ROOT to point at
+# its docs directory before sourcing/running this script.
+SOURCE_ROOT="${SOURCE_ROOT:-.}"
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -36,18 +48,58 @@ TITLE_PAGES_DIR=".fcc/title-pages"
 OUTPUT_DIR="./output"
 DEFAULT_DEPTH=3
 
-# Built-in DOCX reference doc: shaded code blocks + aligned table of contents.
-DOCX_DEFAULT_REFERENCE=".fcc/docx/reference.docx"
+# Built-in DOCX reference docs. Both carry the shaded code + aligned TOC styling;
+# the letterhead one adds a running header (logo + title) + footer (date ·
+# classification · Page X/Y). reference-plain has no header/footer.
+DOCX_DEFAULT_REFERENCE=".fcc/docx/reference.docx"          # letterhead
+DOCX_PLAIN_REFERENCE=".fcc/docx/reference-plain.docx"      # no header/footer
+DOCX_CONFIG=".fcc/docx/config"                             # key=value defaults
+
+# Letterhead token state (set by select_docx_reference_doc → resolve_letterhead)
+DOCX_LETTERHEAD=false
+DOCX_AUTHOR=""
+DOCX_CLASSIFICATION=""
+DOCX_VERSION=""
+DOCX_DATE=""
+DOCX_LOGO=""
+
+# Title-page image prompt cache (so batch runs ask at most once)
+TITLE_IMG_ASKED=false
+TITLE_IMG_CACHE=""
 
 
 # Title page state (set by select_title_page)
 USE_TITLE_PAGE=false
+
+# Title-page letterhead chrome (resolved by resolve_title_page_chrome when a
+# title page is active). Default = show everything, i.e. current behaviour.
+TP_HEADER=true
+TP_FOOTER=true
+TP_PAGENUM=true
+
+# Set by apply_title_page (per file) when it emits the TOC itself, after the
+# title page. The converters then skip pandoc's --toc so it isn't ALSO placed
+# at the very top (above the cover).
+TOC_PLACED_IN_TITLE=false
 
 # Substitution pass state (set by select_apply_substitutions)
 APPLY_SUBSTITUTIONS=false
 
 # Rule stripping state (set by select_strip_rules)
 STRIP_RULES=false
+
+# Wikilink unwrap state (set by select_unwrap_wikilinks)
+UNWRAP_WIKILINKS=false
+
+# SVG rasterization state (set by select_svg_raster)
+RASTER_SVG=false
+
+# Concat state (set by select_concat) — combine several md into one document
+CONCAT=false
+CONCAT_PAGEBREAK=true
+
+# DOCX page size (set by select_docx_page_size): a4 | letter
+DOCX_PAGE_SIZE="a4"
 
 # Table of contents state (set by select_toc)
 USE_TOC=false
@@ -138,10 +190,13 @@ select_depth() {
 select_files() {
     local pattern="*.${SOURCE_FORMAT}"
 
-    info "Scanning for .${SOURCE_FORMAT} files (depth ${SEARCH_DEPTH})..."
+    info "Scanning ${SOURCE_ROOT} for .${SOURCE_FORMAT} files (depth ${SEARCH_DEPTH})..."
 
+    # Paths are kept relative to the current directory (SOURCE_ROOT may be "."
+    # for the repo tool, or e.g. ../src/content/docs when vendored) so they're
+    # usable directly at conversion time. Only a leading "./" is stripped.
     local found
-    found=$(find . -maxdepth "$SEARCH_DEPTH" -name "$pattern" \
+    found=$(find "$SOURCE_ROOT" -maxdepth "$SEARCH_DEPTH" -name "$pattern" \
         ! -path "*/node_modules/*" \
         ! -path "*/.git/*" \
         ! -path "*/.astro/*" \
@@ -152,7 +207,7 @@ select_files() {
         | sort)
 
     if [[ -z "$found" ]]; then
-        error_exit "No .${SOURCE_FORMAT} files found within depth ${SEARCH_DEPTH}."
+        error_exit "No .${SOURCE_FORMAT} files found in ${SOURCE_ROOT} (depth ${SEARCH_DEPTH})."
     fi
 
     local file_count
@@ -398,6 +453,28 @@ ensure_pdf_config() {
 }
 
 # -----------------------------------------------------------------------------
+# Seed the working .fcc/title-pages/ with the bundled default template.
+# Unlike the PDF/DOCX asset trees these are user-customisable, so we only copy
+# the bundled default.* when MISSING — never clobbering a project's own default
+# or its file-specific <flattened_path>.yaml templates.
+# -----------------------------------------------------------------------------
+ensure_fcc_title_pages() {
+    local src="${CANONICAL_FCC}/title-pages"
+    [[ -d "$src" ]] || return 0
+    mkdir -p "$TITLE_PAGES_DIR"
+    local base dest f
+    for f in "${src}/default.yaml" "${src}/default.md"; do
+        [[ -f "$f" ]] || continue
+        base=$(basename "$f")
+        dest="${TITLE_PAGES_DIR}/${base}"
+        if [[ ! -f "$dest" ]]; then
+            cp "$f" "$dest"
+            info "Seeded ${dest} (bundled default title page)."
+        fi
+    done
+}
+
+# -----------------------------------------------------------------------------
 # Resolve a lua filter to a usable path.
 # Prefer the working ./.fcc/ copy (so per-project customisation wins), but fall
 # back to the canonical bundle so a missing or partial .fcc never silently
@@ -443,7 +520,7 @@ ensure_fcc_docx_assets() {
     mkdir -p "$docx_dir"
 
     local a dest
-    for a in reference.docx pagebreak.lua render-mermaid.lua p10k.theme; do
+    for a in reference.docx reference-plain.docx stamp_docx_tokens.py docx_layout.py pagebreak.lua render-mermaid.lua p10k.theme; do
         dest="${docx_dir}/${a}"
         if [[ -f "${src}/${a}" ]]; then
             if [[ ! -f "$dest" ]] || ! cmp -s "${src}/${a}" "$dest"; then
@@ -519,6 +596,73 @@ shade_docx_tables() {
     [[ -f "$script" ]] || { warn "shade_tables.py not found — skipping table shading."; return 0; }
 
     python3 "$script" "$docx"
+}
+
+# True when the chosen reference is one of our built-ins (letterhead or plain) —
+# gates the p10k theme + explicit table banding.
+is_builtin_docx_ref() {
+    [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" \
+       || "$DOCX_REFERENCE_DOC" == "$DOCX_PLAIN_REFERENCE" ]]
+}
+
+# -----------------------------------------------------------------------------
+# Letterhead: fill the reference doc's header/footer {{TOKENS}} for this doc.
+# Title comes from the document (front-matter title: or first #); author /
+# classification / version / date come from the session defaults, overridden by
+# this file's YAML front matter when it sets them. Date defaults to today.
+# -----------------------------------------------------------------------------
+
+stamp_docx_letterhead() {
+    local docx="$1" source="$2"
+    command -v python3 &>/dev/null || { warn "python3 not found — letterhead tokens left unstamped."; return 0; }
+    local script; script="$(resolve_docx_asset stamp_docx_tokens.py)"
+    [[ -n "$script" ]] || { warn "stamp_docx_tokens.py not found — skipping letterhead."; return 0; }
+
+    # `|| true` on each: an absent front-matter key exits non-zero (pipefail),
+    # which a bare x="$(...)" assignment propagates into set -e.
+    local title author classification version date vsuffix logo
+    title="$(extract_title "$source" || true)"
+    author="$(parse_yaml_field "$source" author || true)";                author="${author:-$DOCX_AUTHOR}"
+    classification="$(parse_yaml_field "$source" classification || true)"; classification="${classification:-$DOCX_CLASSIFICATION}"
+    version="$(parse_yaml_field "$source" version || true)";               version="${version:-$DOCX_VERSION}"
+    date="$(parse_yaml_field "$source" date || true)";                     date="${date:-$DOCX_DATE}"
+    logo="$(parse_yaml_field "$source" logo || true)";                     logo="${logo:-$DOCX_LOGO}"
+    logo="${logo/#\~/$HOME}"
+    [[ -n "$logo" && ! -f "$logo" ]] && { warn "Logo not found: ${logo} — skipping."; logo=""; }
+    [[ -z "$date" || "$date" == "auto" ]] && date="$(date +'%d %B %Y' | sed 's/^0//')"
+    [[ -n "$version" ]] && vsuffix=", ${version}" || vsuffix=""
+
+    local logo_args=()
+    [[ -n "$logo" ]] && logo_args=(--logo "$logo")
+
+    # Title-page chrome: only when a title page is active (it owns page 1). Maps
+    # the TP_* booleans to the stamper's show/hide flags.
+    local tp_args=()
+    if [[ "$USE_TITLE_PAGE" == "true" ]]; then
+        local _sh _sf _sp
+        [[ "$TP_HEADER"  == true ]] && _sh=show || _sh=hide
+        [[ "$TP_FOOTER"  == true ]] && _sf=show || _sf=hide
+        [[ "$TP_PAGENUM" == true ]] && _sp=show || _sp=hide
+        tp_args=(--tp-header "$_sh" --tp-footer "$_sf" --tp-pagenum "$_sp")
+    fi
+
+    python3 "$script" "$docx" \
+        --title "$title" --version-suffix "$vsuffix" \
+        --author "$author" --date "$date" --classification "$classification" \
+        "${logo_args[@]}" "${tp_args[@]}"
+}
+
+# -----------------------------------------------------------------------------
+# Adjust the generated .docx layout: page size (DOCX_PAGE_SIZE) + fit wide images
+# to the text column + centre image paragraphs. Skipped if python3 is missing.
+# -----------------------------------------------------------------------------
+
+layout_docx() {
+    local docx="$1"
+    command -v python3 &>/dev/null || return 0
+    local script; script="$(resolve_docx_asset docx_layout.py)"
+    [[ -n "$script" ]] || return 0
+    python3 "$script" "$docx" --page-size "$DOCX_PAGE_SIZE"
 }
 
 # -----------------------------------------------------------------------------
@@ -906,8 +1050,10 @@ convert_md_to_pdf() {
         pandoc_args+=(-V "mainfont=${PDF_FONT}")
     fi
 
-    # Table of contents (opt-in) — pandoc builds it from the headers.
-    if [[ "$USE_TOC" == "true" ]]; then
+    # Table of contents (opt-in) — pandoc builds it from the headers. Skipped
+    # when a title page already emitted \tableofcontents after the cover (else
+    # pandoc would ALSO place one above the title page).
+    if [[ "$USE_TOC" == "true" && "$TOC_PLACED_IN_TITLE" != "true" ]]; then
         pandoc_args+=(--toc --toc-depth="$TOC_DEPTH" -V "toc-title=${TOC_TITLE}")
     fi
 
@@ -949,6 +1095,107 @@ Install it from: https://pandoc.org/installing.html
 }
 
 # -----------------------------------------------------------------------------
+# Letterhead config + token resolution
+# Read a value from .fcc/docx/config (key=value). Empty if absent.
+# -----------------------------------------------------------------------------
+
+docx_cfg() {
+    [[ -f "$DOCX_CONFIG" ]] || return 0
+    # `|| true`: a missing key makes grep exit non-zero which, under pipefail,
+    # would fail the whole substitution and trip set -e in the caller.
+    { grep -E "^${1}=" "$DOCX_CONFIG" | head -1 | sed "s/^${1}=//" | tr -d '\r'; } || true
+}
+
+# Resolve the letterhead tokens once per run: config file → prompt for anything
+# still missing. Title is per-document (from the file) and date defaults to
+# today, so we only prompt for author / classification / version here. A
+# per-file YAML front-matter override is applied later, at stamp time.
+resolve_letterhead() {
+    DOCX_AUTHOR="$(docx_cfg author)"
+    DOCX_CLASSIFICATION="$(docx_cfg classification)"
+    DOCX_VERSION="$(docx_cfg version)"
+    DOCX_DATE="$(docx_cfg date)"
+    [[ "$DOCX_DATE" == "auto" ]] && DOCX_DATE=""   # empty → today, stamped later
+
+    if [[ -z "$DOCX_AUTHOR" ]]; then
+        DOCX_AUTHOR=$(gum input --header "Author (header 'Created By'), blank to omit:" \
+            --placeholder "e.g. Platform Team") || true
+    fi
+    if [[ -z "$DOCX_CLASSIFICATION" ]]; then
+        DOCX_CLASSIFICATION=$(gum input --header "Classification (footer), blank to omit:" \
+            --placeholder "e.g. INTERNAL USE ONLY") || true
+    fi
+    if [[ -z "$DOCX_VERSION" ]]; then
+        DOCX_VERSION=$(gum input --header "Version (footer/header), blank to omit:" \
+            --placeholder "e.g. v1.0") || true
+    fi
+
+    # Header logo: config → validate → prompt for a path if unset or missing.
+    # Blank prompt = no logo (text-only header).
+    DOCX_LOGO="$(docx_cfg logo)"
+    DOCX_LOGO="${DOCX_LOGO/#\~/$HOME}"
+    if [[ -n "$DOCX_LOGO" && ! -f "$DOCX_LOGO" ]]; then
+        warn "Configured logo not found: ${DOCX_LOGO}"
+        DOCX_LOGO=""
+    fi
+    if [[ -z "$DOCX_LOGO" ]]; then
+        local p
+        p=$(gum input --header "Header logo image path (blank = no logo):" \
+            --placeholder "/path/to/logo.png") || true
+        p="${p/#\~/$HOME}"
+        if [[ -n "$p" && -f "$p" ]]; then
+            DOCX_LOGO="$p"
+        elif [[ -n "$p" ]]; then
+            warn "Logo not found: ${p} — skipping."
+        fi
+    fi
+
+    info "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}' logo='${DOCX_LOGO:-none}'"
+
+    resolve_title_page_chrome docx
+}
+
+# Read a boolean-ish config key from .fcc/docx/config → prints "true"/"false".
+# Recognised true: true/yes/1/on/show; false: false/no/0/off/hide. Anything else
+# (incl. an absent key) → prompt via gum confirm (Yes = true), matching how the
+# other letterhead keys fall back to the TUI when not configured.
+resolve_bool_cfg() {
+    local key="$1" prompt="$2" val
+    val="$(docx_cfg "$key")"
+    case "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')" in
+        true|yes|1|on|show)  printf 'true';  return ;;
+        false|no|0|off|hide) printf 'false'; return ;;
+    esac
+    if gum confirm "$prompt"; then printf 'true'; else printf 'false'; fi
+}
+
+# Resolve which letterhead chrome appears on the title page (page 1). Only
+# meaningful when a title page is enabled.
+#   mode=docx — header + footer + page number (page number nested under footer:
+#               no footer ⇒ no page number).
+#   mode=pdf  — the PDF has no running header/footer, only a page number, so
+#               that is the only thing to (optionally) suppress.
+# Sets TP_HEADER / TP_FOOTER / TP_PAGENUM (true/false).
+resolve_title_page_chrome() {
+    local mode="$1"
+    TP_HEADER=true; TP_FOOTER=true; TP_PAGENUM=true
+    [[ "$USE_TITLE_PAGE" == "true" ]] || return 0
+
+    if [[ "$mode" == "docx" ]]; then
+        TP_HEADER=$(resolve_bool_cfg title_page_header "Show the header on the title page?")
+        TP_FOOTER=$(resolve_bool_cfg title_page_footer "Show the footer on the title page?")
+        if [[ "$TP_FOOTER" == "true" ]]; then
+            TP_PAGENUM=$(resolve_bool_cfg title_page_page_number "Show the page number on the title page?")
+        else
+            TP_PAGENUM=false   # nested: no footer → no page number
+        fi
+    else
+        TP_PAGENUM=$(resolve_bool_cfg title_page_page_number "Show the page number on the title page?")
+    fi
+    info "Title-page chrome — header=${TP_HEADER} footer=${TP_FOOTER} page#=${TP_PAGENUM}"
+}
+
+# -----------------------------------------------------------------------------
 # Reference doc selection for md → docx
 # Scans for .docx files up to SEARCH_DEPTH, offers a manual path escape hatch.
 # Sets DOCX_REFERENCE_DOC (empty string = no reference doc).
@@ -956,22 +1203,52 @@ Install it from: https://pandoc.org/installing.html
 
 select_docx_reference_doc() {
     DOCX_REFERENCE_DOC=""
+    DOCX_LETTERHEAD=false
 
-    # Make the built-in styled template available (shaded code + aligned TOC).
+    # Make the built-in templates available (shaded code + aligned TOC; the
+    # letterhead one adds header/footer/page numbers).
     local have_default=false
     if ensure_fcc_docx_assets; then
         have_default=true
     fi
 
-    if ! gum confirm "Use a custom reference .docx template? (No = built-in styled template)"; then
-        if [[ "$have_default" == "true" ]]; then
-            DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
-            info "Using built-in styled reference: ${DOCX_REFERENCE_DOC}"
-        else
-            warn "Built-in reference template unavailable — using pandoc defaults (plain code blocks, unstyled TOC)."
-        fi
-        return
-    fi
+    local choice
+    choice=$(gum choose \
+        "Built-in — letterhead (header + footer + page numbers)" \
+        "Built-in — plain (no header/footer)" \
+        "Custom template (.docx)" \
+        "None (pandoc default)" \
+        --header "DOCX styling / reference template:") || true
+    [[ -z "$choice" ]] && { gum style --faint "Cancelled."; return 0; }
+
+    case "$choice" in
+        "Built-in — letterhead"*)
+            if [[ "$have_default" == true && -f "$DOCX_DEFAULT_REFERENCE" ]]; then
+                DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
+                DOCX_LETTERHEAD=true
+                resolve_letterhead
+                info "Using built-in letterhead reference."
+            else
+                warn "Letterhead reference unavailable — using pandoc defaults."
+            fi
+            return ;;
+        "Built-in — plain"*)
+            if [[ -f "$DOCX_PLAIN_REFERENCE" ]]; then
+                DOCX_REFERENCE_DOC="$DOCX_PLAIN_REFERENCE"
+                info "Using built-in plain reference."
+            elif [[ "$have_default" == true ]]; then
+                DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
+                warn "Plain reference missing — falling back to the letterhead one (header/footer will show)."
+            else
+                warn "Built-in reference unavailable — using pandoc defaults."
+            fi
+            return ;;
+        "None (pandoc default)")
+            info "No reference doc — pandoc defaults."
+            return ;;
+        "Custom template (.docx)")
+            : ;;  # fall through to the scan/pick below
+    esac
 
     info "Scanning for .docx files (depth ${SEARCH_DEPTH})..."
 
@@ -1051,8 +1328,10 @@ convert_md_to_docx() {
         [[ -n "$lf_path" ]] && pandoc_args+=(--lua-filter="$lf_path")
     done
 
-    # Table of contents (opt-in) — Word builds a native TOC field.
-    if [[ "$USE_TOC" == "true" ]]; then
+    # Table of contents (opt-in) — Word builds a native TOC field. Skipped when
+    # a title page already emitted the TOC after the cover (else it'd double up
+    # at the top of the document).
+    if [[ "$USE_TOC" == "true" && "$TOC_PLACED_IN_TITLE" != "true" ]]; then
         pandoc_args+=(--toc --toc-depth="$TOC_DEPTH")
     fi
 
@@ -1060,10 +1339,9 @@ convert_md_to_docx() {
         pandoc_args+=(--reference-doc="$DOCX_REFERENCE_DOC")
     fi
 
-    # The p10k syntax theme for code — from the DOCX tree, only with the built-in
-    # reference (whose code styles are dark to suit it). A custom template keeps
-    # its own code styling.
-    if [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" ]]; then
+    # The p10k syntax theme for code — with either built-in reference (whose code
+    # styles suit it). A custom template keeps its own code styling.
+    if is_builtin_docx_ref; then
         local theme_path
         theme_path="$(resolve_docx_asset "p10k.theme")"
         [[ -n "$theme_path" ]] && pandoc_args+=(--syntax-highlighting="$theme_path")
@@ -1075,9 +1353,13 @@ convert_md_to_docx() {
     if [[ $? -eq 0 ]]; then
         fold_docx_pagebreaks "$output_file"
         apply_docx_fonts "$output_file"
-        # Explicit table banding — only with the built-in reference (a custom
+        # Explicit table banding — only with a built-in reference (a custom
         # template owns its own table styling).
-        [[ "$DOCX_REFERENCE_DOC" == "$DOCX_DEFAULT_REFERENCE" ]] && shade_docx_tables "$output_file"
+        is_builtin_docx_ref && shade_docx_tables "$output_file"
+        # Layout: page size + image fit/centering (built-in refs only).
+        is_builtin_docx_ref && layout_docx "$output_file"
+        # Letterhead: fill the header/footer tokens (+ core props) per document.
+        [[ "$DOCX_LETTERHEAD" == true ]] && stamp_docx_letterhead "$output_file" "$name_source"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
     else
@@ -1263,6 +1545,139 @@ apply_strip_rules() {
 }
 
 # =============================================================================
+# WIKILINK UNWRAP
+# [[Target|Label]] -> Label ; [[Target#anchor]] -> Target. Cross-document
+# wikilinks can't resolve inside a single output file, so we drop to plain text.
+# Skips fenced code blocks. Applies to all md→* pairs (helps PDF + DOCX).
+# =============================================================================
+
+select_unwrap_wikilinks() {
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    if gum confirm "Unwrap [[wikilinks]] to plain text?"; then
+        UNWRAP_WIKILINKS=true
+        info "Wikilink unwrapping enabled."
+    else
+        UNWRAP_WIKILINKS=false
+    fi
+}
+
+apply_wikilink_unwrap() {
+    local tmp_file="$1"
+    # Two passes (piped form first, then bare); range skips fenced code blocks.
+    sed -E \
+        -e '/^```/,/^```/!s/\[\[[^]|]*\|([^]]+)\]\]/\1/g' \
+        -e '/^```/,/^```/!s/\[\[([^]#|]+)[^]]*\]\]/\1/g' \
+        "$tmp_file" > "${tmp_file}.wl" && mv "${tmp_file}.wl" "$tmp_file"
+}
+
+# =============================================================================
+# SVG RASTERIZATION
+# Local .svg images -> PNG (via rsvg-convert, faithful vector rasterization),
+# so pandoc can embed them for both DOCX and PDF (xelatex can't embed SVG).
+# Remote (http) SVGs are left untouched. Applies to all md→* pairs.
+# =============================================================================
+
+select_svg_raster() {
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    if gum confirm "Rasterize local .svg images to PNG (needs rsvg-convert)?"; then
+        RASTER_SVG=true
+        info "SVG rasterization enabled."
+    else
+        RASTER_SVG=false
+    fi
+}
+
+ensure_rsvg() {
+    command -v rsvg-convert &>/dev/null && return 0
+    warn "rsvg-convert (librsvg) is not installed."
+    gum confirm "Install librsvg now?" || return 1
+    case "$(uname -s)" in
+        Darwin) command -v brew &>/dev/null && brew install librsvg || return 1 ;;
+        Linux)
+            if command -v apt-get &>/dev/null && sudo -n true 2>/dev/null; then
+                sudo apt-get install -y librsvg2-bin
+            elif command -v dnf &>/dev/null && sudo -n true 2>/dev/null; then
+                sudo dnf install -y librsvg2-tools
+            else
+                return 1
+            fi ;;
+        *) return 1 ;;
+    esac
+    command -v rsvg-convert &>/dev/null
+}
+
+apply_svg_raster() {
+    local tmp_file="$1" srcdir="$2"
+    # Any local .svg image refs? (skip if none)
+    grep -qiE '!\[[^]]*\]\([^)]*\.svg' "$tmp_file" || return 0
+    ensure_rsvg || { warn "rsvg-convert unavailable — leaving .svg images as-is."; return 0; }
+
+    local media="${OUTPUT_DIR}/media"; mkdir -p "$media"
+    local svgs
+    svgs=$(grep -oiE '!\[[^]]*\]\([^)]*\.svg\)' "$tmp_file" \
+        | sed -E 's/^!\[[^]]*\]\(([^)]+)\).*/\1/' | sort -u)
+
+    local svg abs png i=0
+    while IFS= read -r svg; do
+        [[ -z "$svg" ]] && continue
+        [[ "$svg" =~ ^https?:// ]] && continue                 # leave remote SVGs
+        local expanded="${svg/#\~/$HOME}"
+        if [[ "$expanded" = /* ]]; then abs="$expanded"; else abs="${srcdir}/${expanded}"; fi
+        abs="$(cd "$(dirname "$abs")" 2>/dev/null && pwd)/$(basename "$abs")"
+        [[ -f "$abs" ]] || { warn "SVG not found: ${svg}"; continue; }
+        i=$(( i + 1 ))
+        png="${media}/svg_${i}_$(basename "${abs%.svg}").png"
+        if rsvg-convert --zoom 2 -o "$png" "$abs" 2>/dev/null; then
+            # rewrite this svg path -> the PNG (absolute), everywhere it appears
+            local esc_svg="${svg//&/\\&}"
+            sed -i.bak "s|(${svg})|(${png})|g" "$tmp_file" && rm -f "${tmp_file}.bak"
+        else
+            warn "Failed to rasterize: ${svg}"
+        fi
+    done <<< "$svgs"
+}
+
+# =============================================================================
+# CONCAT — combine several selected md files into ONE document
+# Offered only when >1 md file is selected and the target is a single document
+# (pdf/docx). The first "# H1" becomes the document Title; page break optional.
+# =============================================================================
+
+select_concat() {
+    CONCAT=false
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    [[ "$OUTPUT_FORMAT" != "pdf" && "$OUTPUT_FORMAT" != "docx" ]] && return
+    local n; n=$(echo "$SELECTED_FILES" | grep -c .)
+    (( n < 2 )) && return
+
+    if gum confirm "Combine the ${n} selected files into ONE document?"; then
+        CONCAT=true
+        if gum confirm "Insert a page break between files?"; then
+            CONCAT_PAGEBREAK=true
+        else
+            CONCAT_PAGEBREAK=false
+        fi
+        info "Concatenation enabled — ${n} files → one document."
+    fi
+}
+
+# =============================================================================
+# DOCX PAGE SIZE — only for the built-in references (a custom template owns its
+# own page geometry). The layout post-processor rewrites pgSz in the output.
+# =============================================================================
+
+select_docx_page_size() {
+    is_builtin_docx_ref || return 0
+    local p
+    p=$(gum choose "A4" "Letter" --header "Page size:") || true
+    case "$p" in
+        Letter) DOCX_PAGE_SIZE="letter" ;;
+        *)      DOCX_PAGE_SIZE="a4" ;;
+    esac
+    info "Page size: ${DOCX_PAGE_SIZE}"
+}
+
+# =============================================================================
 # TABLE OF CONTENTS
 # Optional index page built from the document's markdown headers.
 # Applies to md→pdf and md→docx (pandoc's native --toc). Not meaningful for
@@ -1333,6 +1748,10 @@ select_title_page() {
 
     USE_TITLE_PAGE=true
 
+    # Seed the bundled default template into the working copy if absent, so a
+    # fresh project isn't left with no templates.
+    ensure_fcc_title_pages
+
     # Warn if no templates exist at all — non-fatal, per-file resolution will
     # emit its own warning and skip gracefully.
     if [[ ! -d "$TITLE_PAGES_DIR" ]] || \
@@ -1388,7 +1807,10 @@ resolve_title_page_yaml() {
 parse_yaml_field() {
     local file="$1"
     local field="$2"
-    grep -E "^${field}:" "$file" | head -1 | sed "s/^${field}:[[:space:]]*//" | tr -d '\r'
+    # `|| true`: a missing key means grep exits non-zero, which under
+    # `set -euo pipefail` would abort the caller's `x=$(parse_yaml_field …)`.
+    # A missing field is a normal "unset" here, not an error.
+    grep -E "^${field}:" "$file" | head -1 | sed "s/^${field}:[[:space:]]*//" | tr -d '\r' || true
 }
 
 # -----------------------------------------------------------------------------
@@ -1415,8 +1837,8 @@ extract_title() {
         fi
     fi
 
-    # Fall back to first # H1
-    grep -m1 '^# ' "$file" | sed 's/^# //'
+    # Fall back to first # H1 (|| true: no H1 is "no title", not a fatal error)
+    grep -m1 '^# ' "$file" | sed 's/^# //' || true
 }
 
 # -----------------------------------------------------------------------------
@@ -1502,48 +1924,84 @@ apply_title_page() {
     #   2. Relative to yaml file directory
     #   3. Relative to PWD (project root where the script is invoked)
     local image_md=""
+    local image_abs=""
     if [[ -n "$image_rel" ]]; then
         local image_expanded="${image_rel/#\~/$HOME}"
-        local image_abs=""
         local candidate
         if [[ "$image_expanded" = /* && -f "$image_expanded" ]]; then
-            # Already absolute
-            image_abs="$image_expanded"
+            image_abs="$image_expanded"                          # absolute
         else
-            # Relative to yaml dir
-            candidate="${yaml_dir}/${image_expanded}"
-            candidate=$(realpath "$candidate" 2>/dev/null || echo "")
+            candidate=$(realpath "${yaml_dir}/${image_expanded}" 2>/dev/null || echo "")
             if [[ -n "$candidate" && -f "$candidate" ]]; then
-                image_abs="$candidate"
+                image_abs="$candidate"                           # relative to yaml dir
             else
-                # Relative to invocation dir (PWD)
-                candidate="${PWD}/${image_expanded}"
-                candidate=$(realpath "$candidate" 2>/dev/null || echo "")
-                if [[ -n "$candidate" && -f "$candidate" ]]; then
-                    image_abs="$candidate"
-                fi
+                candidate=$(realpath "${PWD}/${image_expanded}" 2>/dev/null || echo "")
+                [[ -n "$candidate" && -f "$candidate" ]] && image_abs="$candidate"  # relative to PWD
             fi
         fi
+        [[ -z "$image_abs" ]] && warn "Configured title-page image not found: '${image_rel}'."
+    fi
+
+    # Not configured or not found → prompt once (cached across files); blank = skip.
+    if [[ -z "$image_abs" ]]; then
+        if [[ "$TITLE_IMG_ASKED" != "true" ]]; then
+            TITLE_IMG_ASKED=true
+            local p
+            p=$(gum input --header "Title-page image path (blank = none):" \
+                --placeholder "/path/to/logo.png") || true
+            p="${p/#\~/$HOME}"
+            if [[ -n "$p" && -f "$p" ]]; then
+                TITLE_IMG_CACHE="$p"
+            elif [[ -n "$p" ]]; then
+                warn "Image not found: ${p} — skipping."
+            fi
+        fi
+        [[ -n "$TITLE_IMG_CACHE" ]] && image_abs="$TITLE_IMG_CACHE"
+    fi
+
+    # --- Build the title-page content (format-specific) ---
+    # The LaTeX template (\includegraphics, \textbf, \begin{center}) renders in
+    # PDF but is dropped wholesale by pandoc for DOCX, so DOCX gets a native
+    # block instead: a markdown image (centered by the layout post-processor) +
+    # a Title-styled heading + a page break — all first-class in .docx.
+    local rendered
+    if [[ "$OUTPUT_FORMAT" == "docx" ]]; then
+        local img_line=""
+        [[ -n "$image_abs" ]] && img_line="![](${image_abs}){width=35%}"
+        rendered=$(printf '%s\n\n::: {custom-style="Title"}\n%s\n:::\n\n\\newpage\n' \
+            "$img_line" "$title")
+    else
         if [[ -n "$image_abs" ]]; then
             local image_path_escaped="${image_abs//_/\\_}"
             image_md="\\includegraphics[width=0.3\\textwidth]{${image_path_escaped}}"
-        else
-            warn "Image not found: '${image_rel}' — {{IMAGE}} will be empty."
-            warn "Checked: ${yaml_dir}/${image_rel} and ${PWD}/${image_rel}"
         fi
+        # awk gsub eats single backslashes in replacement strings — double first
+        local title_awk="${title//\\/\\\\}"
+        local image_awk="${image_md//\\/\\\\}"
+        rendered=$(awk \
+            -v title="$title_awk" \
+            -v image="$image_awk" \
+            '{gsub(/\{\{TITLE\}\}/, title); gsub(/\{\{IMAGE\}\}/, image); print}' \
+            "$template_path")
+        # The PDF has no running header/footer — only a page number (plain
+        # style). Suppress it on the title page via \thispagestyle{empty}.
+        [[ "${TP_PAGENUM:-true}" == "false" ]] && rendered=$'\\thispagestyle{empty}\n'"$rendered"
     fi
 
-    # --- Render template ---
-    local rendered
-    # awk gsub eats single backslashes in replacement strings — double them first
-    local title_awk="${title//\\/\\\\}"
-    local image_awk="${image_md//\\/\\\\}"
-
-    rendered=$(awk \
-        -v title="$title_awk" \
-        -v image="$image_awk" \
-        '{gsub(/\{\{TITLE\}\}/, title); gsub(/\{\{IMAGE\}\}/, image); print}' \
-        "$template_path")
+    # Table of contents belongs AFTER the title page. pandoc's --toc always puts
+    # it at the very top (above the cover), so when a title page is active we
+    # emit the TOC right here and the converter skips --toc (TOC_PLACED_IN_TITLE).
+    if [[ "$USE_TOC" == "true" ]]; then
+        local _depth="${TOC_DEPTH:-3}"
+        if [[ "$OUTPUT_FORMAT" == "docx" ]]; then
+            local _toc
+            _toc=$(printf '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/><w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:pPr><w:pStyle w:val="TOCHeading"/></w:pPr><w:r><w:t xml:space="preserve">Table of Contents</w:t></w:r></w:p><w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/><w:instrText xml:space="preserve">TOC \\o "1-%s" \\h \\z \\u</w:instrText><w:fldChar w:fldCharType="separate"/><w:fldChar w:fldCharType="end"/></w:r></w:p></w:sdtContent></w:sdt>' "$_depth")
+            rendered="${rendered}"$'\n\n```{=openxml}\n'"${_toc}"$'\n```\n\n\\newpage'
+        else
+            rendered="${rendered}"$'\n\\setcounter{tocdepth}{'"${_depth}"$'}\n\\tableofcontents\n\\newpage'
+        fi
+        TOC_PLACED_IN_TITLE=true
+    fi
 
     # --- Rewrite tmp file: title page + stripped source ---
     # strip_title reads from tmp_file — substitutions and rule stripping have
@@ -1575,11 +2033,13 @@ dispatch() {
             detect_mono_font
             select_pdf_engine
             select_pdf_font
+            resolve_title_page_chrome pdf
             ;;
         "md→docx")
             check_deps_md_docx
             ensure_fcc_docx_assets   # DOCX-only asset tree; never touches .fcc/pdf/
             select_docx_reference_doc
+            select_docx_page_size
             select_docx_font
             detect_docx_mono
             ;;
@@ -1597,6 +2057,63 @@ dispatch() {
 # CONVERT ALL SELECTED FILES
 # =============================================================================
 
+# Apply the opt-in md pre-passes to a working .tmp.md copy. `do_tp` gates the
+# title page (skipped in concat mode — the letterhead Title covers it).
+preprocess_md_tmp() {
+    local tmp="$1" input="$2" do_tp="$3"
+    TOC_PLACED_IN_TITLE=false
+    [[ "$APPLY_SUBSTITUTIONS" == "true" ]] && apply_substitutions "$tmp"
+    [[ "$STRIP_RULES" == "true" ]]         && apply_strip_rules "$tmp"
+    [[ "$UNWRAP_WIKILINKS" == "true" ]]    && apply_wikilink_unwrap "$tmp"
+    [[ "$RASTER_SVG" == "true" ]]          && apply_svg_raster "$tmp" "$(dirname "$input")"
+    [[ "$do_tp" == "true" && "$USE_TITLE_PAGE" == "true" ]] && apply_title_page "$input" "$tmp"
+    return 0
+}
+
+# Combine every selected md file into one working copy and convert it once.
+# The first "# H1" becomes the document Title (via front matter); files are
+# separated by an optional page break. Output is named after the first file.
+run_concat() {
+    local combined="${OUTPUT_DIR}/_concat.tmp.md"
+    local first_input="" first_h1="" idx=0
+    : > "$combined"
+
+    while IFS= read -r input_file; do
+        [[ -z "$input_file" ]] && continue
+        idx=$(( idx + 1 ))
+        [[ -z "$first_input" ]] && first_input="$input_file"
+
+        local part="${OUTPUT_DIR}/_part.tmp.md"
+        cp "$input_file" "$part"
+        preprocess_md_tmp "$part" "$input_file" false
+
+        if (( idx == 1 )); then
+            first_h1="$(grep -m1 '^# ' "$part" | sed 's/^# //' || true)"
+            awk 'stripped || !/^# /{print} !stripped && /^# /{stripped=1}' \
+                "$part" > "${part}.h" && mv "${part}.h" "$part"
+        fi
+
+        (( idx > 1 )) && [[ "$CONCAT_PAGEBREAK" == "true" ]] && printf '\n\n\\newpage\n\n' >> "$combined"
+        cat "$part" >> "$combined"
+        printf '\n\n' >> "$combined"
+        rm -f "$part"
+    done <<< "$SELECTED_FILES"
+
+    if [[ -n "$first_h1" ]]; then
+        local fm="${combined}.fm"
+        { printf -- '---\ntitle: "%s"\n---\n\n' "$first_h1"; cat "$combined"; } > "$fm" && mv "$fm" "$combined"
+    fi
+
+    local rc=0
+    case "${SOURCE_FORMAT}→${OUTPUT_FORMAT}" in
+        "md→pdf")  convert_md_to_pdf  "$combined" "$first_input" || rc=1 ;;
+        "md→docx") convert_md_to_docx "$combined" "$first_input" || rc=1 ;;
+        *) warn "Concat not supported for ${SOURCE_FORMAT}→${OUTPUT_FORMAT}."; rc=1 ;;
+    esac
+    rm -f "$combined"
+    return "$rc"
+}
+
 run_conversions() {
     header "Converting Files"
 
@@ -1607,68 +2124,41 @@ run_conversions() {
     local failed=0
     local succeeded=0
 
-    while IFS= read -r input_file; do
-        [[ -z "$input_file" ]] && continue
+    if [[ "$CONCAT" == "true" && "$SOURCE_FORMAT" == "md" ]]; then
+        if run_concat; then succeeded=1; else failed=1; fi
+    else
+        while IFS= read -r input_file; do
+            [[ -z "$input_file" ]] && continue
 
-        # For md→* pairs: always work on a .tmp.md copy so substitutions
-        # and title page injection never touch the original source file.
-        local effective_file="$input_file"
-        local tmp_file=""
+            # For md→* pairs: always work on a .tmp.md copy so the pre-passes
+            # never touch the original source file.
+            local effective_file="$input_file"
+            local tmp_file=""
 
-        if [[ "$SOURCE_FORMAT" == "md" ]]; then
-            local base
-            base=$(basename "$input_file" ".md")
-            tmp_file="${OUTPUT_DIR}/${base}.tmp.md"
-            cp "$input_file" "$tmp_file"
-            effective_file="$tmp_file"
-
-            # Substitution pass (opt-in)
-            if [[ "$APPLY_SUBSTITUTIONS" == "true" ]]; then
-                apply_substitutions "$tmp_file"
+            if [[ "$SOURCE_FORMAT" == "md" ]]; then
+                local base
+                base=$(basename "$input_file" ".md")
+                tmp_file="${OUTPUT_DIR}/${base}.tmp.md"
+                cp "$input_file" "$tmp_file"
+                effective_file="$tmp_file"
+                preprocess_md_tmp "$tmp_file" "$input_file" true
             fi
 
-            # Rule stripping pass (opt-in)
-            if [[ "$STRIP_RULES" == "true" ]]; then
-                apply_strip_rules "$tmp_file"
-            fi
+            case "$pair" in
+                "md→pdf")
+                    if convert_md_to_pdf "$effective_file" "$input_file"; then
+                        succeeded=$(( succeeded + 1 )); else failed=$(( failed + 1 )); fi ;;
+                "md→docx")
+                    if convert_md_to_docx "$effective_file" "$input_file"; then
+                        succeeded=$(( succeeded + 1 )); else failed=$(( failed + 1 )); fi ;;
+                "docx→md")
+                    if convert_docx_to_md "$effective_file"; then
+                        succeeded=$(( succeeded + 1 )); else failed=$(( failed + 1 )); fi ;;
+            esac
 
-            # Title page injection (opt-in)
-            if [[ "$USE_TITLE_PAGE" == "true" ]]; then
-                apply_title_page "$input_file" "$tmp_file"
-                # apply_title_page writes into tmp_file directly; effective_file unchanged
-            fi
-        fi
-
-        case "$pair" in
-            "md→pdf")
-                if convert_md_to_pdf "$effective_file" "$input_file"; then
-                    succeeded=$(( succeeded + 1 ))
-                else
-                    failed=$(( failed + 1 ))
-                fi
-                ;;
-            "md→docx")
-                if convert_md_to_docx "$effective_file" "$input_file"; then
-                    succeeded=$(( succeeded + 1 ))
-                else
-                    failed=$(( failed + 1 ))
-                fi
-                ;;
-            "docx→md")
-                if convert_docx_to_md "$effective_file"; then
-                    succeeded=$(( succeeded + 1 ))
-                else
-                    failed=$(( failed + 1 ))
-                fi
-                ;;
-        esac
-
-        # Clean up temp file after each conversion
-        if [[ -n "$tmp_file" && -f "$tmp_file" ]]; then
-            rm -f "$tmp_file"
-        fi
-
-    done <<< "$SELECTED_FILES"
+            [[ -n "$tmp_file" && -f "$tmp_file" ]] && rm -f "$tmp_file"
+        done <<< "$SELECTED_FILES"
+    fi
 
     echo ""
     gum style \
@@ -1693,10 +2183,53 @@ main() {
     select_output_format
     select_apply_substitutions
     select_strip_rules
+    select_unwrap_wikilinks
+    select_svg_raster
     select_toc
     select_title_page
+    select_concat
     dispatch
     run_conversions
 }
 
-main "$@"
+# Fast preset: md → PDF with sensible defaults (xelatex, Helvetica, title page +
+# TOC, rules stripped), only the file picker is interactive. Reuses the same
+# functions as the full flow. Used by the Starlight shim's `pdf` mode.
+main_fast() {
+    gum style \
+        --foreground "$CYAN" --border-foreground "$CYAN" --border double \
+        --align center --width 60 --margin "1 2" --padding "1 4" \
+        'Convert to PDF'
+
+    SOURCE_FORMAT="md"
+    OUTPUT_FORMAT="pdf"
+    SEARCH_DEPTH="$DEFAULT_DEPTH"
+    USE_TITLE_PAGE=true
+    STRIP_RULES=true
+    USE_TOC=true
+    TOC_DEPTH="$DEFAULT_DEPTH"
+    PDF_FONT="Helvetica"
+
+    select_files
+    check_deps_md_pdf   # sets AVAILABLE_ENGINES (offers install if none)
+    if printf '%s\n' "${AVAILABLE_ENGINES[@]}" | grep -qx "xelatex"; then
+        PDF_ENGINE="xelatex"
+    else
+        PDF_ENGINE="${AVAILABLE_ENGINES[0]}"
+        warn "xelatex not available — using ${PDF_ENGINE}."
+    fi
+    font_installed "$PDF_FONT" || { warn "Font '${PDF_FONT}' not installed — using pandoc default."; PDF_FONT=""; }
+    ensure_pdf_config
+    detect_mono_font
+    run_conversions
+}
+
+# Only auto-run when executed directly. When sourced (e.g. by the Starlight
+# converter shim), the caller drives main / main_fast itself.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-full}" in
+        full) main ;;
+        pdf)  main_fast ;;
+        *) error_exit "Unknown mode '${1}'. Valid modes: full | pdf" ;;
+    esac
+fi

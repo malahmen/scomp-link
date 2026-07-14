@@ -1,0 +1,14 @@
+# Default title-page template — used for any markdown source that has no
+# file-specific override (.fcc/title-pages/<flattened_source_path>.yaml).
+# Applies to md->pdf and md->docx conversions when a title page is enabled.
+
+# template: the PDF title-page layout (LaTeX), relative to this yaml. Supports
+# {{TITLE}} (the document title) and {{IMAGE}} (the logo above it). DOCX output
+# ignores this file and builds a native title page (centered image + a
+# Title-styled heading + a page break) since pandoc drops raw LaTeX for .docx.
+template: default.md
+
+# image: optional logo shown on the title page — a path relative to this yaml,
+# or an absolute path. Leave it unset (as below) and the TUI prompts for a path
+# at conversion time (blank = no image).
+# image: assets/logo.png
