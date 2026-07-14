@@ -60,6 +60,19 @@ APPLY_SUBSTITUTIONS=false
 # Rule stripping state (set by select_strip_rules)
 STRIP_RULES=false
 
+# Wikilink unwrap state (set by select_unwrap_wikilinks)
+UNWRAP_WIKILINKS=false
+
+# SVG rasterization state (set by select_svg_raster)
+RASTER_SVG=false
+
+# Concat state (set by select_concat) — combine several md into one document
+CONCAT=false
+CONCAT_PAGEBREAK=true
+
+# DOCX page size (set by select_docx_page_size): a4 | letter
+DOCX_PAGE_SIZE="a4"
+
 # Table of contents state (set by select_toc)
 USE_TOC=false
 TOC_DEPTH=3
@@ -454,7 +467,7 @@ ensure_fcc_docx_assets() {
     mkdir -p "$docx_dir"
 
     local a dest
-    for a in reference.docx reference-plain.docx stamp_docx_tokens.py pagebreak.lua render-mermaid.lua p10k.theme; do
+    for a in reference.docx reference-plain.docx stamp_docx_tokens.py docx_layout.py pagebreak.lua render-mermaid.lua p10k.theme; do
         dest="${docx_dir}/${a}"
         if [[ -f "${src}/${a}" ]]; then
             if [[ ! -f "$dest" ]] || ! cmp -s "${src}/${a}" "$dest"; then
@@ -566,6 +579,19 @@ stamp_docx_letterhead() {
     python3 "$script" "$docx" \
         --title "$title" --version-suffix "$vsuffix" \
         --author "$author" --date "$date" --classification "$classification"
+}
+
+# -----------------------------------------------------------------------------
+# Adjust the generated .docx layout: page size (DOCX_PAGE_SIZE) + fit wide images
+# to the text column + centre image paragraphs. Skipped if python3 is missing.
+# -----------------------------------------------------------------------------
+
+layout_docx() {
+    local docx="$1"
+    command -v python3 &>/dev/null || return 0
+    local script; script="$(resolve_docx_asset docx_layout.py)"
+    [[ -n "$script" ]] || return 0
+    python3 "$script" "$docx" --page-size "$DOCX_PAGE_SIZE"
 }
 
 # -----------------------------------------------------------------------------
@@ -1192,6 +1218,8 @@ convert_md_to_docx() {
         # Explicit table banding — only with a built-in reference (a custom
         # template owns its own table styling).
         is_builtin_docx_ref && shade_docx_tables "$output_file"
+        # Layout: page size + image fit/centering (built-in refs only).
+        is_builtin_docx_ref && layout_docx "$output_file"
         # Letterhead: fill the header/footer tokens (+ core props) per document.
         [[ "$DOCX_LETTERHEAD" == true ]] && stamp_docx_letterhead "$output_file" "$name_source"
         success "$(basename "$output_file") ✓"
@@ -1376,6 +1404,139 @@ apply_strip_rules() {
         /^---[[:space:]]*$/ { next }
         { print }
     ' "$tmp_file" > "${tmp_file}.strip" && mv "${tmp_file}.strip" "$tmp_file"
+}
+
+# =============================================================================
+# WIKILINK UNWRAP
+# [[Target|Label]] -> Label ; [[Target#anchor]] -> Target. Cross-document
+# wikilinks can't resolve inside a single output file, so we drop to plain text.
+# Skips fenced code blocks. Applies to all md→* pairs (helps PDF + DOCX).
+# =============================================================================
+
+select_unwrap_wikilinks() {
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    if gum confirm "Unwrap [[wikilinks]] to plain text?"; then
+        UNWRAP_WIKILINKS=true
+        info "Wikilink unwrapping enabled."
+    else
+        UNWRAP_WIKILINKS=false
+    fi
+}
+
+apply_wikilink_unwrap() {
+    local tmp_file="$1"
+    # Two passes (piped form first, then bare); range skips fenced code blocks.
+    sed -E \
+        -e '/^```/,/^```/!s/\[\[[^]|]*\|([^]]+)\]\]/\1/g' \
+        -e '/^```/,/^```/!s/\[\[([^]#|]+)[^]]*\]\]/\1/g' \
+        "$tmp_file" > "${tmp_file}.wl" && mv "${tmp_file}.wl" "$tmp_file"
+}
+
+# =============================================================================
+# SVG RASTERIZATION
+# Local .svg images -> PNG (via rsvg-convert, faithful vector rasterization),
+# so pandoc can embed them for both DOCX and PDF (xelatex can't embed SVG).
+# Remote (http) SVGs are left untouched. Applies to all md→* pairs.
+# =============================================================================
+
+select_svg_raster() {
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    if gum confirm "Rasterize local .svg images to PNG (needs rsvg-convert)?"; then
+        RASTER_SVG=true
+        info "SVG rasterization enabled."
+    else
+        RASTER_SVG=false
+    fi
+}
+
+ensure_rsvg() {
+    command -v rsvg-convert &>/dev/null && return 0
+    warn "rsvg-convert (librsvg) is not installed."
+    gum confirm "Install librsvg now?" || return 1
+    case "$(uname -s)" in
+        Darwin) command -v brew &>/dev/null && brew install librsvg || return 1 ;;
+        Linux)
+            if command -v apt-get &>/dev/null && sudo -n true 2>/dev/null; then
+                sudo apt-get install -y librsvg2-bin
+            elif command -v dnf &>/dev/null && sudo -n true 2>/dev/null; then
+                sudo dnf install -y librsvg2-tools
+            else
+                return 1
+            fi ;;
+        *) return 1 ;;
+    esac
+    command -v rsvg-convert &>/dev/null
+}
+
+apply_svg_raster() {
+    local tmp_file="$1" srcdir="$2"
+    # Any local .svg image refs? (skip if none)
+    grep -qiE '!\[[^]]*\]\([^)]*\.svg' "$tmp_file" || return 0
+    ensure_rsvg || { warn "rsvg-convert unavailable — leaving .svg images as-is."; return 0; }
+
+    local media="${OUTPUT_DIR}/media"; mkdir -p "$media"
+    local svgs
+    svgs=$(grep -oiE '!\[[^]]*\]\([^)]*\.svg\)' "$tmp_file" \
+        | sed -E 's/^!\[[^]]*\]\(([^)]+)\).*/\1/' | sort -u)
+
+    local svg abs png i=0
+    while IFS= read -r svg; do
+        [[ -z "$svg" ]] && continue
+        [[ "$svg" =~ ^https?:// ]] && continue                 # leave remote SVGs
+        local expanded="${svg/#\~/$HOME}"
+        if [[ "$expanded" = /* ]]; then abs="$expanded"; else abs="${srcdir}/${expanded}"; fi
+        abs="$(cd "$(dirname "$abs")" 2>/dev/null && pwd)/$(basename "$abs")"
+        [[ -f "$abs" ]] || { warn "SVG not found: ${svg}"; continue; }
+        i=$(( i + 1 ))
+        png="${media}/svg_${i}_$(basename "${abs%.svg}").png"
+        if rsvg-convert --zoom 2 -o "$png" "$abs" 2>/dev/null; then
+            # rewrite this svg path -> the PNG (absolute), everywhere it appears
+            local esc_svg="${svg//&/\\&}"
+            sed -i.bak "s|(${svg})|(${png})|g" "$tmp_file" && rm -f "${tmp_file}.bak"
+        else
+            warn "Failed to rasterize: ${svg}"
+        fi
+    done <<< "$svgs"
+}
+
+# =============================================================================
+# CONCAT — combine several selected md files into ONE document
+# Offered only when >1 md file is selected and the target is a single document
+# (pdf/docx). The first "# H1" becomes the document Title; page break optional.
+# =============================================================================
+
+select_concat() {
+    CONCAT=false
+    [[ "$SOURCE_FORMAT" != "md" ]] && return
+    [[ "$OUTPUT_FORMAT" != "pdf" && "$OUTPUT_FORMAT" != "docx" ]] && return
+    local n; n=$(echo "$SELECTED_FILES" | grep -c .)
+    (( n < 2 )) && return
+
+    if gum confirm "Combine the ${n} selected files into ONE document?"; then
+        CONCAT=true
+        if gum confirm "Insert a page break between files?"; then
+            CONCAT_PAGEBREAK=true
+        else
+            CONCAT_PAGEBREAK=false
+        fi
+        info "Concatenation enabled — ${n} files → one document."
+    fi
+}
+
+# =============================================================================
+# DOCX PAGE SIZE — only for the built-in references (a custom template owns its
+# own page geometry). The layout post-processor rewrites pgSz in the output.
+# =============================================================================
+
+select_docx_page_size() {
+    is_builtin_docx_ref || return 0
+    local p
+    p=$(gum choose "A4" "Letter" --header "Page size:") || true
+    case "$p" in
+        Letter) DOCX_PAGE_SIZE="letter" ;;
+        *)      DOCX_PAGE_SIZE="a4" ;;
+    esac
+    info "Page size: ${DOCX_PAGE_SIZE}"
 }
 
 # =============================================================================
@@ -1696,6 +1857,7 @@ dispatch() {
             check_deps_md_docx
             ensure_fcc_docx_assets   # DOCX-only asset tree; never touches .fcc/pdf/
             select_docx_reference_doc
+            select_docx_page_size
             select_docx_font
             detect_docx_mono
             ;;
@@ -1713,6 +1875,62 @@ dispatch() {
 # CONVERT ALL SELECTED FILES
 # =============================================================================
 
+# Apply the opt-in md pre-passes to a working .tmp.md copy. `do_tp` gates the
+# title page (skipped in concat mode — the letterhead Title covers it).
+preprocess_md_tmp() {
+    local tmp="$1" input="$2" do_tp="$3"
+    [[ "$APPLY_SUBSTITUTIONS" == "true" ]] && apply_substitutions "$tmp"
+    [[ "$STRIP_RULES" == "true" ]]         && apply_strip_rules "$tmp"
+    [[ "$UNWRAP_WIKILINKS" == "true" ]]    && apply_wikilink_unwrap "$tmp"
+    [[ "$RASTER_SVG" == "true" ]]          && apply_svg_raster "$tmp" "$(dirname "$input")"
+    [[ "$do_tp" == "true" && "$USE_TITLE_PAGE" == "true" ]] && apply_title_page "$input" "$tmp"
+    return 0
+}
+
+# Combine every selected md file into one working copy and convert it once.
+# The first "# H1" becomes the document Title (via front matter); files are
+# separated by an optional page break. Output is named after the first file.
+run_concat() {
+    local combined="${OUTPUT_DIR}/_concat.tmp.md"
+    local first_input="" first_h1="" idx=0
+    : > "$combined"
+
+    while IFS= read -r input_file; do
+        [[ -z "$input_file" ]] && continue
+        idx=$(( idx + 1 ))
+        [[ -z "$first_input" ]] && first_input="$input_file"
+
+        local part="${OUTPUT_DIR}/_part.tmp.md"
+        cp "$input_file" "$part"
+        preprocess_md_tmp "$part" "$input_file" false
+
+        if (( idx == 1 )); then
+            first_h1="$(grep -m1 '^# ' "$part" | sed 's/^# //' || true)"
+            awk 'stripped || !/^# /{print} !stripped && /^# /{stripped=1}' \
+                "$part" > "${part}.h" && mv "${part}.h" "$part"
+        fi
+
+        (( idx > 1 )) && [[ "$CONCAT_PAGEBREAK" == "true" ]] && printf '\n\n\\newpage\n\n' >> "$combined"
+        cat "$part" >> "$combined"
+        printf '\n\n' >> "$combined"
+        rm -f "$part"
+    done <<< "$SELECTED_FILES"
+
+    if [[ -n "$first_h1" ]]; then
+        local fm="${combined}.fm"
+        { printf -- '---\ntitle: "%s"\n---\n\n' "$first_h1"; cat "$combined"; } > "$fm" && mv "$fm" "$combined"
+    fi
+
+    local rc=0
+    case "${SOURCE_FORMAT}→${OUTPUT_FORMAT}" in
+        "md→pdf")  convert_md_to_pdf  "$combined" "$first_input" || rc=1 ;;
+        "md→docx") convert_md_to_docx "$combined" "$first_input" || rc=1 ;;
+        *) warn "Concat not supported for ${SOURCE_FORMAT}→${OUTPUT_FORMAT}."; rc=1 ;;
+    esac
+    rm -f "$combined"
+    return "$rc"
+}
+
 run_conversions() {
     header "Converting Files"
 
@@ -1723,68 +1941,41 @@ run_conversions() {
     local failed=0
     local succeeded=0
 
-    while IFS= read -r input_file; do
-        [[ -z "$input_file" ]] && continue
+    if [[ "$CONCAT" == "true" && "$SOURCE_FORMAT" == "md" ]]; then
+        if run_concat; then succeeded=1; else failed=1; fi
+    else
+        while IFS= read -r input_file; do
+            [[ -z "$input_file" ]] && continue
 
-        # For md→* pairs: always work on a .tmp.md copy so substitutions
-        # and title page injection never touch the original source file.
-        local effective_file="$input_file"
-        local tmp_file=""
+            # For md→* pairs: always work on a .tmp.md copy so the pre-passes
+            # never touch the original source file.
+            local effective_file="$input_file"
+            local tmp_file=""
 
-        if [[ "$SOURCE_FORMAT" == "md" ]]; then
-            local base
-            base=$(basename "$input_file" ".md")
-            tmp_file="${OUTPUT_DIR}/${base}.tmp.md"
-            cp "$input_file" "$tmp_file"
-            effective_file="$tmp_file"
-
-            # Substitution pass (opt-in)
-            if [[ "$APPLY_SUBSTITUTIONS" == "true" ]]; then
-                apply_substitutions "$tmp_file"
+            if [[ "$SOURCE_FORMAT" == "md" ]]; then
+                local base
+                base=$(basename "$input_file" ".md")
+                tmp_file="${OUTPUT_DIR}/${base}.tmp.md"
+                cp "$input_file" "$tmp_file"
+                effective_file="$tmp_file"
+                preprocess_md_tmp "$tmp_file" "$input_file" true
             fi
 
-            # Rule stripping pass (opt-in)
-            if [[ "$STRIP_RULES" == "true" ]]; then
-                apply_strip_rules "$tmp_file"
-            fi
+            case "$pair" in
+                "md→pdf")
+                    if convert_md_to_pdf "$effective_file" "$input_file"; then
+                        succeeded=$(( succeeded + 1 )); else failed=$(( failed + 1 )); fi ;;
+                "md→docx")
+                    if convert_md_to_docx "$effective_file" "$input_file"; then
+                        succeeded=$(( succeeded + 1 )); else failed=$(( failed + 1 )); fi ;;
+                "docx→md")
+                    if convert_docx_to_md "$effective_file"; then
+                        succeeded=$(( succeeded + 1 )); else failed=$(( failed + 1 )); fi ;;
+            esac
 
-            # Title page injection (opt-in)
-            if [[ "$USE_TITLE_PAGE" == "true" ]]; then
-                apply_title_page "$input_file" "$tmp_file"
-                # apply_title_page writes into tmp_file directly; effective_file unchanged
-            fi
-        fi
-
-        case "$pair" in
-            "md→pdf")
-                if convert_md_to_pdf "$effective_file" "$input_file"; then
-                    succeeded=$(( succeeded + 1 ))
-                else
-                    failed=$(( failed + 1 ))
-                fi
-                ;;
-            "md→docx")
-                if convert_md_to_docx "$effective_file" "$input_file"; then
-                    succeeded=$(( succeeded + 1 ))
-                else
-                    failed=$(( failed + 1 ))
-                fi
-                ;;
-            "docx→md")
-                if convert_docx_to_md "$effective_file"; then
-                    succeeded=$(( succeeded + 1 ))
-                else
-                    failed=$(( failed + 1 ))
-                fi
-                ;;
-        esac
-
-        # Clean up temp file after each conversion
-        if [[ -n "$tmp_file" && -f "$tmp_file" ]]; then
-            rm -f "$tmp_file"
-        fi
-
-    done <<< "$SELECTED_FILES"
+            [[ -n "$tmp_file" && -f "$tmp_file" ]] && rm -f "$tmp_file"
+        done <<< "$SELECTED_FILES"
+    fi
 
     echo ""
     gum style \
@@ -1809,8 +2000,11 @@ main() {
     select_output_format
     select_apply_substitutions
     select_strip_rules
+    select_unwrap_wikilinks
+    select_svg_raster
     select_toc
     select_title_page
+    select_concat
     dispatch
     run_conversions
 }
