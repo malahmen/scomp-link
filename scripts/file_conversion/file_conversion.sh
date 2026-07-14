@@ -442,6 +442,28 @@ ensure_pdf_config() {
 }
 
 # -----------------------------------------------------------------------------
+# Seed the working .fcc/title-pages/ with the bundled default template.
+# Unlike the PDF/DOCX asset trees these are user-customisable, so we only copy
+# the bundled default.* when MISSING — never clobbering a project's own default
+# or its file-specific <flattened_path>.yaml templates.
+# -----------------------------------------------------------------------------
+ensure_fcc_title_pages() {
+    local src="${CANONICAL_FCC}/title-pages"
+    [[ -d "$src" ]] || return 0
+    mkdir -p "$TITLE_PAGES_DIR"
+    local base dest f
+    for f in "${src}/default.yaml" "${src}/default.md"; do
+        [[ -f "$f" ]] || continue
+        base=$(basename "$f")
+        dest="${TITLE_PAGES_DIR}/${base}"
+        if [[ ! -f "$dest" ]]; then
+            cp "$f" "$dest"
+            info "Seeded ${dest} (bundled default title page)."
+        fi
+    done
+}
+
+# -----------------------------------------------------------------------------
 # Resolve a lua filter to a usable path.
 # Prefer the working ./.fcc/ copy (so per-project customisation wins), but fall
 # back to the canonical bundle so a missing or partial .fcc never silently
@@ -1656,6 +1678,10 @@ select_title_page() {
     fi
 
     USE_TITLE_PAGE=true
+
+    # Seed the bundled default template into the working copy if absent, so a
+    # fresh project isn't left with no templates.
+    ensure_fcc_title_pages
 
     # Warn if no templates exist at all — non-fatal, per-file resolution will
     # emit its own warning and skip gracefully.
