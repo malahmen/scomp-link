@@ -7,5 +7,5 @@ temp/
 *.swp
 *.swo
 ~
-scripts/starlight/.fcc/docx/__pycache__
+__pycache__/
 marker-output
