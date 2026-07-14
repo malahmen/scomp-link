@@ -1,3 +1,12 @@
+# Default title-page template — used for any markdown source that has no
+# file-specific override (.fcc/title-pages/<flattened_source_path>.yaml).
+# Applies to md->pdf and md->docx conversions when a title page is enabled.
+
+# template: markdown/LaTeX file (relative to this yaml) rendered as the title
+# page. Supports {{TITLE}} (the document title) and {{IMAGE}} (the logo below).
 template: default.md
-# .fcc/title-pages/../../due-diligence/src/assets/logo.png
-image: due-diligence/src/assets/logo.png
+
+# image: optional logo shown on the title page — a path relative to this yaml,
+# or an absolute path. Leave it unset (as below) and the TUI prompts for a path
+# at conversion time (blank = no image).
+# image: assets/logo.png
