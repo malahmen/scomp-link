@@ -67,6 +67,35 @@ _ENGINE_REFERENCE=""      # deferred --reference value (docx)
 enote() { printf '\033[0;36m[info]\033[0m  %s\n' "$*" >&2; }
 edie()  { printf '\033[0;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Override ui.sh's gum-based helpers with NONINTERACTIVE-aware versions: the
+# engine path (and the eventual standalone) emits plain text with zero gum,
+# while the interactive UI keeps gum's styled output. The check is at call time,
+# so parse_args flipping NONINTERACTIVE takes effect everywhere below.
+info()       { if [[ "$NONINTERACTIVE" == true ]]; then enote "$1"; else gum log --level info "$1"; fi; }
+success()    { if [[ "$NONINTERACTIVE" == true ]]; then printf '\033[0;32m[ok]\033[0m    %s\n' "$1" >&2; else gum style --foreground "${GREEN:-82}" "[ok] $1"; fi; }
+warn()       { if [[ "$NONINTERACTIVE" == true ]]; then printf '\033[0;33m[warn]\033[0m  %s\n' "$1" >&2; else gum style --foreground "${YELLOW:-220}" "[warn] $1" >&2; fi; }
+error_exit() { if [[ "$NONINTERACTIVE" == true ]]; then edie "$1"; else gum style --foreground "${RED:-196}" "[error] $1" >&2; exit 1; fi; }
+header()     { if [[ "$NONINTERACTIVE" == true ]]; then printf '\n\033[0;36m== %s ==\033[0m\n' "$1" >&2; else gum style --foreground "${CYAN:-212}" --border-foreground "${CYAN:-212}" --border rounded --align center --width 60 --padding "1 4" --margin "1 0" "$1"; fi; }
+
+# Run a step: a gum spinner in the UI, a plain line + direct exec in the engine.
+# Returns the wrapped command's exit status (so callers can capture $?).
+run_step() {
+    local title="$1"; shift
+    if [[ "$NONINTERACTIVE" == true ]]; then
+        enote "$title"
+        "$@"
+    else
+        gum spin --spinner dot --title "$title" -- "$@"
+    fi
+}
+
+# Interrupt handler — gum-free in engine mode.
+_on_interrupt() {
+    echo ""
+    if [[ "$NONINTERACTIVE" == true ]]; then enote "Interrupted."; else gum style --faint "Interrupted."; fi
+    exit 130
+}
+
 # Built-in DOCX reference docs. Both carry the shaded code + aligned TOC styling;
 # the letterhead one adds a running header (logo + title) + footer (date ·
 # classification · Page X/Y). reference-plain has no header/footer.
@@ -138,7 +167,7 @@ HEADER_TEX=""
 DOCX_FONT=""   # prose (headings + body); empty = leave the template's theme
 DOCX_MONO=""   # monospace (code); auto-detected
 
-trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
+trap '_on_interrupt' INT TERM
 
 # -----------------------------------------------------------------------------
 # Cross-platform file opener
@@ -1008,7 +1037,14 @@ resolve_output_path() {
         return
     fi
 
-    # Flat name also exists — prompt user
+    # Flat name also exists. Engine mode overwrites (predictable CLI behaviour);
+    # the UI asks.
+    if [[ "$NONINTERACTIVE" == true ]]; then
+        enote "Output exists — overwriting: ${flat_candidate}"
+        OUTPUT_FILE="$flat_candidate"
+        return
+    fi
+
     gum style \
         --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
         --width 60 --margin "0 2" --padding "0 2" \
@@ -1381,7 +1417,7 @@ convert_md_to_docx() {
         [[ -n "$theme_path" ]] && pandoc_args+=(--syntax-highlighting="$theme_path")
     fi
 
-    gum spin --spinner dot --title "Converting $(basename "$input_file") → $(basename "$output_file") ..." -- \
+    run_step "Converting $(basename "$input_file") → $(basename "$output_file") ..." \
         pandoc "${pandoc_args[@]}"
     local rc=$?
 
@@ -1469,7 +1505,7 @@ convert_docx_to_md() {
         --extract-media="$media_dir"
     )
 
-    gum spin --spinner dot --title "Converting $(basename "$input_file") → $(basename "$output_file") ..." -- \
+    run_step "Converting $(basename "$input_file") → $(basename "$output_file") ..." \
         pandoc "${pandoc_args[@]}"
 
     if [[ $? -eq 0 ]]; then
@@ -1627,6 +1663,8 @@ select_svg_raster() {
 ensure_rsvg() {
     command -v rsvg-convert &>/dev/null && return 0
     warn "rsvg-convert (librsvg) is not installed."
+    # Engine mode: guardrail only — report and skip, never install/prompt.
+    [[ "$NONINTERACTIVE" == true ]] && return 1
     gum confirm "Install librsvg now?" || return 1
     case "$(uname -s)" in
         Darwin) command -v brew &>/dev/null && brew install librsvg || return 1 ;;
@@ -2006,8 +2044,10 @@ apply_title_page() {
     fi
 
     # Not configured or not found → prompt once (cached across files); blank = skip.
+    # Engine mode never prompts: an image comes only from --image / config, so
+    # the prompt is gated but the cached value (e.g. from --image) still applies.
     if [[ -z "$image_abs" ]]; then
-        if [[ "$TITLE_IMG_ASKED" != "true" ]]; then
+        if [[ "$NONINTERACTIVE" != true && "$TITLE_IMG_ASKED" != "true" ]]; then
             TITLE_IMG_ASKED=true
             local p
             p=$(gum input --header "Title-page image path (blank = none):" \
@@ -2232,10 +2272,14 @@ run_conversions() {
     fi
 
     echo ""
-    gum style \
-        --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
-        --align center --width 60 --margin "1 2" --padding "1 2" \
-        "Conversion complete — ${succeeded} succeeded, ${failed} failed."
+    if [[ "$NONINTERACTIVE" == true ]]; then
+        enote "Conversion complete — ${succeeded} succeeded, ${failed} failed."
+    else
+        gum style \
+            --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 2" \
+            "Conversion complete — ${succeeded} succeeded, ${failed} failed."
+    fi
 }
 
 # =============================================================================
@@ -2487,6 +2531,10 @@ main_engine() {
         "docx->md")
             : ;;  # pandoc + MD_VARIANT suffice
     esac
+
+    # Title page needs the bundled template seeded into the working .fcc/ (the
+    # interactive path does this in select_title_page).
+    [[ "$USE_TITLE_PAGE" == true && "$SOURCE_FORMAT" == md ]] && ensure_fcc_title_pages
 
     run_conversions
 }
