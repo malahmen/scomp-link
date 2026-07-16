@@ -53,6 +53,20 @@ TITLE_PAGES_DIR=".fcc/title-pages"
 OUTPUT_DIR="./output"
 DEFAULT_DEPTH=3
 
+# Non-interactive (engine) mode — set true by the flag parser (parse_args).
+# When true the code must NOT prompt (no gum input/choose/confirm) and must NOT
+# offer to install missing dependencies — it only checks for them (guardrails).
+# The interactive gum UI (main / main_fast) leaves this false.
+NONINTERACTIVE=false
+MD_VARIANT="gfm"          # docx→md output variant (overridable via --md-variant)
+_ENGINE_FONT=""           # deferred --font value (applied once --to is known)
+_ENGINE_REFERENCE=""      # deferred --reference value (docx)
+
+# Plain, gum-free status output for the engine path. The interactive path uses
+# ui.sh's gum-based helpers; the CLI layer must stay usable without gum.
+enote() { printf '\033[0;36m[info]\033[0m  %s\n' "$*" >&2; }
+edie()  { printf '\033[0;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+
 # Built-in DOCX reference docs. Both carry the shaded code + aligned TOC styling;
 # the letterhead one adds a running header (logo + title) + footer (date ·
 # classification · Page X/Y). reference-plain has no header/footer.
@@ -1119,34 +1133,39 @@ docx_cfg() {
 # today, so we only prompt for author / classification / version here. A
 # per-file YAML front-matter override is applied later, at stamp time.
 resolve_letterhead() {
-    DOCX_AUTHOR="$(docx_cfg author)"
-    DOCX_CLASSIFICATION="$(docx_cfg classification)"
-    DOCX_VERSION="$(docx_cfg version)"
-    DOCX_DATE="$(docx_cfg date)"
+    # Values already set (e.g. by engine flags) win; otherwise fall back to the
+    # config file. `:-` keeps a flag-provided value from being overwritten.
+    DOCX_AUTHOR="${DOCX_AUTHOR:-$(docx_cfg author)}"
+    DOCX_CLASSIFICATION="${DOCX_CLASSIFICATION:-$(docx_cfg classification)}"
+    DOCX_VERSION="${DOCX_VERSION:-$(docx_cfg version)}"
+    DOCX_DATE="${DOCX_DATE:-$(docx_cfg date)}"
     [[ "$DOCX_DATE" == "auto" ]] && DOCX_DATE=""   # empty → today, stamped later
 
-    if [[ -z "$DOCX_AUTHOR" ]]; then
-        DOCX_AUTHOR=$(gum input --header "Author (header 'Created By'), blank to omit:" \
-            --placeholder "e.g. Platform Team") || true
-    fi
-    if [[ -z "$DOCX_CLASSIFICATION" ]]; then
-        DOCX_CLASSIFICATION=$(gum input --header "Classification (footer), blank to omit:" \
-            --placeholder "e.g. INTERNAL USE ONLY") || true
-    fi
-    if [[ -z "$DOCX_VERSION" ]]; then
-        DOCX_VERSION=$(gum input --header "Version (footer/header), blank to omit:" \
-            --placeholder "e.g. v1.0") || true
+    # Interactive only: prompt for anything still unset. Engine mode leaves
+    # unset fields empty (guardrail: prompt nothing).
+    if [[ "$NONINTERACTIVE" != true ]]; then
+        if [[ -z "$DOCX_AUTHOR" ]]; then
+            DOCX_AUTHOR=$(gum input --header "Author (header 'Created By'), blank to omit:" \
+                --placeholder "e.g. Platform Team") || true
+        fi
+        if [[ -z "$DOCX_CLASSIFICATION" ]]; then
+            DOCX_CLASSIFICATION=$(gum input --header "Classification (footer), blank to omit:" \
+                --placeholder "e.g. INTERNAL USE ONLY") || true
+        fi
+        if [[ -z "$DOCX_VERSION" ]]; then
+            DOCX_VERSION=$(gum input --header "Version (footer/header), blank to omit:" \
+                --placeholder "e.g. v1.0") || true
+        fi
     fi
 
-    # Header logo: config → validate → prompt for a path if unset or missing.
-    # Blank prompt = no logo (text-only header).
-    DOCX_LOGO="$(docx_cfg logo)"
+    # Header logo: flag/config → validate → (interactive) prompt if unset.
+    DOCX_LOGO="${DOCX_LOGO:-$(docx_cfg logo)}"
     DOCX_LOGO="${DOCX_LOGO/#\~/$HOME}"
     if [[ -n "$DOCX_LOGO" && ! -f "$DOCX_LOGO" ]]; then
         warn "Configured logo not found: ${DOCX_LOGO}"
         DOCX_LOGO=""
     fi
-    if [[ -z "$DOCX_LOGO" ]]; then
+    if [[ "$NONINTERACTIVE" != true && -z "$DOCX_LOGO" ]]; then
         local p
         p=$(gum input --header "Header logo image path (blank = no logo):" \
             --placeholder "/path/to/logo.png") || true
@@ -1158,9 +1177,14 @@ resolve_letterhead() {
         fi
     fi
 
-    info "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}' logo='${DOCX_LOGO:-none}'"
-
-    resolve_title_page_chrome docx
+    if [[ "$NONINTERACTIVE" == true ]]; then
+        enote "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}' logo='${DOCX_LOGO:-none}'"
+    else
+        info "Letterhead — author='${DOCX_AUTHOR}' classification='${DOCX_CLASSIFICATION}' version='${DOCX_VERSION}' logo='${DOCX_LOGO:-none}'"
+        # Interactive: resolve title-page chrome by prompting. In engine mode the
+        # TP_* globals come from flags, so we must not reset/prompt here.
+        resolve_title_page_chrome docx
+    fi
 }
 
 # Read a boolean-ish config key from .fcc/docx/config → prints "true"/"false".
@@ -1174,6 +1198,8 @@ resolve_bool_cfg() {
         true|yes|1|on|show)  printf 'true';  return ;;
         false|no|0|off|hide) printf 'false'; return ;;
     esac
+    # Unset/unrecognised: engine mode defaults to "show" (no prompt); the UI asks.
+    [[ "$NONINTERACTIVE" == true ]] && { printf 'true'; return; }
     if gum confirm "$prompt"; then printf 'true'; else printf 'false'; fi
 }
 
@@ -2269,12 +2295,210 @@ main_fast() {
     run_conversions
 }
 
+# =============================================================================
+# ENGINE (non-interactive) — flag-driven entrypoint
+# Runs a conversion from CLI flags with NO prompts and NO dependency installs
+# (guardrails only). The interactive gum UI (main / main_fast) sits on top of
+# the same conversion core; this engine layer is what is intended to eventually
+# become a standalone, UI-free tool.
+# =============================================================================
+
+usage() {
+    cat >&2 <<'EOF'
+file_conversion.sh — convert Markdown <-> PDF / DOCX
+
+INTERACTIVE (default):
+  file_conversion.sh                 launch the gum UI
+  file_conversion.sh pdf             fast md->pdf preset (UI file picker only)
+
+NON-INTERACTIVE (engine):
+  file_conversion.sh --from <fmt> --to <fmt> [options] <file>...
+
+REQUIRED
+  --from md|docx                     source format
+  --to   pdf|docx|md                 output format
+  <file>...                          one or more input files
+
+COMMON
+  -o, --output DIR                   output directory (default: ./output)
+  --toc [--toc-depth N]              table of contents (depth default 3)
+  --title-page [--image PATH]        add a title page (optional image)
+  --[no-]substitutions               smart quote/dash substitutions
+  --[no-]strip-rules                 strip horizontal rules
+  --[no-]unwrap-wikilinks            unwrap [[wikilinks]]
+  --[no-]raster-svg                  rasterize SVG images
+  --concat [--no-concat-pagebreak]   combine inputs into one document
+
+DOCX
+  --reference letterhead|plain|none|PATH   reference doc (default: plain)
+  --letterhead                       shorthand for --reference letterhead
+  --page-size a4|letter
+  --font NAME   --mono NAME          prose / monospace fonts
+  --author|--classification|--version|--date|--logo VALUE   letterhead fields
+  --[no-]tp-header --[no-]tp-footer --[no-]tp-pagenum        title-page chrome
+
+PDF
+  --pdf-engine xelatex|lualatex|pdflatex|...
+  --font NAME                        prose font
+
+DOCX->MD
+  --md-variant gfm|markdown|commonmark
+
+In engine mode dependencies are CHECKED but never installed.
+EOF
+}
+
+# Guardrail dependency checks — verify presence, never install. Sets
+# AVAILABLE_ENGINES for md->pdf. Uses gum-free output (edie/enote).
+guard_deps() {
+    command -v pandoc &>/dev/null || edie \
+        "pandoc not found — install it (https://pandoc.org/installing.html), or run this tool via scomp-link which can install it for you."
+    case "${SOURCE_FORMAT}->${OUTPUT_FORMAT}" in
+        "md->pdf")
+            local found=() e
+            for e in xelatex lualatex pdflatex wkhtmltopdf weasyprint pagedjs-cli; do
+                command -v "$e" &>/dev/null && found+=("$e")
+            done
+            [[ ${#found[@]} -gt 0 ]] || edie \
+                "no PDF engine found (need one of: xelatex, lualatex, pdflatex, wkhtmltopdf, weasyprint, pagedjs-cli)."
+            AVAILABLE_ENGINES=("${found[@]}")
+            ;;
+        "md->docx")
+            command -v python3 &>/dev/null || edie \
+                "python3 not found — required for DOCX post-processing (letterhead, layout, fonts)."
+            ;;
+        "docx->md") : ;;
+        *) edie "conversion '${SOURCE_FORMAT} -> ${OUTPUT_FORMAT}' is not supported." ;;
+    esac
+    enote "dependencies OK for ${SOURCE_FORMAT}->${OUTPUT_FORMAT}."
+}
+
+# Parse engine flags into the same globals the select_* prompts would set.
+# Positional (non-flag) arguments become the input file list.
+parse_args() {
+    NONINTERACTIVE=true
+    local files=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --from)                SOURCE_FORMAT="$2"; shift 2 ;;
+            --to)                  OUTPUT_FORMAT="$2"; shift 2 ;;
+            -o|--output)           OUTPUT_DIR="$2"; shift 2 ;;
+            --toc)                 USE_TOC=true; shift ;;
+            --no-toc)              USE_TOC=false; shift ;;
+            --toc-depth)           TOC_DEPTH="$2"; shift 2 ;;
+            --title-page)          USE_TITLE_PAGE=true; shift ;;
+            --no-title-page)       USE_TITLE_PAGE=false; shift ;;
+            --image)               TITLE_IMG_CACHE="$2"; TITLE_IMG_ASKED=true; shift 2 ;;
+            --substitutions)       APPLY_SUBSTITUTIONS=true; shift ;;
+            --no-substitutions)    APPLY_SUBSTITUTIONS=false; shift ;;
+            --strip-rules)         STRIP_RULES=true; shift ;;
+            --no-strip-rules)      STRIP_RULES=false; shift ;;
+            --unwrap-wikilinks)    UNWRAP_WIKILINKS=true; shift ;;
+            --no-unwrap-wikilinks) UNWRAP_WIKILINKS=false; shift ;;
+            --raster-svg)          RASTER_SVG=true; shift ;;
+            --no-raster-svg)       RASTER_SVG=false; shift ;;
+            --concat)              CONCAT=true; shift ;;
+            --no-concat)           CONCAT=false; shift ;;
+            --concat-pagebreak)    CONCAT_PAGEBREAK=true; shift ;;
+            --no-concat-pagebreak) CONCAT_PAGEBREAK=false; shift ;;
+            --reference)           _ENGINE_REFERENCE="$2"; shift 2 ;;
+            --letterhead)          DOCX_LETTERHEAD=true; shift ;;
+            --no-letterhead)       DOCX_LETTERHEAD=false; shift ;;
+            --page-size)           DOCX_PAGE_SIZE="$2"; shift 2 ;;
+            --font)                _ENGINE_FONT="$2"; shift 2 ;;
+            --mono)                DOCX_MONO="$2"; shift 2 ;;
+            --pdf-engine)          PDF_ENGINE="$2"; shift 2 ;;
+            --author)              DOCX_AUTHOR="$2"; shift 2 ;;
+            --classification)      DOCX_CLASSIFICATION="$2"; shift 2 ;;
+            --version)             DOCX_VERSION="$2"; shift 2 ;;
+            --date)                DOCX_DATE="$2"; shift 2 ;;
+            --logo)                DOCX_LOGO="$2"; shift 2 ;;
+            --tp-header)           TP_HEADER=true; shift ;;
+            --no-tp-header)        TP_HEADER=false; shift ;;
+            --tp-footer)           TP_FOOTER=true; shift ;;
+            --no-tp-footer)        TP_FOOTER=false; shift ;;
+            --tp-pagenum)          TP_PAGENUM=true; shift ;;
+            --no-tp-pagenum)       TP_PAGENUM=false; shift ;;
+            --md-variant)          MD_VARIANT="$2"; shift 2 ;;
+            -h|--help)             usage; exit 0 ;;
+            --)                    shift; while [[ $# -gt 0 ]]; do files+=("$1"); shift; done ;;
+            -*)                    edie "unknown flag: $1 (try --help)" ;;
+            *)                     files+=("$1"); shift ;;
+        esac
+    done
+    # `if` (not `&&`) so an empty file list doesn't make parse_args return
+    # non-zero and trip set -e in the caller — main_engine reports it instead.
+    if [[ ${#files[@]} -gt 0 ]]; then
+        SELECTED_FILES="$(printf '%s\n' "${files[@]}")"
+    fi
+}
+
+main_engine() {
+    parse_args "$@"
+
+    [[ -n "${SOURCE_FORMAT:-}" ]]  || edie "missing --from <md|docx>"
+    [[ -n "${OUTPUT_FORMAT:-}" ]]  || edie "missing --to <pdf|docx|md>"
+    [[ -n "${SELECTED_FILES:-}" ]] || edie "no input files given (pass one or more paths)"
+
+    # Deferred --font → prose font for the chosen target ("none" = pandoc default).
+    if [[ -n "$_ENGINE_FONT" ]]; then
+        [[ "$_ENGINE_FONT" == none ]] && _ENGINE_FONT=""
+        if [[ "$OUTPUT_FORMAT" == pdf ]]; then PDF_FONT="$_ENGINE_FONT"; else DOCX_FONT="$_ENGINE_FONT"; fi
+    fi
+    # Title-page chrome nesting: no footer => no page number.
+    [[ "$TP_FOOTER" == false ]] && TP_PAGENUM=false
+
+    guard_deps
+
+    case "${SOURCE_FORMAT}->${OUTPUT_FORMAT}" in
+        "md->pdf")
+            ensure_pdf_config
+            detect_mono_font
+            if [[ -z "$PDF_ENGINE" ]]; then
+                if printf '%s\n' "${AVAILABLE_ENGINES[@]}" | grep -qx xelatex; then
+                    PDF_ENGINE=xelatex
+                else
+                    PDF_ENGINE="${AVAILABLE_ENGINES[0]}"
+                fi
+            elif ! printf '%s\n' "${AVAILABLE_ENGINES[@]}" | grep -qx "$PDF_ENGINE"; then
+                edie "--pdf-engine '$PDF_ENGINE' not available (have: ${AVAILABLE_ENGINES[*]})."
+            fi
+            if [[ -n "$PDF_FONT" ]] && ! font_installed "$PDF_FONT"; then
+                enote "font '$PDF_FONT' not installed — using pandoc default."; PDF_FONT=""
+            fi
+            ;;
+        "md->docx")
+            ensure_fcc_docx_assets
+            case "$_ENGINE_REFERENCE" in
+                letterhead) DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"; DOCX_LETTERHEAD=true ;;
+                plain)      DOCX_REFERENCE_DOC="$DOCX_PLAIN_REFERENCE";   DOCX_LETTERHEAD=false ;;
+                none)       DOCX_REFERENCE_DOC="";                        DOCX_LETTERHEAD=false ;;
+                "")         if [[ "$DOCX_LETTERHEAD" == true ]]; then
+                                DOCX_REFERENCE_DOC="$DOCX_DEFAULT_REFERENCE"
+                            else
+                                DOCX_REFERENCE_DOC="$DOCX_PLAIN_REFERENCE"
+                            fi ;;
+                *)          [[ -f "$_ENGINE_REFERENCE" ]] || edie "--reference file not found: $_ENGINE_REFERENCE"
+                            DOCX_REFERENCE_DOC="$_ENGINE_REFERENCE"; DOCX_LETTERHEAD=false ;;
+            esac
+            [[ "$DOCX_LETTERHEAD" == true ]] && resolve_letterhead
+            [[ -n "$DOCX_MONO" ]] || detect_docx_mono
+            ;;
+        "docx->md")
+            : ;;  # pandoc + MD_VARIANT suffice
+    esac
+
+    run_conversions
+}
+
 # Only auto-run when executed directly. When sourced (e.g. by the Starlight
-# converter shim), the caller drives main / main_fast itself.
+# converter shim), the caller drives main / main_fast / main_engine itself.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     case "${1:-full}" in
-        full) main ;;
-        pdf)  main_fast ;;
-        *) error_exit "Unknown mode '${1}'. Valid modes: full | pdf" ;;
+        full)      main ;;
+        pdf)       main_fast ;;
+        -h|--help) usage ;;
+        -*)        main_engine "$@" ;;
+        *) error_exit "Unknown mode '${1}'. Valid modes: full | pdf | --from … (see --help)" ;;
     esac
 fi
