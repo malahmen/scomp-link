@@ -158,6 +158,42 @@ Or re-run setup to bootstrap dependencies:
 ./setup.sh
 ```
 
+## Exporting a Script
+
+Any script can be exported as a **standalone, self-contained folder** that runs
+on its own — no scomp-link checkout, no `init.sh`, no `_common/` parent.
+
+```bash
+./export.sh                       # pick a script + target interactively
+./export.sh file_conversion ~/fc  # or pass them directly
+```
+
+You can also trigger it from the launcher: pick **“⇱ Export a script → standalone folder”** at the top of the `init.sh` menu.
+
+The result is a **flat** directory:
+
+```
+~/fc/
+  file_conversion.sh    # the script (+ its co-located assets, e.g. .fcc/)
+  ui.sh                 # only the _common helpers this script sources
+  setup.sh              # slimmed bootstrap — framework floor + this script's deps
+  wsl-setup.ps1         # Windows/WSL bootstrap
+```
+
+Run it anywhere:
+
+```bash
+cd ~/fc
+bash setup.sh          # once — installs dependencies
+bash file_conversion.sh
+```
+
+This works because every script is **vendor-aware**: it sources shared helpers
+from `../_common` when run inside this repo, and falls back to helpers sitting
+**alongside** it when exported. What the slimmed `setup.sh` installs is driven
+by each script's [export manifest](#export-manifest). See
+[docs on exporting](docs/export.md) for the full mechanics.
+
 ## Adding Your Own Scripts
 
 Create a folder under `scripts/` and drop your `.sh` file inside it:
@@ -180,17 +216,25 @@ For best results, your scripts should:
 1. **Use gum for interaction** - Provides consistent UX across all scripts
 2. **Start with the shebang** - `#!/usr/bin/env bash`
 3. **Use strict mode** - `set -euo pipefail`
-4. **Source `_common/`** - Use the shared helpers instead of duplicating them
+4. **Source `_common/` vendor-aware** - Resolve `COMMON_DIR` so the script also works when [exported](#exporting-a-script) (deps sit alongside it instead of in `../_common`)
+5. **Declare an export manifest** - so a standalone export knows what to install
 
 Example script template:
 
 ```bash
 #!/usr/bin/env bash
+# export-setup: kubectl helm      # tools the standalone-export setup.sh installs
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../_common/ui.sh"
-source "${SCRIPT_DIR}/../_common/cluster.sh"
+# Shared helpers: ../_common in the repo, or alongside this script when exported.
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"
+else
+    COMMON_DIR="${SCRIPT_DIR}"
+fi
+source "${COMMON_DIR}/ui.sh"
+source "${COMMON_DIR}/cluster.sh"
 
 # Check dependencies
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
@@ -206,6 +250,24 @@ case "$ACTION" in
     "Quit") exit 0 ;;
 esac
 ```
+
+<a name="export-manifest"></a>
+#### Export manifest
+
+Add a `# export-setup:` comment near the top so [`export.sh`](#exporting-a-script)
+knows what the standalone `setup.sh` should install beyond the framework floor
+(`curl` / `mise` / `bash` / `gum`):
+
+```bash
+# export-setup: kubectl helm     # installed via mise (fallback: brew/apt/dnf)
+```
+
+- `vim`, `tree`, `node` map to `setup.sh`'s own `ensure_*` steps.
+- Any other token is installed best-effort via `mise` (then `brew`/`apt`/`dnf`);
+  whatever can't be pre-installed is resolved by your script's runtime checks.
+- **No manifest** (or a plain `# ... no extra setup deps` note) → the export
+  ships the floor only, which is right for OS packages, daemons, or apps that
+  your script provisions at runtime.
 
 ---
 
