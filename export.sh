@@ -127,21 +127,28 @@ awk -v m="$BOOTSTRAP_MARKER" 'index($0,m){exit} {print}' "$SETUP_SH" > "$out_set
 # (starlight-init.sh first, else the init.sh rule would mangle it.)
 perl -pi -e 's/\bstarlight-init\.sh\b/this tool/g; s/\binit\.sh\b/this tool/g' "$out_setup"
 
-# A generic package installer (only appended when the manifest lists packages).
+# A best-effort tool installer (only appended when the manifest lists tools).
+# Prefers mise (already bootstrapped, cross-platform — same path gum uses), then
+# the OS package manager. Never fatal: anything it can't install is resolved by
+# the tool's own runtime checks, exactly as in scomp-link.
 if [[ ${#pkgs[@]} -gt 0 ]]; then
     cat >> "$out_setup" <<'PKGFN'
 
-ensure_pkg_generic() {
-    local bin="$1" pkg="${2:-$1}"
+ensure_tool() {
+    local bin="$1"
     if command_exists "$bin"; then ok "${bin} found: $(command -v "$bin")"; return 0; fi
-    info "Installing ${pkg}..."
-    if [ "$OS" = "macos" ]; then
-        if command_exists brew; then brew install "$pkg" || warn "brew install ${pkg} failed."
-        else warn "Homebrew not found — install ${pkg} manually."; fi
-    elif command_exists apt-get; then sudo apt-get install -y "$pkg" || warn "apt install ${pkg} failed.";
-    elif command_exists dnf;     then sudo dnf install -y "$pkg"    || warn "dnf install ${pkg} failed.";
-    else warn "No supported package manager — install ${pkg} manually."; fi
-    command_exists "$bin" && ok "${pkg} ready." || warn "${pkg} still missing after install."
+    info "Installing ${bin}..."
+    if command_exists mise && mise use --global "$bin" 2>/dev/null; then
+        export PATH="$HOME/.local/share/mise/shims:$PATH"
+    elif [ "$OS" = "macos" ] && command_exists brew; then
+        brew install "$bin" || true
+    elif command_exists apt-get; then
+        sudo apt-get install -y "$bin" || true
+    elif command_exists dnf; then
+        sudo dnf install -y "$bin" || true
+    fi
+    command_exists "$bin" && ok "${bin} ready." \
+        || warn "Couldn't pre-install ${bin} — it'll be resolved when you run the tool."
 }
 PKGFN
 fi
@@ -153,7 +160,7 @@ fi
     printf 'info "Detected OS: $OS, package manager: $PKG_MANAGER"\n'
     printf 'ensure_curl\nensure_mise\nensure_mise_activation\nensure_bash\nensure_gum\nensure_gum_width\n'
     for e in "${extras[@]}"; do printf '%s\n' "$e"; done
-    for p in "${pkgs[@]}";   do printf 'ensure_pkg_generic %q\n' "$p"; done
+    for p in "${pkgs[@]}";   do printf 'ensure_tool %q\n' "$p"; done
     printf 'ok "Setup complete."\n'
     printf 'info "Run this tool with:  bash %s"\n' "$script_base"
 } >> "$out_setup"

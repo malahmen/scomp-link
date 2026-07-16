@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: lazygit
 # -----------------------------------------------------------------------------
 # lazygit.sh
 # Install, manage, and launch lazygit (https://github.com/jesseduffield/lazygit)

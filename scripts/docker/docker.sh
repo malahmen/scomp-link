@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): no extra setup deps — Docker Engine + Compose are checked/instructed at runtime.
 # -----------------------------------------------------------------------------
 # docker.sh
 # Install, uninstall, and check status of Docker itself. About 15 other

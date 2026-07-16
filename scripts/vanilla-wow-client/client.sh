@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): no extra setup deps — Wine/Flatpak/display deps are handled at runtime (Linux).
 # -----------------------------------------------------------------------------
 # client.sh
 # Configures and launches one or more vanilla WoW (1.12.1) game clients under

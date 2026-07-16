@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: kubectl helm
 # -----------------------------------------------------------------------------
 # scripts/lgtm/lgtm.sh — LGTM stack manager (Loki · Grafana · Tempo · Mimir)
 # Supports Docker Compose and kind/k8s targets.
