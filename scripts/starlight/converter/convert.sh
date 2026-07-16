@@ -36,17 +36,31 @@ command -v pandoc &>/dev/null || { echo "[error] pandoc not found. Run 'mise ins
 }
 
 # Starlight source docs live one level up from converter/. file_conversion.sh
-# honours SOURCE_ROOT (default ".") for its file picker.
-SOURCE_ROOT="../src/content/docs"
+# honours SOURCE_ROOT (default ".") for its interactive file picker.
+export SOURCE_ROOT="../src/content/docs"
 
-# Load the shared implementation. Its bottom guard won't auto-run because it's
-# being sourced, not executed — we drive main / main_fast below.
-# shellcheck source=/dev/null
-source "${SCRIPT_DIR}/file_conversion.sh"
+# The vendored implementation is used as a black-box CLI — invoked, not sourced.
+# `full` runs its interactive UI; `pdf` drives its non-interactive engine with a
+# fixed preset, so this shim owns only the doc-picking + the preset flags.
+FC="${SCRIPT_DIR}/file_conversion.sh"
 
 case "${1:-full}" in
-    full) main ;;
-    pdf)  main_fast ;;
+    full)
+        # Full interactive UI (own file picker + dependency prompts).
+        exec bash "$FC"
+        ;;
+    pdf)
+        # Fast md→pdf: pick docs here, hand explicit files to the engine.
+        mapfile -t _docs < <(find "$SOURCE_ROOT" -type f -name '*.md' | sort)
+        [[ ${#_docs[@]} -gt 0 ]] || { echo "[error] no .md files under ${SOURCE_ROOT}" >&2; exit 1; }
+        picked=$(printf '%s\n' "${_docs[@]}" | gum choose --no-limit \
+            --header "Select docs to convert to PDF:") || true
+        [[ -n "$picked" ]] || { gum style --faint "Cancelled."; exit 0; }
+        mapfile -t _picked <<< "$picked"
+        exec bash "$FC" --from md --to pdf \
+            --title-page --toc --toc-depth 3 --strip-rules --font Helvetica \
+            "${_picked[@]}"
+        ;;
     *)
         echo "[error] Unknown mode: '${1}'. Valid modes: full, pdf" >&2
         echo "  Usage: bash converter/convert.sh [full|pdf]" >&2
