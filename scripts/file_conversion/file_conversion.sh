@@ -7,6 +7,11 @@
 # Dependencies: gum (managed by init.sh), pandoc + PDF engine (checked at runtime)
 # Config: .fcc/pdf/header.tex (created on first run if missing)
 #         .fcc/title-pages/<name>.yaml + <name>.md (optional title page templates)
+#
+# export-setup: pandoc
+#   Extra tools the standalone-export setup.sh should install beyond the
+#   framework floor (curl/mise/bash/gum). A PDF engine (xelatex/…) and rsvg are
+#   still resolved at runtime — pandoc is the one worth having up front.
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
