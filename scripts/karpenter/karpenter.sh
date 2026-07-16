@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: kubectl kind
 # -----------------------------------------------------------------------------
 # karpenter.sh
 # Interactive TUI for installing and managing Karpenter locally (dev/testing).

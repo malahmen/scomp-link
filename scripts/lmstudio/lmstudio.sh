@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): no extra setup deps — LM Studio app + display deps are handled at runtime.
 # -----------------------------------------------------------------------------
 # lmstudio.sh
 # Interactive TUI for installing and managing LM Studio (Flatpak) so that the

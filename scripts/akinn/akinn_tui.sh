@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: git
 # -----------------------------------------------------------------------------
 # akinn_tui.sh — gum front-end for Akinn (Automated Kubernetes Installation for
 # New Nodes).

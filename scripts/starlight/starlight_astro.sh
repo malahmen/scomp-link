@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: node tree vim
 # -----------------------------------------------------------------------------
 # starlight.sh
 # Interactive TUI for creating and managing Astro Starlight documentation projects.

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: lazydocker
 # -----------------------------------------------------------------------------
 # lazydocker.sh
 # Install, manage, and launch lazydocker

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): no extra setup deps — Python/build deps are installed at runtime.
 # -----------------------------------------------------------------------------
 # comfyengine.sh
 # Interactive TUI to build and install ComfyEngine

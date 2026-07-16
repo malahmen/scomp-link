@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: kubectl k9s
 # -----------------------------------------------------------------------------
 # k9s.sh
 # Install, manage, and launch k9s (https://github.com/derailed/k9s) — a

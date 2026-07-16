@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: kubectl helm
 # -----------------------------------------------------------------------------
 # mysql.sh
 # Interactive TUI for installing and managing MySQL.

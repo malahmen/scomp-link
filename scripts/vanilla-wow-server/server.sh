@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: kubectl
 # -----------------------------------------------------------------------------
 # server.sh
 # Builds and runs a VMaNGOS-based vanilla WoW (1.12.1 / client build 5875)

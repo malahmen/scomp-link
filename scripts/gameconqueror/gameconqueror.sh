@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): no extra setup deps — OS packages are installed at runtime (Linux-only).
 # -----------------------------------------------------------------------------
 # gameconqueror.sh
 # Interactive TUI to build and install GameConqueror
