@@ -22,6 +22,9 @@ fi
 # interactive TUIs. They are excluded from the script picker.
 EXCLUDED_DIRS="cluster _common"
 
+# Special picker entry: export a script as a standalone, scomp-link-free folder.
+EXPORT_ENTRY="⇱  Export a script → standalone folder"
+
 _dir_excluded() {
     local dir="$1"
     for ex in $EXCLUDED_DIRS; do
@@ -58,8 +61,9 @@ while true; do
         exit 1
     fi
 
-    # Let user pick — type to filter, Enter to run, ESC to quit
-    choice=$(echo "$available" | gum filter \
+    # Let user pick — type to filter, Enter to run, ESC to quit. The export
+    # action is offered as the first entry.
+    choice=$(printf '%s\n%s\n' "$EXPORT_ENTRY" "$available" | gum filter \
         --header "Select a script to run" \
         --placeholder "type to filter..." \
         --height 15) || true
@@ -68,6 +72,18 @@ while true; do
     if [ -z "$choice" ]; then
         gum style --faint "Bye."
         exit 0
+    fi
+
+    # Export action → hand off to export.sh (interactive), then loop.
+    if [ "$choice" = "$EXPORT_ENTRY" ]; then
+        BASH_BIN="$(command -v bash)"
+        for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            [ -x "$candidate" ] && { BASH_BIN="$candidate"; break; }
+        done
+        "$BASH_BIN" "$SCRIPT_DIR/export.sh" \
+            || gum style --foreground 196 "Export exited with errors (code $?)"
+        gum confirm "Run another script?" || { gum style --faint "Bye."; exit 0; }
+        continue
     fi
 
     script_path="$SCRIPTS_DIR/$choice"
