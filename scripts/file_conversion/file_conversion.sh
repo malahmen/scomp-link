@@ -1063,12 +1063,15 @@ convert_md_to_pdf() {
     # comment 2 lines above for debug
     # uncomment line below for debug
     pandoc "${pandoc_args[@]}" 2>&1
+    local rc=$?
 
-    if [[ $? -eq 0 ]]; then
+    if [[ $rc -eq 0 ]]; then
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
+        return 0        # don't let open_file's exit status mask success
     else
         warn "Failed to convert: ${input_file}"
+        return 1
     fi
 }
 
@@ -1349,8 +1352,9 @@ convert_md_to_docx() {
 
     gum spin --spinner dot --title "Converting $(basename "$input_file") → $(basename "$output_file") ..." -- \
         pandoc "${pandoc_args[@]}"
+    local rc=$?
 
-    if [[ $? -eq 0 ]]; then
+    if [[ $rc -eq 0 ]]; then
         fold_docx_pagebreaks "$output_file"
         apply_docx_fonts "$output_file"
         # Explicit table banding — only with a built-in reference (a custom
@@ -1362,8 +1366,10 @@ convert_md_to_docx() {
         [[ "$DOCX_LETTERHEAD" == true ]] && stamp_docx_letterhead "$output_file" "$name_source"
         success "$(basename "$output_file") ✓"
         open_file "$output_file"
+        return 0        # don't let open_file's exit status mask success
     else
         warn "Failed to convert: ${input_file}"
+        return 1
     fi
 }
 
@@ -1604,6 +1610,32 @@ ensure_rsvg() {
         *) return 1 ;;
     esac
     command -v rsvg-convert &>/dev/null
+}
+
+# Ensure an image is embeddable by xelatex (pdf/png/jpg/jpeg/eps). Formats it
+# can't size (gif, webp, tiff, bmp, svg…) are converted to PNG in OUTPUT_DIR
+# using whatever raster tool is available (rsvg for svg; sips on macOS; else
+# ImageMagick). Prints a usable path, or exits non-zero if none can be produced
+# (the caller then skips the image instead of failing the whole PDF).
+ensure_pdf_image() {
+    local src="$1" ext png
+    ext="$(printf '%s' "${src##*.}" | tr '[:upper:]' '[:lower:]')"
+    case "$ext" in
+        pdf|png|jpg|jpeg|eps) printf '%s' "$src"; return 0 ;;
+    esac
+    mkdir -p "$OUTPUT_DIR"
+    png="${OUTPUT_DIR}/title_img_$(basename "${src%.*}").png"
+    if [[ "$ext" == "svg" ]]; then
+        ensure_rsvg && rsvg-convert --zoom 2 -o "$png" "$src" 2>/dev/null \
+            && { printf '%s' "$png"; return 0; }
+    elif command -v sips &>/dev/null; then
+        sips -s format png "$src" --out "$png" &>/dev/null && { printf '%s' "$png"; return 0; }
+    elif command -v magick &>/dev/null; then
+        magick "$src" "$png" 2>/dev/null && { printf '%s' "$png"; return 0; }
+    elif command -v convert &>/dev/null; then
+        convert "$src" "$png" 2>/dev/null && { printf '%s' "$png"; return 0; }
+    fi
+    return 1
 }
 
 apply_svg_raster() {
@@ -1972,8 +2004,16 @@ apply_title_page() {
             "$img_line" "$title")
     else
         if [[ -n "$image_abs" ]]; then
-            local image_path_escaped="${image_abs//_/\\_}"
-            image_md="\\includegraphics[width=0.3\\textwidth]{${image_path_escaped}}"
+            # xelatex only embeds pdf/png/jpg/eps — convert anything else (gif,
+            # webp, svg, …) to PNG, or skip the image rather than fail the PDF.
+            local pdf_img
+            pdf_img="$(ensure_pdf_image "$image_abs")" || pdf_img=""
+            if [[ -n "$pdf_img" ]]; then
+                local image_path_escaped="${pdf_img//_/\\_}"
+                image_md="\\includegraphics[width=0.3\\textwidth]{${image_path_escaped}}"
+            else
+                warn "Title-page image can't be embedded in PDF (unsupported format, no converter): ${image_abs} — skipping."
+            fi
         fi
         # awk gsub eats single backslashes in replacement strings — double first
         local title_awk="${title//\\/\\\\}"
