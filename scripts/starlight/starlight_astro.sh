@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: node tree vim
 # -----------------------------------------------------------------------------
 # starlight.sh
 # Interactive TUI for creating and managing Astro Starlight documentation projects.
@@ -25,7 +27,11 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
     exit 1
 fi
 
-COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
 if [[ ! -d "$COMMON_DIR" ]]; then
     printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
     exit 1
