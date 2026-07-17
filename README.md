@@ -381,9 +381,7 @@ scomp-link/
     ├── starlight/
     │   ├── starlight_astro.sh        # Starlight documentation manager
     │   └── converter/
-    │       └── convert.sh            # per-project doc converter (uses the engine)
-    ├── file_conversion/              # internal: converter core vendored by Starlight
-    │   └── file_conversion.sh        #   (hidden from the menu; see holo-convert/)
+    │       └── convert.sh            # per-project doc converter (vendors the holo-convert engine)
     ├── ssh/
     │   └── sshger.sh                 # SSH profile manager (~/.ssh/config)
     │
