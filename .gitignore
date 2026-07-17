@@ -10,3 +10,6 @@ temp/
 __pycache__/
 marker-output
 output
+# holo-convert writes a working .fcc/ + output/ into the CWD at runtime; never
+# a source asset in this repo (the engine's canonical .fcc lives in its own repo).
+.fcc/
