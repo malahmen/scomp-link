@@ -91,6 +91,53 @@ confirm_flag() {  # $1 prompt, $2 flag-if-yes, [$3 flag-if-no]
     return 0   # never let the trailing test's status trip set -e in the caller
 }
 
+# --- Font picker: list only installed fonts (like the old select_*_font) -----
+_MACOS_FONTS_LOADED=""
+_MACOS_FONT_FAMILIES=""
+
+_ensure_macos_fonts() {
+    [[ -n "$_MACOS_FONTS_LOADED" ]] && return
+    _MACOS_FONTS_LOADED=1
+    command -v system_profiler &>/dev/null || return
+    _MACOS_FONT_FAMILIES=$(system_profiler SPFontsDataType 2>/dev/null \
+        | sed -n 's/^[[:space:]]*Family:[[:space:]]*//p' | sort -u)
+}
+
+font_installed() {
+    local family="$1"
+    if command -v fc-list &>/dev/null \
+       && fc-list : family | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | grep -qixF "$family"; then
+        return 0
+    fi
+    if [[ "$(uname)" == "Darwin" ]]; then
+        _ensure_macos_fonts
+        printf '%s\n' "$_MACOS_FONT_FAMILIES" | grep -qixF "$family"
+        return
+    fi
+    command -v fc-list &>/dev/null && return 1   # fc-list gave a definitive "no"
+    return 0                                      # no detector ⇒ stay optimistic
+}
+
+# Prompt for a prose font from the installed candidates. Echoes the chosen font
+# (empty = keep the default). $1 = label for the "keep default" option.
+pick_font() {
+    local none_label="$1"
+    local candidates=("Helvetica" "Arial" "Times New Roman" "Georgia" "Palatino" "Garamond")
+    local avail=() f
+    for f in "${candidates[@]}"; do font_installed "$f" && avail+=("$f"); done
+    if [[ ${#avail[@]} -eq 0 ]]; then
+        warn "None of the preset prose fonts are installed — using the default."
+        return 0
+    fi
+    avail+=("$none_label")
+    local font
+    font=$(printf '%s\n' "${avail[@]}" | gum choose \
+        --header "Prose font — only installed fonts shown:") || true
+    [[ -z "$font" || "$font" == "$none_label" ]] && return 0
+    printf '%s' "$font"
+}
+
 gather_options() {
     header "holo-convert"
 
@@ -200,14 +247,14 @@ gather_docx_options() {
     [[ -n "$size" ]] && FLAGS+=(--page-size "$size")
 
     local font
-    font=$(gum input --header "Prose font (blank = template default):" --placeholder "e.g. Helvetica") || true
+    font=$(pick_font "None (template default)")
     [[ -n "$font" ]] && FLAGS+=(--font "$font")
     return 0
 }
 
 gather_pdf_options() {
     local font
-    font=$(gum input --header "Prose font (blank = pandoc default):" --placeholder "e.g. Helvetica") || true
+    font=$(pick_font "None (pandoc default)")
     [[ -n "$font" ]] && FLAGS+=(--font "$font")
     # PDF engine is auto-selected by the engine (xelatex preferred); override here.
     local eng
