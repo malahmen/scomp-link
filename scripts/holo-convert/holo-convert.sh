@@ -123,6 +123,13 @@ font_installed() {
 # (empty = keep the default). $1 = label for the "keep default" option.
 pick_font() {
     local none_label="$1"
+    # The macOS font registry (system_profiler) is slow, so warm it under a
+    # spinner for a visible "processing" indicator; fontconfig (Linux) is fast.
+    if [[ "$(uname)" == Darwin && -z "$_MACOS_FONTS_LOADED" ]] && command -v system_profiler &>/dev/null; then
+        _MACOS_FONT_FAMILIES=$(gum spin --spinner dot --title "Detecting installed fonts…" --show-output -- \
+            system_profiler SPFontsDataType | sed -n 's/^[[:space:]]*Family:[[:space:]]*//p' | sort -u || true)
+        _MACOS_FONTS_LOADED=1
+    fi
     local candidates=("Helvetica" "Arial" "Times New Roman" "Georgia" "Palatino" "Garamond")
     local avail=() f
     for f in "${candidates[@]}"; do font_installed "$f" && avail+=("$f"); done
@@ -252,13 +259,26 @@ gather_docx_options() {
     return 0
 }
 
+# Prompt for a PDF engine from those actually installed. Echoes the choice, or
+# empty to let holo-convert auto-pick. Detection is instant (command -v).
+pick_pdf_engine() {
+    local candidates=(xelatex lualatex pdflatex wkhtmltopdf weasyprint pagedjs-cli)
+    local avail=() e
+    for e in "${candidates[@]}"; do command -v "$e" &>/dev/null && avail+=("$e"); done
+    [[ ${#avail[@]} -eq 0 ]] && return 0    # none installed → the engine guards/errors
+    avail+=("auto (let holo-convert pick)")
+    local sel
+    sel=$(printf '%s\n' "${avail[@]}" | gum choose \
+        --header "PDF engine — only installed shown:") || true
+    [[ -z "$sel" || "$sel" == auto* ]] && return 0
+    printf '%s' "$sel"
+}
+
 gather_pdf_options() {
-    local font
+    local font eng
     font=$(pick_font "None (pandoc default)")
     [[ -n "$font" ]] && FLAGS+=(--font "$font")
-    # PDF engine is auto-selected by the engine (xelatex preferred); override here.
-    local eng
-    eng=$(gum input --header "PDF engine (blank = auto):" --placeholder "xelatex") || true
+    eng=$(pick_pdf_engine)
     [[ -n "$eng" ]] && FLAGS+=(--pdf-engine "$eng")
     return 0
 }
