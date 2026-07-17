@@ -44,10 +44,11 @@ From the launcher, pick **holo-convert → convert files**. Or drive the engine 
 holo-convert.sh --from md --to pdf --toc --title-page doc.md
 holo-convert.sh --from md --to docx --letterhead --author "ACME" report.md
 holo-convert.sh --from docx --to md --md-variant gfm report.docx
-holo-convert.sh --setup --to pdf      # install dependencies
+holo-convert.sh --setup --to pdf      # install core dependencies
+holo-convert.sh --with-optional       # core + optional tools (rsvg, ImageMagick, fontconfig, mermaid)
 holo-convert.sh --help                # full flag list
 ```
 
-Dependencies are checked, never installed automatically (run `--setup` to install): `bash` 4+ and `pandoc` always; a LaTeX engine for PDF; `python3` (stdlib) for DOCX; optional `rsvg-convert`, ImageMagick/`sips`, and fontconfig.
+Dependencies are checked, never installed automatically: `bash` 4+ and `pandoc` always; a LaTeX engine for PDF; `python3` (stdlib) for DOCX; optional `rsvg-convert`, ImageMagick/`sips`, fontconfig, and `mermaid-cli`. Run `--setup` to install the core, or `--with-optional` for the core plus the optional tools.
 
 See the [holo-convert repository](https://github.com/malahmen/holo-convert) for engine internals and the complete option reference.
