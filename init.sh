@@ -20,11 +20,11 @@ fi
 
 # Folders that contain shared utilities (sourced by other scripts), not
 # interactive TUIs. They are excluded from the script picker.
-EXCLUDED_DIRS="cluster _common file_conversion"
+EXCLUDED_DIRS="cluster _common"
 
 # Special picker entries.
-EXPORT_ENTRY="⇱  Export a script → standalone folder"
-HOLO_ENTRY="⎈  holo-convert → convert files (md ↔ pdf/docx)"
+EXPORT_ENTRY="Export a script → standalone folder"
+HOLO_ENTRY="holo-convert → convert files (md ↔ pdf/docx)"
 
 _dir_excluded() {
     local dir="$1"

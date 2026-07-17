@@ -90,7 +90,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | Script                                                | Description                                     |
 | --------------------------------------------------------- | ----------------------------------------------- |
 | [`starlight_astro.sh`](docs/scripts/starlight.md)      | Create and manage Starlight documentation sites |
-| [`holo-convert`](holo-convert/holo-convert.sh)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
+| [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
 | [`sshger.sh`](docs/scripts/sshger.md)                  | Manage SSH profiles in `~/.ssh/config`          |
 
 ---
