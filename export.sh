@@ -53,7 +53,7 @@ if [[ -z "$choice" ]]; then
         --placeholder "type to filter..." --height 15) || true
     [[ -z "$choice" ]] && { info "Cancelled."; exit 0; }
 elif [[ "$choice" != */*.sh ]]; then
-    # allow a bare folder name (e.g. "file_conversion")
+    # allow a bare folder name (e.g. "postgres")
     choice=$(get_scripts | grep -E "^${choice}/" | head -1 || true)
     [[ -z "$choice" ]] && fatal "No script matching '${1}'."
 fi
