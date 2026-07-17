@@ -9,7 +9,7 @@
 #
 # Engine resolution order:
 #   1. $HOLO_CONVERT_DIR/holo-convert.sh        (explicit override)
-#   2. ../../holo-convert/holo-convert.sh       (sibling dev checkout)
+#   2. ../../../holo-convert/holo-convert.sh    (sibling dev checkout)
 #   3. ~/.cache/scomp-link/holo-convert/…       (cached clone; offers git pull)
 #   4. git clone --depth 1 (public HTTPS)       (first run)
 # -----------------------------------------------------------------------------
@@ -25,8 +25,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USE_TP=false
 
 # Shared UI helpers (info/warn/success/error_exit/header) from scomp-link.
-# shellcheck source=../scripts/_common/ui.sh
-source "${SCRIPT_DIR}/../scripts/_common/ui.sh"
+# shellcheck source=../_common/ui.sh
+source "${SCRIPT_DIR}/../_common/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
 command -v git &>/dev/null || { echo "[error] git is required to fetch the engine." >&2; exit 1; }
@@ -49,7 +49,7 @@ resolve_engine() {
         return
     fi
 
-    local sib="${SCRIPT_DIR}/../../holo-convert/holo-convert.sh"
+    local sib="${SCRIPT_DIR}/../../../holo-convert/holo-convert.sh"
     if [[ -f "$sib" ]]; then
         ENGINE="$(cd "$(dirname "$sib")" && pwd)/holo-convert.sh"
         info "Using local holo-convert checkout: $(dirname "$ENGINE")"
