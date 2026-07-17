@@ -58,6 +58,7 @@ DEFAULT_DEPTH=3
 # offer to install missing dependencies — it only checks for them (guardrails).
 # The interactive gum UI (main / main_fast) leaves this false.
 NONINTERACTIVE=false
+SETUP_DEPS=false          # --setup: install dependencies (explicit, opt-in)
 MD_VARIANT="gfm"          # docx→md output variant (overridable via --md-variant)
 _ENGINE_FONT=""           # deferred --font value (applied once --to is known)
 _ENGINE_REFERENCE=""      # deferred --reference value (docx)
@@ -2388,8 +2389,59 @@ PDF
 DOCX->MD
   --md-variant gfm|markdown|commonmark
 
-In engine mode dependencies are CHECKED but never installed.
+SETUP
+  --setup                            install dependencies, then exit (or, if a
+                                     conversion is also given, install then run)
+    file_conversion.sh --setup                install everything (pandoc, LaTeX, python3)
+    file_conversion.sh --setup --to docx       install just the DOCX deps
+    file_conversion.sh --setup --from md --to pdf doc.md   install PDF deps, then convert
+
+By default (no --setup) engine dependencies are CHECKED but never installed.
 EOF
+}
+
+# Install one package via the OS package manager (macOS brew, Linux apt/dnf).
+# Args: check-bin brew-pkg apt-pkg dnf-pkg [cask]. Gum-free; sudo on Linux.
+_engine_install_pkg() {
+    local bin="$1" brewp="$2" aptp="$3" dnfp="$4" cask="${5:-}"
+    command -v "$bin" &>/dev/null && { enote "${bin}: already present."; return 0; }
+    enote "installing ${bin}…"
+    case "$(uname -s)" in
+        Darwin)
+            command -v brew &>/dev/null || edie "Homebrew is required to install ${bin} — see https://brew.sh"
+            if [[ "$cask" == cask ]]; then brew install --cask "$brewp"; else brew install "$brewp"; fi ;;
+        Linux)
+            if command -v apt-get &>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y "$aptp"
+            elif command -v dnf &>/dev/null; then sudo dnf install -y "$dnfp"
+            else edie "no supported package manager (apt/dnf) found to install ${bin}."; fi ;;
+        *) edie "unsupported OS for --setup: $(uname -s)" ;;
+    esac
+    command -v "$bin" &>/dev/null && enote "${bin}: ready." || warn "${bin}: install may have failed — check the output above."
+}
+
+# --setup: install the engine's dependencies. Scoped to --to when given
+# (pdf → +LaTeX, docx → +python3), otherwise installs the full set. pandoc is
+# always installed; rsvg only when --raster-svg is requested.
+setup_deps() {
+    enote "Setting up file_conversion dependencies…"
+    _engine_install_pkg pandoc pandoc pandoc pandoc
+
+    local want_pdf=false want_docx=false
+    case "${OUTPUT_FORMAT:-}" in
+        pdf)  want_pdf=true ;;
+        docx) want_docx=true ;;
+        md)   : ;;                              # docx→md: pandoc suffices
+        *)    want_pdf=true; want_docx=true ;;  # unscoped → everything
+    esac
+
+    if [[ "$want_pdf" == true ]] && ! command -v xelatex &>/dev/null; then
+        warn "Installing a LaTeX engine (TeX Live / MacTeX) — this download is large."
+        _engine_install_pkg xelatex mactex-no-gui texlive-xetex texlive-xetex cask
+    fi
+    [[ "$want_docx" == true ]] && _engine_install_pkg python3 python python3 python3
+    [[ "${RASTER_SVG:-false}" == true ]] && _engine_install_pkg rsvg-convert librsvg librsvg2-bin librsvg2-tools
+
+    enote "Setup complete."
 }
 
 # Guardrail dependency checks — verify presence, never install. Sets
@@ -2464,6 +2516,7 @@ parse_args() {
             --tp-pagenum)          TP_PAGENUM=true; shift ;;
             --no-tp-pagenum)       TP_PAGENUM=false; shift ;;
             --md-variant)          MD_VARIANT="$2"; shift 2 ;;
+            --setup)               SETUP_DEPS=true; shift ;;
             -h|--help)             usage; exit 0 ;;
             --)                    shift; while [[ $# -gt 0 ]]; do files+=("$1"); shift; done ;;
             -*)                    edie "unknown flag: $1 (try --help)" ;;
@@ -2480,9 +2533,18 @@ parse_args() {
 main_engine() {
     parse_args "$@"
 
+    # --setup with no files → install dependencies (scoped by --to if present)
+    # and exit. With files, install first and continue to the conversion.
+    if [[ "$SETUP_DEPS" == true && -z "${SELECTED_FILES:-}" ]]; then
+        setup_deps
+        exit 0
+    fi
+
     [[ -n "${SOURCE_FORMAT:-}" ]]  || edie "missing --from <md|docx>"
     [[ -n "${OUTPUT_FORMAT:-}" ]]  || edie "missing --to <pdf|docx|md>"
     [[ -n "${SELECTED_FILES:-}" ]] || edie "no input files given (pass one or more paths)"
+
+    [[ "$SETUP_DEPS" == true ]] && setup_deps
 
     # Deferred --font → prose font for the chosen target ("none" = pandoc default).
     if [[ -n "$_ENGINE_FONT" ]]; then
