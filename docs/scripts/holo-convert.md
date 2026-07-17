@@ -1,7 +1,7 @@
 # Document Conversion — holo-convert
 
 Menu entry: **holo-convert → convert files (md ↔ pdf/docx)**
-Front-end: `holo-convert/holo-convert.sh` · Engine: [malahmen/holo-convert](https://github.com/malahmen/holo-convert)
+Front-end: `scripts/holo-convert/holo-convert.sh` · Engine: [malahmen/holo-convert](https://github.com/malahmen/holo-convert)
 
 Convert documents between formats. The conversion logic is the standalone,
 gum-free **holo-convert** engine (kept in its own repository); scomp-link ships

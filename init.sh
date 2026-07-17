@@ -22,9 +22,9 @@ fi
 # interactive TUIs. They are excluded from the script picker.
 EXCLUDED_DIRS="cluster _common"
 
-# Special picker entries.
+# Special picker entry: export a script as a standalone, scomp-link-free folder.
+# (holo-convert is a normal script under scripts/ and is auto-discovered.)
 EXPORT_ENTRY="Export a script → standalone folder"
-HOLO_ENTRY="holo-convert → convert files (md ↔ pdf/docx)"
 
 _dir_excluded() {
     local dir="$1"
@@ -64,7 +64,7 @@ while true; do
 
     # Let user pick — type to filter, Enter to run, ESC to quit. The export
     # action is offered as the first entry.
-    choice=$(printf '%s\n%s\n%s\n' "$HOLO_ENTRY" "$EXPORT_ENTRY" "$available" | gum filter \
+    choice=$(printf '%s\n%s\n' "$EXPORT_ENTRY" "$available" | gum filter \
         --header "Select a script to run" \
         --placeholder "type to filter..." \
         --height 15) || true
@@ -75,19 +75,11 @@ while true; do
         exit 0
     fi
 
-    # Pick a bash 4+ binary for the special-entry handoffs.
+    # Pick a bash 4+ binary for the special-entry handoff.
     BASH_BIN="$(command -v bash)"
     for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
         [ -x "$candidate" ] && { BASH_BIN="$candidate"; break; }
     done
-
-    # holo-convert TUI → hand off to its frontend, then loop.
-    if [ "$choice" = "$HOLO_ENTRY" ]; then
-        "$BASH_BIN" "$SCRIPT_DIR/holo-convert/holo-convert.sh" \
-            || gum style --foreground 196 "holo-convert exited with errors (code $?)"
-        gum confirm "Run another script?" || { gum style --faint "Bye."; exit 0; }
-        continue
-    fi
 
     # Export action → hand off to export.sh (interactive), then loop.
     if [ "$choice" = "$EXPORT_ENTRY" ]; then

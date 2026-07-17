@@ -161,7 +161,7 @@ Or re-run setup to bootstrap dependencies:
 
 ## File conversion — holo-convert
 
-Markdown ↔ PDF / DOCX conversion is provided by **[holo-convert](https://github.com/malahmen/holo-convert)**, a standalone, gum-free engine kept in its own repository. scomp-link ships only the interactive front-end (`holo-convert/holo-convert.sh`), reachable from the launcher as **“holo-convert → convert files”**.
+Markdown ↔ PDF / DOCX conversion is provided by **[holo-convert](https://github.com/malahmen/holo-convert)**, a standalone, gum-free engine kept in its own repository. scomp-link ships only the interactive front-end (`scripts/holo-convert/holo-convert.sh`), auto-discovered in the launcher menu like any other script.
 
 The front-end resolves the engine automatically — an explicit `$HOLO_CONVERT_DIR`, then a local sibling checkout, then a cached clone under `~/.cache/scomp-link/`, then a fresh `git clone` from the public repo — collects options via gum, and runs the engine with the matching flags. On a missing dependency it offers to run the engine's `--setup` and retry.
 
@@ -295,9 +295,6 @@ scomp-link/
 ├── export.sh                         # Export a script as a standalone folder
 ├── wsl-setup.ps1                     # Windows WSL bootstrap
 │
-├── holo-convert/                     # gum front-end for the holo-convert engine
-│   └── holo-convert.sh               #   (engine lives in its own repo)
-│
 └── scripts/                          # All runnable scripts live here
     │
     ├── _common/                       # [Shared] Sourced by app scripts, not run directly
@@ -382,6 +379,8 @@ scomp-link/
     │   ├── starlight_astro.sh        # Starlight documentation manager
     │   └── converter/
     │       └── convert.sh            # per-project doc converter (vendors the holo-convert engine)
+    ├── holo-convert/
+    │   └── holo-convert.sh           # front-end for the holo-convert engine (its own repo)
     ├── ssh/
     │   └── sshger.sh                 # SSH profile manager (~/.ssh/config)
     │
