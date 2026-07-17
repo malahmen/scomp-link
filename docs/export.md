@@ -9,14 +9,14 @@ shipping the whole repo.
 
 ```bash
 ./export.sh                          # pick a script + target directory interactively
-./export.sh file_conversion          # pick the target interactively
-./export.sh file_conversion ~/fc     # fully non-interactive
+./export.sh postgres                 # pick the target interactively
+./export.sh postgres ~/pg            # fully non-interactive
 ```
 
-From the launcher, choose **“⇱ Export a script → standalone folder”** — the
-first entry in the `init.sh` menu.
+From the launcher, choose **“Export a script → standalone folder”** — one of the
+special entries in the `init.sh` menu.
 
-You can pass either a folder name (`file_conversion`) or the discovered
+You can pass either a folder name (`postgres`) or the discovered
 `folder/script.sh` path.
 
 ## What you get
@@ -24,19 +24,19 @@ You can pass either a folder name (`file_conversion`) or the discovered
 A flat directory — everything the script needs, side by side:
 
 ```
-~/fc/
-  file_conversion.sh    the script + its co-located assets (e.g. .fcc/)
-  ui.sh                 only the _common helpers this script actually sources
-  setup.sh              slimmed bootstrap (framework floor + this script's deps)
-  wsl-setup.ps1         Windows/WSL bootstrap (runs setup.sh inside WSL)
+~/pg/
+  postgres.sh                              the script + any co-located assets
+  ui.sh deps.sh cluster.sh portforward.sh  only the _common helpers it sources
+  setup.sh                                 slimmed bootstrap (framework floor + this script's deps)
+  wsl-setup.ps1                            Windows/WSL bootstrap (runs setup.sh inside WSL)
 ```
 
 Run it anywhere:
 
 ```bash
-cd ~/fc
+cd ~/pg
 bash setup.sh          # once — installs dependencies
-bash file_conversion.sh
+bash postgres.sh
 ```
 
 On Windows, run `wsl-setup.ps1` (it bootstraps `setup.sh` inside WSL).
@@ -116,9 +116,9 @@ instead and export the floor only, provisioning their deps at runtime:
 
 ## Notes & limitations
 
-- **Heavy/interactive deps stay at runtime.** e.g. `file_conversion` declares
-  `pandoc` but leaves the LaTeX engine (MacTeX/TeX Live) to its runtime PDF-engine
-  detection — too large to pre-install silently.
+- **Heavy deps can stay at runtime.** A manifest need only declare what's worth
+  pre-installing; large or specialized tools can be left to the script's own
+  runtime checks rather than pulled in by every export.
 - **`mise` shims.** Tools installed by `ensure_tool` land in
   `~/.local/share/mise/shims`; `setup.sh` adds that to `PATH` for the session,
   and `mise` activation (configured by the floor) keeps them available in new
