@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): no extra setup deps — Wine/Flatpak/display deps are handled at runtime (Linux).
 # -----------------------------------------------------------------------------
 # client.sh
 # Configures and launches one or more vanilla WoW (1.12.1) game clients under
@@ -100,7 +101,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
 
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"

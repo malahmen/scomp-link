@@ -380,6 +380,8 @@ ensure_bash() {
     fi
 }
 
+# === bootstrap entrypoint === (export.sh reuses everything ABOVE this line and
+# generates its own slimmed entrypoint below it — keep this marker line intact)
 # Main
 detect_os
 info "Detected OS: $OS, package manager: $PKG_MANAGER"

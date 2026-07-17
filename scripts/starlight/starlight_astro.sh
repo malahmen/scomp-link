@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: node tree vim
 # -----------------------------------------------------------------------------
 # starlight.sh
 # Interactive TUI for creating and managing Astro Starlight documentation projects.
@@ -25,7 +27,11 @@ if [[ "${BASH_VERSINFO[0]}" -lt 4 ]]; then
     exit 1
 fi
 
-COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
 if [[ ! -d "$COMMON_DIR" ]]; then
     printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
     exit 1
@@ -167,40 +173,55 @@ create_scaffold() {
 
     mkdir -p converter
 
-    # Copy convert.sh from alongside starlight_astro.sh
+    # Vendor the holo-convert engine (holo-convert.sh + .fcc) plus the project
+    # front-end (convert.sh) so the scaffolded project is fully self-contained —
+    # no runtime dependency on scomp-link. The engine is gum-free and needs no
+    # ui.sh; convert.sh is the project's own gum front-end.
     local converter_script="${SCRIPT_DIR}/converter/convert.sh"
+
+    # Locate the engine: $HOLO_CONVERT_DIR → sibling checkout → cache → clone.
+    local repo="${HOLO_CONVERT_REPO:-https://github.com/malahmen/holo-convert.git}"
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/holo-convert"
+    local engine=""
+    if [[ -n "${HOLO_CONVERT_DIR:-}" && -f "${HOLO_CONVERT_DIR}/holo-convert.sh" ]]; then
+        engine="${HOLO_CONVERT_DIR}/holo-convert.sh"
+    elif [[ -f "${SCRIPT_DIR}/../../../holo-convert/holo-convert.sh" ]]; then
+        engine="$(cd "${SCRIPT_DIR}/../../../holo-convert" && pwd)/holo-convert.sh"
+    elif [[ -f "${cache}/holo-convert.sh" ]]; then
+        engine="${cache}/holo-convert.sh"
+    elif command -v git &>/dev/null && gum confirm "Fetch the holo-convert engine from ${repo}?"; then
+        mkdir -p "$(dirname "$cache")"
+        if gum spin --spinner dot --title "Cloning holo-convert..." -- \
+                git clone --depth 1 "$repo" "$cache"; then
+            engine="${cache}/holo-convert.sh"
+        fi
+    fi
+
     if [[ -f "$converter_script" ]]; then
         cp "$converter_script" converter/convert.sh
         chmod +x converter/convert.sh
-        success "convert.sh copied to converter/"
+        success "convert.sh (front-end) copied to converter/"
     else
         warn "converter/convert.sh not found at ${converter_script} — skipping."
-        warn "Copy it manually before running mise tasks."
     fi
 
-    # Vendor ui.sh alongside convert.sh so the scaffolded project is
-    # self-contained (no dependency on the scomp-link repo layout). convert.sh
-    # sources this from its own SCRIPT_DIR.
-    local ui_source="${SCRIPT_DIR}/../_common/ui.sh"
-    if [[ -f "$ui_source" ]]; then
-        cp "$ui_source" converter/ui.sh
-        success "ui.sh vendored into converter/"
+    if [[ -n "$engine" && -f "$engine" ]]; then
+        cp "$engine" converter/holo-convert.sh
+        chmod +x converter/holo-convert.sh
+        success "holo-convert engine vendored into converter/"
+        local fcc_source; fcc_source="$(cd "$(dirname "$engine")" && pwd)/.fcc"
+        if [[ -d "$fcc_source" ]]; then
+            rm -rf converter/.fcc
+            cp -r "$fcc_source" converter/.fcc
+            success ".fcc/ assets copied to converter/.fcc/"
+        else
+            warn ".fcc/ not found next to the engine (${fcc_source}) — conversions may fail."
+            mkdir -p converter/.fcc/pdf converter/.fcc/title-pages
+        fi
     else
-        warn "ui.sh not found at ${ui_source} — convert.sh will fail until it's copied in."
-    fi
-
-    # Copy .fcc/ assets if they exist next to starlight_astro.sh
-    local fcc_source="${SCRIPT_DIR}/.fcc"
-    if [[ -d "$fcc_source" ]]; then
-        cp -r "$fcc_source" converter/.fcc
-        success ".fcc/ assets copied to converter/.fcc/"
-    else
-        warn ".fcc/ not found at ${fcc_source}."
-        warn "converter/.fcc/pdf/ will be created on first conversion run,"
-        warn "but p10k.theme, widen-tables.lua, and render-mermaid.lua will be missing."
-        warn "PDF conversion will fail until those files are placed in converter/.fcc/pdf/."
-        mkdir -p converter/.fcc/pdf
-        mkdir -p converter/.fcc/title-pages
+        warn "holo-convert engine not found — the converter won't run until you place"
+        warn "holo-convert.sh + .fcc/ in converter/ (get it from ${repo}, or set HOLO_CONVERT_DIR)."
+        mkdir -p converter/.fcc/pdf converter/.fcc/title-pages
     fi
 
     success "converter/ ready."
@@ -227,12 +248,16 @@ description = "Preview the production build"
 run = "npm run preview"
 
 [tasks.convert]
-description = "Convert docs interactively (full options: format, engine, font, title page)"
-run = "bash converter/convert.sh full"
+description = "Convert docs interactively (pick files, choose format + options)"
+run = "bash converter/convert.sh"
 
 [tasks."convert:pdf"]
-description = "Convert a document to PDF, file picker only, xelatex, helvetica, title page"
+description = "Convert docs to PDF (file picker; title page + TOC, rules stripped)"
 run = "bash converter/convert.sh pdf"
+
+[tasks."convert:docx"]
+description = "Convert docs to DOCX (file picker; styled, with TOC)"
+run = "bash converter/convert.sh docx"
 MISEEOF
 
     mise trust mise.toml

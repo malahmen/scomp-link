@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: kubectl
 # -----------------------------------------------------------------------------
 # server.sh
 # Builds and runs a VMaNGOS-based vanilla WoW (1.12.1 / client build 5875)
@@ -40,7 +42,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
 TEMPLATES_DIR="${SCRIPT_DIR}/templates"
 
 # shellcheck source=../_common/ui.sh

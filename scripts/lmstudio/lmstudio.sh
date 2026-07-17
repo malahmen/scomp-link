@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): no extra setup deps — LM Studio app + display deps are handled at runtime.
 # -----------------------------------------------------------------------------
 # lmstudio.sh
 # Interactive TUI for installing and managing LM Studio (Flatpak) so that the
@@ -24,7 +25,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_DIR="${SCRIPT_DIR}/../_common"
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
 
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
