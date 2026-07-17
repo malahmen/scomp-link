@@ -20,6 +20,7 @@ Scomp-Link is a **framework for organizing and launching shell scripts** via an 
 - **Zero Config** - Just drop scripts in and they work
 - **Cross-Platform** - Supports macOS, Linux, and Windows (via WSL)
 - **Bash 4+ Handling** - Automatically finds modern bash on macOS (which ships with bash 3.2)
+- **Standalone Export** - Bundle any script into a self-contained, scomp-link-free folder (`export.sh`)
 
 ## Included Scripts
 
@@ -88,10 +89,10 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 
 | Script                                                  | Description                                                                 |
 | ------------------------------------------------------- | --------------------------------------------------------------------------- |
-| [`starlight_astro.sh`](docs/scripts/starlight.md)       | Create and manage Starlight documentation sites                             |
-| [`file_conversion.sh`](docs/scripts/file_conversion.md) | Convert documents (MD, PDF, DOCX)                                           |
+| [`starlight_astro.sh`](docs/scripts/starlight.md)       | Create and manage Starlight documentation sites                             |                            |
 | [`marker/marker.sh`](docs/scripts/marker.md)            | Convert PDF/DOCX/etc -> Markdown/JSON for LLM ingestion (datalab-to/marker) |
-| [`sshger.sh`](docs/scripts/sshger.md)                   | Manage SSH profiles in `~/.ssh/config`                                      |
+| [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
+| [`sshger.sh`](docs/scripts/sshger.md)                  | Manage SSH profiles in `~/.ssh/config`          |
 
 ---
 
@@ -137,8 +138,8 @@ The setup script will:
 | helm                        | K8s database, observability, and platform scripts     |
 | kind                        | Kind cluster management                               |
 | Node.js                     | Starlight documentation sites                         |
-| pandoc                      | Document conversion                                   |
-| TeX Live (xelatex/lualatex) | PDF generation                                        |
+| pandoc                      | holo-convert (document conversion)                    |
+| TeX Live (xelatex/lualatex) | holo-convert PDF output                               |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
 | jq                          | SSH profile manager (`sshger.sh`)                     |
 | git, curl                   | Akinn node installer (fetches Akinn + version lists)  |
@@ -158,6 +159,56 @@ Or re-run setup to bootstrap dependencies:
 ```bash
 ./setup.sh
 ```
+
+## File conversion — holo-convert
+
+Markdown ↔ PDF / DOCX conversion is provided by **[holo-convert](https://github.com/malahmen/holo-convert)**, a standalone, gum-free engine kept in its own repository. scomp-link ships only the interactive front-end (`scripts/holo-convert/holo-convert.sh`), auto-discovered in the launcher menu like any other script.
+
+The front-end resolves the engine automatically — an explicit `$HOLO_CONVERT_DIR`, then a local sibling checkout, then a cached clone under `~/.cache/scomp-link/`, then a fresh `git clone` from the public repo — collects options via gum, and runs the engine with the matching flags. On a missing dependency it offers to run the engine's `--setup` and retry.
+
+You can also drive the engine directly, without the TUI:
+
+```bash
+holo-convert.sh --from md --to pdf --toc --title-page doc.md
+holo-convert.sh --setup --to docx        # install dependencies
+holo-convert.sh --help
+```
+
+## Exporting a Script
+
+Any script can be exported as a **standalone, self-contained folder** that runs
+on its own — no scomp-link checkout, no `init.sh`, no `_common/` parent.
+
+```bash
+./export.sh                   # pick a script + target interactively
+./export.sh postgres ~/pg     # or pass them directly
+```
+
+You can also trigger it from the launcher: pick **“⇱ Export a script → standalone folder”** at the top of the `init.sh` menu.
+
+The result is a **flat** directory:
+
+```
+~/pg/
+  postgres.sh                             # the script (+ any co-located assets)
+  ui.sh deps.sh cluster.sh portforward.sh # only the _common helpers it sources
+  setup.sh                                # slimmed bootstrap — floor + this script's deps
+  wsl-setup.ps1                           # Windows/WSL bootstrap
+```
+
+Run it anywhere:
+
+```bash
+cd ~/pg
+bash setup.sh          # once — installs dependencies
+bash postgres.sh
+```
+
+This works because every script is **vendor-aware**: it sources shared helpers
+from `../_common` when run inside this repo, and falls back to helpers sitting
+**alongside** it when exported. What the slimmed `setup.sh` installs is driven
+by each script's [export manifest](#export-manifest). See
+[docs on exporting](docs/export.md) for the full mechanics.
 
 ## Adding Your Own Scripts
 
@@ -181,17 +232,25 @@ For best results, your scripts should:
 1. **Use gum for interaction** - Provides consistent UX across all scripts
 2. **Start with the shebang** - `#!/usr/bin/env bash`
 3. **Use strict mode** - `set -euo pipefail`
-4. **Source `_common/`** - Use the shared helpers instead of duplicating them
+4. **Source `_common/` vendor-aware** - Resolve `COMMON_DIR` so the script also works when [exported](#exporting-a-script) (deps sit alongside it instead of in `../_common`)
+5. **Declare an export manifest** - so a standalone export knows what to install
 
 Example script template:
 
 ```bash
 #!/usr/bin/env bash
+# export-setup: kubectl helm      # tools the standalone-export setup.sh installs
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../_common/ui.sh"
-source "${SCRIPT_DIR}/../_common/cluster.sh"
+# Shared helpers: ../_common in the repo, or alongside this script when exported.
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"
+else
+    COMMON_DIR="${SCRIPT_DIR}"
+fi
+source "${COMMON_DIR}/ui.sh"
+source "${COMMON_DIR}/cluster.sh"
 
 # Check dependencies
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
@@ -208,6 +267,24 @@ case "$ACTION" in
 esac
 ```
 
+<a name="export-manifest"></a>
+#### Export manifest
+
+Add a `# export-setup:` comment near the top so [`export.sh`](#exporting-a-script)
+knows what the standalone `setup.sh` should install beyond the framework floor
+(`curl` / `mise` / `bash` / `gum`):
+
+```bash
+# export-setup: kubectl helm     # installed via mise (fallback: brew/apt/dnf)
+```
+
+- `vim`, `tree`, `node` map to `setup.sh`'s own `ensure_*` steps.
+- Any other token is installed best-effort via `mise` (then `brew`/`apt`/`dnf`);
+  whatever can't be pre-installed is resolved by your script's runtime checks.
+- **No manifest** (or a plain `# ... no extra setup deps` note) → the export
+  ships the floor only, which is right for OS packages, daemons, or apps that
+  your script provisions at runtime.
+
 ---
 
 ## Project Structure
@@ -216,6 +293,7 @@ esac
 scomp-link/
 ├── setup.sh                          # Bootstrap installer
 ├── init.sh                           # Main TUI launcher
+├── export.sh                         # Export a script as a standalone folder
 ├── wsl-setup.ps1                     # Windows WSL bootstrap
 │
 └── scripts/                          # All runnable scripts live here
@@ -301,9 +379,9 @@ scomp-link/
     ├── starlight/
     │   ├── starlight_astro.sh        # Starlight documentation manager
     │   └── converter/
-    │       └── convert.sh
-    ├── file_conversion/
-    │   └── file_conversion.sh        # Document format converter
+    │       └── convert.sh            # per-project doc converter (vendors the holo-convert engine)
+    ├── holo-convert/
+    │   └── holo-convert.sh           # front-end for the holo-convert engine (its own repo)
     ├── ssh/
     │   └── sshger.sh                 # SSH profile manager (~/.ssh/config)
     │
@@ -321,12 +399,14 @@ scomp-link/
 
 On macOS/zsh, gum v0.15+ has a known double-render bug. The setup script will prompt you to set `GUM_INPUT_WIDTH` to fix this. This value is saved to your shell profile.
 
-### File Conversion Templates
+### Document conversion assets
 
-Title page templates are stored in `.fcc/title-pages/`. The default template supports:
-
-- `{{TITLE}}` placeholder for document title
-- `{{IMAGE}}` placeholder for cover image
+Conversion assets — pandoc Lua filters, the code-block theme, the DOCX reference
+documents, and title-page templates — ship with the **holo-convert** engine in
+its `.fcc/` directory and are copied into a working `./.fcc/` in the current
+directory on first run (so they can be customized per project). Title-page
+templates live in `.fcc/title-pages/` and support `{{TITLE}}` and `{{IMAGE}}`
+placeholders.
 
 ### Starlight Projects
 
@@ -406,6 +486,7 @@ Some operations require sudo. On systems without passwordless sudo, you may need
 Scomp-Link is evolving into a comprehensive shell scripting framework:
 
 - ~~**Shared Library** - Common functions for logging, prompts, validation~~ ✓ done (`scripts/_common/`)
+- ~~**Standalone Export** - Bundle a script into a self-contained folder~~ ✓ done (`export.sh`)
 - **Plugin System** - Auto-discover scripts from `~/.config/scomp-link/plugins/`
 - **Tool Management** - Unified TUI for managing development tools via mise
 - **Script Templates** - Generators for new scripts with boilerplate
