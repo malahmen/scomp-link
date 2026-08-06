@@ -91,6 +91,34 @@ confirm_flag() {  # $1 prompt, $2 flag-if-yes, [$3 flag-if-no]
     return 0   # never let the trailing test's status trip set -e in the caller
 }
 
+# Strip surrounding whitespace and take only the first line — a pasted value
+# can arrive with a trailing newline or stray scrollback appended.
+_clean_input() {
+    local s="$1"
+    s="${s%%$'\n'*}"                 # first line only
+    s="${s#"${s%%[![:space:]]*}"}"   # ltrim
+    s="${s%"${s##*[![:space:]]}"}"   # rtrim
+    printf '%s' "$s"
+}
+
+# Prompt for an OPTIONAL file path; blank = none. Re-prompts (up to 3x) when the
+# path doesn't resolve to a file, so a contaminated paste can't silently pass a
+# bogus path to the engine (which would drop the image). Echoes the clean path
+# (empty = skip). Expands a leading ~.
+prompt_path() {  # $1 header, $2 placeholder
+    local header="$1" placeholder="$2" val try=0
+    while (( try < 3 )); do
+        try=$(( try + 1 ))
+        val=$(_clean_input "$(gum input --header "$header" --placeholder "$placeholder" || true)")
+        [[ -z "$val" ]] && return 0            # blank → none
+        [[ "$val" == "~"* ]] && val="${val/#\~/$HOME}"
+        [[ -f "$val" ]] && { printf '%s' "$val"; return 0; }
+        warn "Not a file: ${val} — please re-enter (or leave blank to skip)."
+    done
+    warn "No valid path after 3 tries — skipping."
+    return 0
+}
+
 # --- Font picker: list only installed fonts (like the old select_*_font) -----
 _MACOS_FONTS_LOADED=""
 _MACOS_FONT_FAMILIES=""
@@ -191,8 +219,7 @@ gather_options() {
 
         if gum confirm "Add a title page?"; then
             FLAGS+=(--title-page); USE_TP=true
-            local img; img=$(gum input --header "Title-page image path (blank = none):" \
-                --placeholder "/path/to/logo.png") || true
+            local img; img=$(prompt_path "Title-page image path (blank = none):" "/path/to/logo.png")
             [[ -n "$img" ]] && FLAGS+=(--image "$img")
         fi
 
@@ -226,10 +253,10 @@ gather_docx_options() {
         letterhead*)
             FLAGS+=(--reference letterhead)
             local a c v l
-            a=$(gum input --header "Author (header 'Created By'), blank to omit:" --placeholder "e.g. Platform Team") || true
-            c=$(gum input --header "Classification (footer), blank to omit:"       --placeholder "e.g. INTERNAL") || true
-            v=$(gum input --header "Version, blank to omit:"                        --placeholder "e.g. v1.0") || true
-            l=$(gum input --header "Header logo path, blank = none:"                --placeholder "/path/to/logo.png") || true
+            a=$(_clean_input "$(gum input --header "Author (header 'Created By'), blank to omit:" --placeholder "e.g. Platform Team" || true)")
+            c=$(_clean_input "$(gum input --header "Classification (footer), blank to omit:"       --placeholder "e.g. INTERNAL" || true)")
+            v=$(_clean_input "$(gum input --header "Version, blank to omit:"                        --placeholder "e.g. v1.0" || true)")
+            l=$(prompt_path "Header logo path, blank = none:" "/path/to/logo.png")
             [[ -n "$a" ]] && FLAGS+=(--author "$a")
             [[ -n "$c" ]] && FLAGS+=(--classification "$c")
             [[ -n "$v" ]] && FLAGS+=(--version "$v")
@@ -288,7 +315,11 @@ main() {
     resolve_engine
     gather_options
 
-    info "Running: holo-convert.sh ${FLAGS[*]} ${FILES[*]}"
+    # Shell-quote every argument so the preview is copy-paste safe: unquoted
+    # ${FLAGS[*]} would render multi-word values (e.g. --author Platform
+    # Infrastructure Team) as bare words that bleed across flags when reused.
+    local preview; printf -v preview ' %q' holo-convert.sh "${FLAGS[@]}" "${FILES[@]}"
+    info "Running:${preview}"
     # Guardrails only: if a dependency is missing the engine errors; offer --setup.
     if ! bash "$ENGINE" "${FLAGS[@]}" "${FILES[@]}"; then
         warn "Conversion failed — a dependency may be missing."
