@@ -81,6 +81,7 @@ resolve_engine() {
 # -----------------------------------------------------------------------------
 FLAGS=()
 FILES=()
+SRC_FMT=""      # source format chosen in gather_options (md/docx)
 
 confirm_flag() {  # $1 prompt, $2 flag-if-yes, [$3 flag-if-no]
     if gum confirm "$1"; then
@@ -178,6 +179,7 @@ gather_options() {
 
     local src to
     src=$(gum choose "md" "docx" --header "Source format:") || exit 0
+    SRC_FMT="$src"
     FLAGS+=(--from "$src")
 
     # Output format depends on the source.
@@ -311,9 +313,62 @@ gather_pdf_options() {
 }
 
 # -----------------------------------------------------------------------------
+# Interactive broken-internal-link check. For each selected md file, ask the
+# engine's checker for broken anchor links (JSON) and walk them one by one:
+# accept the suggested fix (written straight into the source) or skip. Opt-in —
+# offered only for md sources, and only when python3 + the checker are present.
+# -----------------------------------------------------------------------------
+interactive_link_check() {
+    [[ "$SRC_FMT" == md ]] || return 0
+    command -v python3 &>/dev/null || return 0
+    local check="$(cd "$(dirname "$ENGINE")" && pwd)/.fcc/docx/check_links.py"
+    [[ -f "$check" ]] || return 0
+
+    gum confirm "Check internal links for broken anchors before converting?" || return 0
+
+    local f line anchor sug conf heading total=0 fixed=0
+    for f in "${FILES[@]}"; do
+        # TSV: anchor <tab> suggestion <tab> confident(1/0) <tab> heading
+        local tsv
+        tsv=$(python3 "$check" --json "$f" 2>/dev/null | python3 -c '
+import json,sys
+try: data=json.load(sys.stdin)
+except Exception: data=[]
+for x in data:
+    print("\t".join([x["anchor"], x.get("suggestion") or "", "1" if x.get("confident") else "0", x.get("heading") or ""]))
+' 2>/dev/null || true)
+        [[ -z "$tsv" ]] && continue
+        info "Broken internal links in ${f}:"
+        while IFS=$'\t' read -r anchor sug conf heading; do
+            [[ -z "$anchor" ]] && continue
+            total=$(( total + 1 ))
+            if [[ -z "$sug" ]]; then
+                warn "  '#${anchor}' — no similar heading found; fix it manually."
+                continue
+            fi
+            local tag=""; [[ "$conf" == 0 ]] && tag="  (unsure — verify!)"
+            gum style --foreground 220 "  '#${anchor}' → suggested '#${sug}'  (# ${heading})${tag}"
+            if gum confirm "  Accept fix for '#${anchor}'?"; then
+                if python3 "$check" --apply "$anchor" "$sug" "$f" 2>/dev/null; then
+                    success "  fixed '#${anchor}' → '#${sug}' in ${f}"
+                    fixed=$(( fixed + 1 ))
+                else
+                    warn "  could not rewrite '#${anchor}' (link syntax not found)."
+                fi
+            else
+                info "  skipped '#${anchor}'."
+            fi
+        done <<< "$tsv"
+    done
+    (( total == 0 )) && info "No broken internal links found." || \
+        info "Link check done — ${fixed}/${total} fixed."
+}
+
+# -----------------------------------------------------------------------------
 main() {
     resolve_engine
     gather_options
+    interactive_link_check
 
     # Shell-quote every argument so the preview is copy-paste safe: unquoted
     # ${FLAGS[*]} would render multi-word values (e.g. --author Platform
