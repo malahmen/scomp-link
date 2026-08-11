@@ -62,11 +62,40 @@ Convert first asks **how** to pick the source:
 - **Output directory** - default `./marker-output`
 - **Force OCR** (`--force_ocr`) - re-OCR the whole document (fixes bad embedded text)
 - **Use an LLM** (`--use_llm`) - higher quality; pick a service:
-  Google Gemini, OpenAI, Anthropic Claude, or Ollama (local). API keys are read from
-  the environment when present (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`)
-  or prompted for (hidden input).
+  Google Gemini, OpenAI / OpenAI-compatible, Anthropic Claude, or Ollama (local). API keys
+  are read from the environment when present (`GEMINI_API_KEY`, `OPENAI_API_KEY`,
+  `ANTHROPIC_API_KEY`) or prompted for (hidden input). The **OpenAI / OpenAI-compatible**
+  option also asks for a **base URL**, so it can target a local/LAN server (see below).
 - **Page range** (`--page_range`, single-file only) - e.g. `0,5-10,20`
 - **Workers** (`--workers`, batch only) - parallel processes (~3.5 GB RAM/VRAM each)
+
+## Local / LAN LLM
+
+You can point `--use_llm` at a model on your own machine or LAN instead of a cloud
+API, keeping documents on your network and removing the WAN round-trip. Two routes:
+
+- **Ollama** - pick **Ollama (local)**, set the base URL (default
+  `http://localhost:11434`, or a LAN host) and a model.
+- **OpenAI-compatible servers** (LM Studio, LocalAI, vLLM, llama.cpp `server`) - pick
+  **OpenAI / OpenAI-compatible**, set the **base URL** to the server (e.g. LM Studio's
+  `http://192.168.1.50:1234/v1`), name the loaded model, and pass any non-empty API key
+  (local servers usually ignore it).
+
+Things to keep in mind:
+
+- **Must be a vision model** - marker sends image crops of blocks, so the model has to
+  accept images (e.g. `llama3.2-vision`, `qwen2-vl`, `minicpm-v`, `llava`, or a vision
+  build loaded in LM Studio). A text-only model will fail or return garbage.
+- **Speed is GPU-bound, not network-bound** - on a LAN the transport latency is
+  negligible; what costs time is the model's inference per block. A strong GPU on the
+  LLM host keeps the overhead small; a weak GPU or CPU can be *slower* than a cloud API.
+- **Quality varies** - local open models generally handle complex tables/forms less well
+  than frontier cloud models. Worth a side-by-side on one hard page before committing.
+- **Give the LLM its own host** - running it on the same machine as marker makes the two
+  contend for the same GPU. A separate LAN GPU box lets marker's layout/OCR models and
+  the LLM each run unimpeded. If you later scale the [service](#deploy-as-a-service-for-rag-ingestion)
+  to many workers against one LLM host, that host is the throughput ceiling (inference
+  serializes) - scale it too, not just the workers.
 
 ## Deploy as a service (for RAG ingestion)
 

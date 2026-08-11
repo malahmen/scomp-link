@@ -302,7 +302,7 @@ build_llm_args() {
     local svc
     svc=$(gum choose \
         "Google Gemini (default)" \
-        "OpenAI" \
+        "OpenAI / OpenAI-compatible" \
         "Anthropic Claude" \
         "Ollama (local)" \
         --header "Select the LLM service for --use_llm:") || true
@@ -327,11 +327,17 @@ build_llm_args() {
             local k; k=$(_key GEMINI_API_KEY "Gemini API key")
             [[ -n "$k" ]] && LLM_ARGS+=(--gemini_api_key "$k")
             ;;
-        "OpenAI")
+        "OpenAI / OpenAI-compatible")
+            # OpenAIService talks to any OpenAI-compatible endpoint, so this also
+            # covers a local/LAN server (LM Studio, LocalAI, vLLM, llama.cpp) —
+            # point the base URL at it and name the loaded vision model.
             LLM_ARGS+=(--llm_service marker.services.openai.OpenAIService)
-            local k; k=$(_key OPENAI_API_KEY "OpenAI API key")
+            local b; b=$(gum input \
+                --header "Base URL (blank = OpenAI cloud; local e.g. http://192.168.1.50:1234/v1):") || true
+            [[ -n "$b" ]] && LLM_ARGS+=(--openai_base_url "$b")
+            local k; k=$(_key OPENAI_API_KEY "API key (a local server usually ignores this — any non-empty value)")
             [[ -n "$k" ]] && LLM_ARGS+=(--openai_api_key "$k")
-            local m; m=$(gum input --header "OpenAI model (blank = marker default):") || true
+            local m; m=$(gum input --header "Model name (blank = marker default; for a local server: the loaded vision model's id):") || true
             [[ -n "$m" ]] && LLM_ARGS+=(--openai_model "$m")
             ;;
         "Anthropic Claude")
