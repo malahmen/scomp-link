@@ -3,7 +3,7 @@
 # marker.sh
 # Interactive TUI to manage datalab-to/marker — convert documents
 # (PDF/DOCX/PPTX/XLSX/HTML/EPUB/images) INTO Markdown / JSON / HTML / chunks,
-# ready for later LLM ingestion. The inverse of file_conversion.sh.
+# ready for later LLM ingestion. The inverse of holo-convert (Markdown -> PDF/DOCX).
 #
 # Called by init.sh — expects gum to already be available.
 # marker itself is installed in an isolated pipx environment (managed here),
