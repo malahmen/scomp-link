@@ -230,6 +230,85 @@ run_foreground() {
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 }
 
+# -----------------------------------------------------------------------------
+# Surya OCR backend (llama.cpp / vLLM)
+#
+# marker's OCR/recognition engine (surya) no longer runs on plain PyTorch — it
+# serves its recognition model through an inference backend, chosen by hardware:
+# vLLM on an NVIDIA GPU, else llama.cpp (macOS / CPU), which needs the
+# `llama-server` binary. Without it, conversions crash the moment OCR runs.
+# SURYA_INFERENCE_BACKEND overrides the auto-choice; LLAMA_CPP_BINARY points at
+# a llama-server outside PATH.
+# -----------------------------------------------------------------------------
+
+surya_backend() {
+    if [[ -n "${SURYA_INFERENCE_BACKEND:-}" ]]; then
+        echo "${SURYA_INFERENCE_BACKEND}"; return
+    fi
+    if [[ -e /dev/nvidia0 ]] || command -v nvidia-smi &>/dev/null; then
+        echo "vllm"
+    else
+        echo "llamacpp"
+    fi
+}
+
+llama_server_present() {
+    command -v llama-server &>/dev/null && return 0
+    [[ -n "${LLAMA_CPP_BINARY:-}" && -x "${LLAMA_CPP_BINARY}" ]]
+}
+
+# Install llama.cpp (provides llama-server). Returns non-zero if it can't.
+install_llama_server() {
+    if llama_server_present; then info "llama-server already available."; return 0; fi
+    case "$(os_family)" in
+        macos)
+            command -v brew &>/dev/null || {
+                warn "Homebrew not found — install it, then 'brew install llama.cpp' (or set LLAMA_CPP_BINARY)."
+                return 1
+            }
+            info "Installing llama.cpp via Homebrew (provides llama-server)..."
+            run_foreground brew install llama.cpp
+            ;;
+        linux)
+            if command -v brew &>/dev/null; then
+                info "Installing llama.cpp via Homebrew..."
+                run_foreground brew install llama.cpp
+            else
+                warn "No automatic installer for this Linux host. Either:"
+                warn "  • download a llama-server build: https://github.com/ggml-org/llama.cpp/releases"
+                warn "    then: export LLAMA_CPP_BINARY=/path/to/llama-server"
+                warn "  • or install Homebrew and 'brew install llama.cpp'"
+                return 1
+            fi
+            ;;
+        *)
+            warn "Unsupported OS for automatic install — set LLAMA_CPP_BINARY to a llama-server path."
+            return 1
+            ;;
+    esac
+    if llama_server_present; then
+        success "llama-server is available."
+    else
+        warn "llama-server still not found after install — check the output above."
+        return 1
+    fi
+}
+
+# Ensure the OCR backend is runnable; offer to install llama-server when the
+# llamacpp backend is selected and the binary is missing. Non-fatal.
+ensure_surya_backend() {
+    [[ "$(surya_backend)" == "llamacpp" ]] || return 0   # vLLM path: nothing here
+    llama_server_present && return 0
+    warn "marker's OCR engine (surya) uses the 'llamacpp' backend here, which needs 'llama-server' — not found."
+    if gum confirm "Install llama.cpp now (provides llama-server)?"; then
+        install_llama_server || return 1
+    else
+        warn "Skipping. OCR-dependent conversions will fail until it's installed"
+        warn "  (brew install llama.cpp, or set LLAMA_CPP_BINARY)."
+        return 1
+    fi
+}
+
 action_setup() {
     header "Setup / Install marker"
 
@@ -253,6 +332,7 @@ then re-run setup."
         $PIPX upgrade "$MARKER_PKG" || error_exit "Upgrade failed."
         ensure_marker_deps
         success "marker upgraded to $(marker_version)."
+        ensure_surya_backend || true   # newer surya needs llama-server (mac/CPU)
         return
     fi
 
@@ -272,6 +352,7 @@ then re-run setup."
             warn "marker CLIs aren't on your PATH yet. Run 'pipx ensurepath' and restart your shell."
             warn "This session will still work — it resolves them from the pipx venv directly."
         fi
+        ensure_surya_backend || true   # OCR engine needs llama-server (mac/CPU)
     else
         error_exit "Install reported success but marker_single wasn't found."
     fi
@@ -480,6 +561,7 @@ run_batch() {
 
 action_convert() {
     require_marker || return
+    ensure_surya_backend || true   # OCR needs llama-server on mac/CPU
     header "Convert documents"
 
     # Pick HOW to choose the source: scan-and-detect, or type a path.
@@ -544,6 +626,17 @@ PY
         info "Torch device: ${device}${TORCH_DEVICE:+ (TORCH_DEVICE=$TORCH_DEVICE overrides)}"
     fi
 
+    # OCR (surya) inference backend + its runtime requirement.
+    local be; be="$(surya_backend)"
+    info "OCR backend (surya): ${be}${SURYA_INFERENCE_BACKEND:+ (SURYA_INFERENCE_BACKEND=$SURYA_INFERENCE_BACKEND)}"
+    if [[ "$be" == "llamacpp" ]]; then
+        if llama_server_present; then
+            info "llama-server: found ($(command -v llama-server 2>/dev/null || echo "$LLAMA_CPP_BINARY"))"
+        else
+            warn "llama-server: MISSING — OCR will fail. Install via Setup, or 'brew install llama.cpp'."
+        fi
+    fi
+
     # model caches
     local c
     for c in "${HOME}/.cache/datalab" "${HOME}/.cache/huggingface/hub"; do
@@ -559,6 +652,7 @@ PY
 
 action_gui() {
     require_marker || return
+    ensure_surya_backend || true   # GUI converts too — OCR needs llama-server on mac/CPU
     # marker_gui shells out to `streamlit`, which isn't part of marker-pdf[full].
     ensure_injected streamlit streamlit || { warn "streamlit unavailable — cannot launch the GUI."; return 0; }
     local bin vbin
@@ -570,6 +664,7 @@ action_gui() {
 
 action_server() {
     require_marker || return
+    ensure_surya_backend || true   # server converts too — OCR needs llama-server on mac/CPU
     # marker_server needs fastapi + uvicorn + python-multipart (not in [full]).
     ensure_injected "fastapi, uvicorn, multipart" fastapi uvicorn python-multipart \
         || { warn "server deps unavailable — cannot launch the API server."; return 0; }
