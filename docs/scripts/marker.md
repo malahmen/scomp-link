@@ -2,7 +2,7 @@
 
 `marker/marker.sh`
 
-Manage [datalab-to/marker](https://github.com/datalab-to/marker) and convert documents **into** Markdown, JSON, HTML, or chunks, the inverse of [`file_conversion.sh`](file_conversion.md). \
+Manage [datalab-to/marker](https://github.com/datalab-to/marker) and convert documents **into** Markdown, JSON, HTML, or chunks, the inverse of [`holo-convert`](holo-convert.md). \
 The output is intended as a first step toward LLM ingestion (chunking/embedding is **not** done here).
 
 **Supported inputs:** PDF, DOCX, PPTX, XLSX, HTML, EPUB, and images (PNG/JPG/TIFF/…).
