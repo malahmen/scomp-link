@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
+# export-setup: pipx
 # -----------------------------------------------------------------------------
 # marker.sh
 # Interactive TUI to manage datalab-to/marker — convert documents
@@ -17,9 +19,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-COMMON_DIR="${SCRIPT_DIR}/../_common"
-if [[ ! -d "$COMMON_DIR" ]]; then
-    printf "\033[0;31m[ERROR] _common directory not found at %s\033[0m\n" "$COMMON_DIR" >&2
+# Shared helpers: ../_common in the repo, or alongside this script when exported.
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
+if [[ ! -f "${COMMON_DIR}/ui.sh" ]]; then
+    printf "\033[0;31m[ERROR] ui.sh not found in %s\033[0m\n" "$COMMON_DIR" >&2
     exit 1
 fi
 # shellcheck source=../_common/ui.sh
