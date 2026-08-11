@@ -28,6 +28,14 @@ marker pulls in PyTorch and downloads several GB of models on first run, so it i
   **fastapi/uvicorn/python-multipart** (API server). The GUI/server also launch with the
   venv's bin on `PATH` so their `streamlit`/`uvicorn` subprocesses resolve.
 - Language is auto-detected by marker's OCR, so there's no language option.
+- **OCR backend (`llama-server`)**: marker's OCR engine (surya) no longer runs on plain
+  PyTorch — it serves its recognition model through an inference backend chosen by
+  hardware: **vLLM** on an NVIDIA GPU, else **llama.cpp** (macOS / CPU), which needs the
+  `llama-server` binary. Without it, conversions crash the moment OCR runs. **Setup**
+  offers to `brew install llama.cpp` (Linux: Homebrew or a downloaded build +
+  `LLAMA_CPP_BINARY`), **Status** reports the backend and whether `llama-server` is found,
+  and every convert path checks it first. Override the choice with
+  `SURYA_INFERENCE_BACKEND`, or point at an out-of-`PATH` binary with `LLAMA_CPP_BINARY`.
 
 ## Menu
 
@@ -38,8 +46,8 @@ The top level has three entries:
 
   | Action                    | What it does                                                                                 |
   | ------------------------- | -------------------------------------------------------------------------------------------- |
-  | Setup / install / upgrade | Check Python, install pipx if needed, install/upgrade marker                                 |
-  | Status                    | Version, CLIs-on-`PATH`, Torch device (CPU/MPS/CUDA), model-cache size, optional cache clear |
+  | Setup / install / upgrade | Check Python, install pipx if needed, install/upgrade marker, install `llama-server` (OCR backend) |
+  | Status                    | Version, CLIs-on-`PATH`, Torch device (CPU/MPS/CUDA), OCR backend + `llama-server`, model-cache size, optional cache clear |
   | Launch GUI (Streamlit)    | Runs `marker_gui` for interactive testing                                                    |
   | Launch API server         | Runs `marker_server` (FastAPI), single local process                                         |
   | Uninstall                 | Removes marker's pipx env (model caches kept)                                                |
