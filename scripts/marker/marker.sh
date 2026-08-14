@@ -39,7 +39,6 @@ source "${COMMON_DIR}/ui.sh"
 MARKER_PKG="marker-pdf"          # the pip package name
 MARKER_SPEC="marker-pdf[full]"   # [full] = non-PDF inputs (docx/pptx/xlsx/epub/html)
 DEFAULT_OUTPUT_DIR="./marker-output"
-DEFAULT_DEPTH=3
 # marker + PyTorch support Python 3.10–3.13 (NOT 3.14 yet). find_marker_python
 # picks a working one; the system default python3 may be newer/unusable.
 
@@ -472,10 +471,16 @@ select_common_options() {
     # --languages flag in current versions, so we don't offer one.
 }
 
-# Choose a source by scanning the current folder tree. Echoes the selected file
-# path on stdout; returns 1 (with a message) if nothing is found or cancelled.
-detect_source_file() {
-    info "Scanning for supported files (depth ${DEFAULT_DEPTH})..." >&2
+# Ask for a folder, scan it recursively for supported files, and let the user
+# multi-select. Echoes the chosen paths (newline-separated) on stdout; returns 1
+# (with a message) on no-folder / nothing-found / cancelled.
+pick_files_from_folder() {
+    local folder
+    folder=$(gum input --value "." --header "Folder to scan for documents (searches subfolders too):") || true
+    folder="${folder:-.}"
+    folder="${folder/#\~/$HOME}"
+    [[ -d "$folder" ]] || { warn "Not a folder: ${folder}" >&2; return 1; }
+
     local find_args=() ext
     for ext in "${INPUT_EXTS[@]}"; do
         find_args+=(-iname "*.${ext}" -o)
@@ -483,49 +488,72 @@ detect_source_file() {
     unset 'find_args[${#find_args[@]}-1]'   # drop trailing -o
 
     local found
-    found=$(find . -maxdepth "$DEFAULT_DEPTH" -type f \( "${find_args[@]}" \) \
+    found=$(find "$folder" -type f \( "${find_args[@]}" \) \
         ! -path "*/node_modules/*" ! -path "*/.git/*" \
-        ! -path "*/${DEFAULT_OUTPUT_DIR#./}/*" ! -path "*/marker-output/*" \
-        | sed 's|^\./||' | sort)
+        ! -path "*/.fcc/*" ! -path "*/marker-output/*" \
+        2>/dev/null | sed 's|^\./||' | sort || true)
+    [[ -z "$found" ]] && { warn "No supported files found under ${folder}." >&2; return 1; }
 
-    [[ -z "$found" ]] && { warn "No supported files found within depth ${DEFAULT_DEPTH}."; return 1; }
-
-    local count height file
-    count=$(echo "$found" | wc -l | tr -d ' ')
+    local count height picked
+    count=$(printf '%s\n' "$found" | wc -l | tr -d ' ')
     height=$(( count < 15 ? count + 2 : 17 ))
-    file=$(echo "$found" | gum choose --height "$height" \
-        --header "Select a file to convert:") || true
-    [[ -z "$file" ]] && { gum style --faint "Cancelled." >&2; return 1; }
-    printf '%s' "$file"
+    picked=$(printf '%s\n' "$found" | gum choose --no-limit --height "$height" \
+        --header "Select file(s) — SPACE to select, ENTER to confirm (${count} found):") || true
+    [[ -z "$picked" ]] && { gum style --faint "Cancelled." >&2; return 1; }
+    printf '%s' "$picked"
 }
 
-# Ask the user to type a path to a file OR folder. Echoes the (existing) path on
-# stdout; returns 1 (with a message) if empty or not found.
-prompt_source_path() {
-    local p
-    p=$(gum input --header "Enter a path to a file or folder:" \
-        --placeholder "/path/to/file.pdf   or   /path/to/folder") || true
-    [[ -z "$p" ]] && { gum style --faint "Cancelled." >&2; return 1; }
-    p="${p/#\~/$HOME}"   # expand a leading ~
-    [[ -e "$p" ]] || { warn "Path not found: ${p}"; return 1; }
-    printf '%s' "$p"
+# Clamp a page-range string to a PDF's real pages so out-of-range values don't
+# trip marker's in-bounds assertion. Echoes a comma list of valid 0-based pages;
+# empty output = no valid pages (caller converts the whole document). If the page
+# count can't be determined, the raw range is echoed unchanged.
+clamp_page_range() {
+    local file="$1" rng="$2" py
+    py=$(marker_python) || { printf '%s' "$rng"; return 0; }
+    "$py" - "$file" "$rng" <<'PY'
+import sys
+path, rng = sys.argv[1], sys.argv[2]
+try:
+    from marker.util import parse_range_str
+    import pypdfium2 as pdfium
+    n = len(pdfium.PdfDocument(path))
+    pages = sorted({p for p in parse_range_str(rng) if 0 <= p < n})
+except Exception:
+    print(rng); sys.exit(0)          # can't introspect → let marker validate
+if pages:
+    print(",".join(map(str, pages)))  # else: print nothing → whole document
+PY
 }
 
-# Convert a single file (marker_single); prompts for an optional page range.
-run_single() {
+# Optional page range for a SINGLE pdf (default: whole document). Populates
+# PAGE_ARGS[]. Out-of-range values are dropped rather than failing the run.
+PAGE_ARGS=()
+maybe_page_range() {
+    PAGE_ARGS=()
     local file="$1"
-    local page_range
-    page_range=$(gum input --header "Page range (blank = all), e.g. 0,5-10,20:") || true
-    [[ -n "$page_range" ]] && EXTRA_ARGS+=(--page_range "$page_range")
+    [[ "${file,,}" == *.pdf ]] || return 0            # ranges only meaningful for PDFs
+    gum confirm "Convert the whole document?" && return 0
+    local raw; raw=$(gum input --header "Pages to convert (0-based), e.g. 0,5-10,20:") || true
+    [[ -z "$raw" ]] && return 0                        # blank → whole document
+    local clamped; clamped=$(clamp_page_range "$file" "$raw")
+    if [[ -z "$clamped" ]]; then
+        warn "None of those pages exist in this document — converting the whole file."
+        return 0
+    fi
+    [[ "$clamped" != "$raw" ]] && info "Range clamped to existing pages: ${clamped}"
+    PAGE_ARGS=(--page_range "$clamped")
+}
 
+# Convert ONE file with marker_single (honours EXTRA_ARGS + PAGE_ARGS).
+run_one() {
+    local file="$1"
     local bin; bin=$(marker_cli marker_single) || { warn "marker_single not found — run Setup first."; return 0; }
     mkdir -p "$OUTPUT_DIR"
-
     header "Converting"
     info "${file} → ${OUTPUT_FORMAT} in ${OUTPUT_DIR}/"
     # Run directly (no spinner): marker prints its own progress and may download
     # models on first run.
-    if "$bin" "$file" --output_format "$OUTPUT_FORMAT" --output_dir "$OUTPUT_DIR" "${EXTRA_ARGS[@]}"; then
+    if "$bin" "$file" --output_format "$OUTPUT_FORMAT" --output_dir "$OUTPUT_DIR" "${EXTRA_ARGS[@]}" "${PAGE_ARGS[@]}"; then
         success "Done → ${OUTPUT_DIR}/"
         open_path "$OUTPUT_DIR"
     else
@@ -533,30 +561,46 @@ run_single() {
     fi
 }
 
-# Batch-convert every supported file in a folder (marker); prompts for workers.
-run_batch() {
-    local in_dir="$1"
-    local workers
-    workers=$(gum input --value "4" --header "Parallel workers (each ~3.5GB RAM/VRAM):") || true
+# Convert several selected files in one batch run. Marker's batch CLI lists a
+# single folder (os.listdir, non-recursive, follows symlinks), so we stage the
+# selection as symlinks in a flat temp dir — models load once for the whole set.
+# Whole documents only (no page range across a mixed selection).
+run_selected() {
+    ensure_marker_deps   # batch CLI needs psutil (not pulled by marker-pdf[full])
+    local bin; bin=$(marker_cli marker) || { warn "marker (batch CLI) not found — run Setup first."; return 0; }
+
+    local workers; workers=$(gum input --value "4" --header "Parallel workers (each ~3.5GB RAM/VRAM):") || true
     workers="${workers:-4}"
+    local wargs=()
     if [[ "$workers" =~ ^[0-9]+$ ]] && (( workers >= 1 )); then
-        EXTRA_ARGS+=(--workers "$workers")
+        wargs=(--workers "$workers")
     else
         warn "Invalid worker count '${workers}', letting marker decide."
     fi
 
-    ensure_marker_deps   # batch CLI needs psutil (not pulled by marker-pdf[full])
-    local bin; bin=$(marker_cli marker) || { warn "marker (batch CLI) not found — run Setup first."; return 0; }
-    mkdir -p "$OUTPUT_DIR"
+    local staging
+    staging=$(mktemp -d "${TMPDIR:-/tmp}/marker-sel.XXXXXX") || { warn "Could not create a staging dir."; return 0; }
+    local -A used; local f abs base name i
+    for f in "$@"; do
+        abs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+        base=$(basename "$f"); name="$base"; i=1
+        while [[ -n "${used[$name]:-}" ]]; do          # keep names unique across subfolders
+            name="${base%.*}-${i}.${base##*.}"; i=$((i + 1))
+        done
+        used[$name]=1
+        ln -s "$abs" "${staging}/${name}"
+    done
 
+    mkdir -p "$OUTPUT_DIR"
     header "Converting"
-    info "${in_dir}/ → ${OUTPUT_FORMAT} in ${OUTPUT_DIR}/"
-    if "$bin" "$in_dir" --output_format "$OUTPUT_FORMAT" --output_dir "$OUTPUT_DIR" "${EXTRA_ARGS[@]}"; then
+    info "${#used[@]} file(s) → ${OUTPUT_FORMAT} in ${OUTPUT_DIR}/"
+    if "$bin" "$staging" --output_format "$OUTPUT_FORMAT" --output_dir "$OUTPUT_DIR" "${wargs[@]}" "${EXTRA_ARGS[@]}"; then
         success "Done → ${OUTPUT_DIR}/"
         open_path "$OUTPUT_DIR"
     else
         warn "Batch conversion reported errors."
     fi
+    rm -rf "$staging"
 }
 
 action_convert() {
@@ -564,28 +608,20 @@ action_convert() {
     ensure_surya_backend || true   # OCR needs llama-server on mac/CPU
     header "Convert documents"
 
-    # Pick HOW to choose the source: scan-and-detect, or type a path.
-    local method
-    method=$(gum choose \
-        "Detect files (scan this folder)" \
-        "Enter a path (file or folder)" \
-        --header "How do you want to choose the source?") || true
-
-    local src=""
-    case "$method" in
-        "Detect files (scan this folder)") src=$(detect_source_file) || return 0 ;;
-        "Enter a path (file or folder)")   src=$(prompt_source_path) || return 0 ;;
-        *) gum style --faint "Cancelled."; return 0 ;;
-    esac
-    [[ -z "$src" ]] && return 0
+    # Pick a folder, scan it (+ subfolders), multi-select the files to convert.
+    local picked
+    picked=$(pick_files_from_folder) || return 0
+    local -a sel
+    mapfile -t sel <<< "$picked"
+    (( ${#sel[@]} )) || return 0
 
     select_common_options || return 0
 
-    # A folder → batch; anything else → single file.
-    if [[ -d "$src" ]]; then
-        run_batch "$src"
+    if (( ${#sel[@]} == 1 )); then
+        maybe_page_range "${sel[0]}"     # opt-in range (whole doc by default)
+        run_one "${sel[0]}"
     else
-        run_single "$src"
+        run_selected "${sel[@]}"         # staged batch, whole documents
     fi
 }
 
