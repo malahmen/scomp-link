@@ -41,7 +41,7 @@ marker pulls in PyTorch and downloads several GB of models on first run, so it i
 
 The top level has three entries:
 
-- **Convert documents** - scan a folder (recursively), multi-select files, pick output format, output dir, options (local pipx).
+- **Convert documents** - single file or batch folder -> pick output format, output dir, options (local pipx).
 - **Local tool** - submenu for the local pipx install:
 
   | Action                    | What it does                                                                                 |
@@ -56,13 +56,13 @@ The top level has three entries:
 
 ## Choosing the source
 
-Convert asks for a **folder** (default the current directory, a leading `~` is expanded),
-scans it **and every subfolder** for supported files, and shows them for **multi-select**
-(SPACE to select, ENTER to confirm). Then:
+Convert first asks **how** to pick the source:
 
-- **One file selected** -> single-file conversion (`marker_single`).
-- **Several selected** -> they're staged and converted in **one batch run**, so the models
-  load once for the whole set (much faster than converting them one at a time).
+- **Detect files (scan this folder)** - scans the current folder tree (depth 3) for
+  supported files and lets you pick one -> single-file conversion.
+- **Enter a path (file or folder)** - type a path (a leading `~` is expanded). If it's a
+  **file** -> single-file conversion; if it's a **folder** -> batch conversion of every
+  supported file inside.
 
 ## Conversion options
 
@@ -74,13 +74,8 @@ scans it **and every subfolder** for supported files, and shows them for **multi
   are read from the environment when present (`GEMINI_API_KEY`, `OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`) or prompted for (hidden input). The **OpenAI / OpenAI-compatible**
   option also asks for a **base URL**, so it can target a local/LAN server (see below).
-- **Page range** (`--page_range`) - the default is the **whole document**; you're only
-  asked when a **single PDF** is selected, and only if you decline "convert the whole
-  document". Values are **0-based** (e.g. `0,5-10,20`) and **clamped to the pages that
-  exist** — asking for `2-10` of a 5-page file just converts the pages it has instead of
-  failing. Batches (multiple files) always convert whole documents.
-- **Workers** (`--workers`) - for a multi-file selection: parallel processes
-  (~3.5 GB RAM/VRAM each).
+- **Page range** (`--page_range`, single-file only) - e.g. `0,5-10,20`
+- **Workers** (`--workers`, batch only) - parallel processes (~3.5 GB RAM/VRAM each)
 
 ## Local / LAN LLM
 
