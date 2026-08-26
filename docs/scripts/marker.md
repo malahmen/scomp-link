@@ -146,9 +146,32 @@ Status · Logs · Scale workers · Ingest a folder (batch) · Tear down.
 - The `marker.sh` TUI is a management convenience; production RAG would call the API /
   Python worker directly.
 
+## Model downloads (Hugging Face) & offline use
+
+marker runs inference **locally**, but the model weights are **not bundled** — on
+first use they download from the **Hugging Face Hub** (the surya/marker models plus
+the `surya-2` GGUFs for the llama.cpp OCR backend) into `~/.cache/huggingface`, with
+a little metadata under `~/.cache/datalab`. So a **connected first run is required**;
+after that it runs from cache.
+
+- **No TTL.** The caches never expire — they're kept and reused indefinitely. A
+  re-download only happens if the upstream model **revision** changes.
+- **The recurring `unauthenticated requests to the HF Hub` warning** isn't a
+  re-download: `huggingface_hub` pings the Hub on every load to check the cached
+  files are current (an ETag check). Set **`HF_TOKEN`** (free HF account → read token)
+  to authenticate that check — silences the warning and raises rate limits.
+- **Offline mode (automatic once cached).** When the model cache is populated, the
+  convert paths set **`HF_HUB_OFFLINE=1`** for you: `huggingface_hub` uses the cache
+  exclusively and skips the per-run Hub check — **no network round-trip, no warning,
+  faster startup.** Override with **`MARKER_HF_ONLINE=1`** to force update checks; an
+  explicit `HF_HUB_OFFLINE` in your environment always wins. **Status** shows the mode
+  the next conversion will use.
+- **Air-gapped**: pre-populate `~/.cache/huggingface` (and `~/.cache/datalab`) on a
+  connected machine, copy them over, and marker runs fully offline.
+
 ## Notes
 
-- First conversion downloads models; subsequent runs are faster.
+- First conversion downloads models; subsequent runs are faster and offline (above).
 - Set `TORCH_DEVICE` (e.g. `cuda`, `mps`, `cpu`) to override the detected device.
 - Model caches live under `~/.cache/datalab` (and `~/.cache/huggingface`); the **Status**
   action reports their size and can clear the datalab cache.
