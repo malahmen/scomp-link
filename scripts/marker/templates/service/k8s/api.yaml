@@ -1,0 +1,53 @@
+# Enqueue/status HTTP API (light, CPU-only). Reach it with:
+#   kubectl -n marker port-forward svc/marker-api 8000:8000
+#   curl -X POST localhost:8000/jobs -H 'content-type: application/json' \
+#        -d '{"path":"/data/input/doc.pdf","output_format":"chunks"}'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marker-api
+  namespace: marker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: marker-api }
+  template:
+    metadata:
+      labels: { app: marker-api }
+    spec:
+      containers:
+        - name: api
+          image: marker-service:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          env:
+            - { name: REDIS_URL, value: "redis://redis:6379/0" }
+            - { name: OUTPUT_DIR, value: "/data/output" }
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - { name: input, mountPath: /data/input }
+            - { name: output, mountPath: /data/output }
+      volumes:
+        - name: input
+          persistentVolumeClaim: { claimName: marker-input }
+        - name: output
+          persistentVolumeClaim: { claimName: marker-output }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marker-api
+  namespace: marker
+spec:
+  selector: { app: marker-api }
+  ports:
+    - port: 8000
+      targetPort: 8000
