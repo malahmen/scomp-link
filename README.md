@@ -28,68 +28,69 @@ Scomp-Link comes with several ready-to-use scripts organized by category. Each l
 
 ### Infrastructure
 
-| Script                                          | Description                                                                 |
-| ------------------------------------------------ | --------------------------------------------------------------------------- |
-| [`kind.sh`](docs/scripts/kind.md)               | Create and manage Kind Kubernetes clusters                                  |
-| [`karpenter.sh`](docs/scripts/karpenter.md)     | Install and manage Karpenter on any K8s cluster                             |
-| [`argo.sh`](docs/scripts/argo.md)               | Install and manage Argo Workflows & Argo CD                                 |
-| [`akinn_tui.sh`](docs/scripts/akinn.md)         | Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn) |
-| [`docker.sh`](docs/scripts/docker.md)           | Install, uninstall, and check status of Docker itself                       |
-| [`k9s.sh`](docs/scripts/k9s.md)                 | Install and launch k9s, terminal UI for Kubernetes                         |
-| [`lazydocker.sh`](docs/scripts/lazydocker.md)   | Install and launch lazydocker, terminal UI for Docker                      |
-| [`lazygit.sh`](docs/scripts/lazygit.md)         | Install and launch lazygit, terminal UI for git                            |
+| Script                                        | Description                                                                 |
+| --------------------------------------------- | --------------------------------------------------------------------------- |
+| [`kind.sh`](docs/scripts/kind.md)             | Create and manage Kind Kubernetes clusters                                  |
+| [`karpenter.sh`](docs/scripts/karpenter.md)   | Install and manage Karpenter on any K8s cluster                             |
+| [`argo.sh`](docs/scripts/argo.md)             | Install and manage Argo Workflows & Argo CD                                 |
+| [`akinn_tui.sh`](docs/scripts/akinn.md)       | Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn) |
+| [`docker.sh`](docs/scripts/docker.md)         | Install, uninstall, and check status of Docker itself                       |
+| [`k9s.sh`](docs/scripts/k9s.md)               | Install and launch k9s, terminal UI for Kubernetes                          |
+| [`lazydocker.sh`](docs/scripts/lazydocker.md) | Install and launch lazydocker, terminal UI for Docker                       |
+| [`lazygit.sh`](docs/scripts/lazygit.md)       | Install and launch lazygit, terminal UI for git                             |
 
 ### Databases
 
 All database scripts follow the same pattern: Docker or K8s target, multiple named instances (namespace/release prompted per session), install/status/connect/uninstall actions.
 
-| Script                                     | Targets      | Description                                    |
-| -------------------------------------------- | ------------ | ---------------------------------------------- |
-| [`postgres.sh`](docs/scripts/postgres.md)  | Docker · K8s | PostgreSQL - install, connect, manage          |
-| [`mariadb.sh`](docs/scripts/mariadb.md)    | Docker · K8s | MariaDB - install, connect, manage             |
-| [`mysql.sh`](docs/scripts/mysql.md)        | Docker · K8s | MySQL - install, connect, manage               |
-| [`mongodb.sh`](docs/scripts/mongodb.md)    | Docker · K8s | MongoDB - install, connect, manage             |
-| [`redis.sh`](docs/scripts/redis.md)        | Docker · K8s | Redis - install, connect, queue listing        |
-| [`qdrant.sh`](docs/scripts/qdrant.md)      | Docker · K8s | Qdrant vector database - install, health-check |
-| [`influxdb.sh`](docs/scripts/influxdb.md)  | Docker · K8s | InfluxDB 2.x time-series database              |
+| Script                                    | Targets      | Description                                    |
+| ----------------------------------------- | ------------ | ---------------------------------------------- |
+| [`postgres.sh`](docs/scripts/postgres.md) | Docker · K8s | PostgreSQL - install, connect, manage          |
+| [`mariadb.sh`](docs/scripts/mariadb.md)   | Docker · K8s | MariaDB - install, connect, manage             |
+| [`mysql.sh`](docs/scripts/mysql.md)       | Docker · K8s | MySQL - install, connect, manage               |
+| [`mongodb.sh`](docs/scripts/mongodb.md)   | Docker · K8s | MongoDB - install, connect, manage             |
+| [`redis.sh`](docs/scripts/redis.md)       | Docker · K8s | Redis - install, connect, queue listing        |
+| [`qdrant.sh`](docs/scripts/qdrant.md)     | Docker · K8s | Qdrant vector database - install, health-check |
+| [`influxdb.sh`](docs/scripts/influxdb.md) | Docker · K8s | InfluxDB 2.x time-series database              |
 
 ### Observability
 
-| Script                                     | Targets      | Description                                         |
+| Script                                        | Targets      | Description                                         |
 | --------------------------------------------- | ------------ | --------------------------------------------------- |
-| [`lgtm.sh`](docs/scripts/lgtm.md)          | Docker · K8s | Full LGTM stack (Loki, Grafana, Tempo, Mimir, OTel) |
-| [`prometheus.sh`](docs/scripts/prometheus.md) | K8s       | Prometheus with optional components                 |
-| [`grafana.sh`](docs/scripts/grafana.md)    | Docker · K8s | Grafana with datasource provisioning                |
-| [`dozzle.sh`](docs/scripts/dozzle.md)      | Docker · K8s | Real-time container log viewer (no Helm required)   |
+| [`lgtm.sh`](docs/scripts/lgtm.md)             | Docker · K8s | Full LGTM stack (Loki, Grafana, Tempo, Mimir, OTel) |
+| [`prometheus.sh`](docs/scripts/prometheus.md) | K8s          | Prometheus with optional components                 |
+| [`grafana.sh`](docs/scripts/grafana.md)       | Docker · K8s | Grafana with datasource provisioning                |
+| [`dozzle.sh`](docs/scripts/dozzle.md)         | Docker · K8s | Real-time container log viewer (no Helm required)   |
 
 ### Platform
 
 | Script                                | Targets      | Description               |
-| ---------------------------------------- | ------------ | ------------------------- |
+| ------------------------------------- | ------------ | ------------------------- |
 | [`harbor.sh`](docs/scripts/harbor.md) | K8s          | Harbor container registry |
 | [`n8n.sh`](docs/scripts/n8n.md)       | Docker · K8s | n8n workflow automation   |
 
 ### AI / ML
 
-| Script                                      | Description                                                                |
-| ---------------------------------------------- | --------------------------------------------------------------------------- |
-| [`lmstudio.sh`](docs/scripts/lmstudio.md)   | Install and manage LM Studio (Flatpak), headless service support included |
+| Script                                    | Description                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------- |
+| [`lmstudio.sh`](docs/scripts/lmstudio.md) | Install and manage LM Studio (Flatpak), headless service support included |
 
 ### Gaming
 
-| Script                                                                  | Targets      | Description                                                        |
-| --------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------- |
-| [`bazzite-utils.sh`](docs/scripts/bazzite-utils.md)                     | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix     |
-| [`comfyengine.sh`](docs/scripts/comfyengine.md)                         | -            | Build & install the ComfyEngine memory scanner from source          |
-| [`gameconqueror.sh`](docs/scripts/gameconqueror.md)                     | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source |
-| [`vanilla-wow-server/server.sh`](docs/scripts/vanilla-wow-server.md)    | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server |
-| [`vanilla-wow-client/client.sh`](docs/scripts/vanilla-wow-client.md)    | -         | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) |
+| Script                                                               | Targets      | Description                                                              |
+| -------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------ |
+| [`bazzite-utils.sh`](docs/scripts/bazzite-utils.md)                  | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix          |
+| [`comfyengine.sh`](docs/scripts/comfyengine.md)                      | -            | Build & install the ComfyEngine memory scanner from source               |
+| [`gameconqueror.sh`](docs/scripts/gameconqueror.md)                  | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
+| [`vanilla-wow-server/server.sh`](docs/scripts/vanilla-wow-server.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server             |
+| [`vanilla-wow-client/client.sh`](docs/scripts/vanilla-wow-client.md) | -            | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) |
 
 ### Utilities
 
-| Script                                                | Description                                     |
-| --------------------------------------------------------- | ----------------------------------------------- |
-| [`starlight_astro.sh`](docs/scripts/starlight.md)      | Create and manage Starlight documentation sites |
+| Script                                                  | Description                                                                 |
+| ------------------------------------------------------- | --------------------------------------------------------------------------- |
+| [`starlight_astro.sh`](docs/scripts/starlight.md)       | Create and manage Starlight documentation sites                             |                            |
+| [`marker/marker.sh`](docs/scripts/marker.md)            | Convert PDF/DOCX/etc -> Markdown/JSON for LLM ingestion (datalab-to/marker) |
 | [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
 | [`sshger.sh`](docs/scripts/sshger.md)                  | Manage SSH profiles in `~/.ssh/config`          |
 

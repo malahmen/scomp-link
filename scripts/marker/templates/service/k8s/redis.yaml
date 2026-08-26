@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: marker
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: marker-redis }
+  template:
+    metadata:
+      labels: { app: marker-redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "256Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: marker
+spec:
+  selector: { app: marker-redis }
+  ports:
+    - port: 6379
+      targetPort: 6379
