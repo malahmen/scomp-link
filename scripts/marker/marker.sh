@@ -309,6 +309,51 @@ ensure_surya_backend() {
     fi
 }
 
+# -----------------------------------------------------------------------------
+# Hugging Face model cache / offline mode
+#
+# marker's weights aren't bundled — they download from the HF Hub on first use
+# into ~/.cache/huggingface, then are reused forever (no TTL). huggingface_hub
+# re-checks the Hub on every load to see if the cached files are current, which
+# is both a needless round-trip once cached AND the source of the recurring
+# "unauthenticated requests to the HF Hub" warning. When the cache is already
+# populated we flip it to offline so it uses the cache exclusively.
+# -----------------------------------------------------------------------------
+
+HF_HUB_CACHE_DIR="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+
+# True when marker/surya models (datalab-to--* repos) are already cached.
+hf_models_cached() {
+    [[ -d "$HF_HUB_CACHE_DIR" ]] || return 1
+    compgen -G "${HF_HUB_CACHE_DIR}/models--datalab-to--*" >/dev/null 2>&1
+}
+
+# Report the HF mode that a conversion will use (offline/online + why).
+hf_mode() {
+    if [[ -n "${HF_HUB_OFFLINE:-}" ]]; then
+        echo "offline (HF_HUB_OFFLINE=${HF_HUB_OFFLINE} in env)"
+    elif [[ "${MARKER_HF_ONLINE:-}" == "1" ]]; then
+        echo "online (MARKER_HF_ONLINE=1 forces Hub update checks)"
+    elif hf_models_cached; then
+        echo "offline (auto — models cached)"
+    else
+        echo "online (models not cached yet — first run downloads them)"
+    fi
+}
+
+# Enable offline mode for this process (and its subprocesses) when it's safe:
+# models are cached, the user hasn't forced online, and HF_HUB_OFFLINE isn't
+# already set. Skips the per-run Hub check → no network, no warning. Call right
+# before a conversion (never during setup, where a download may be needed).
+apply_hf_offline() {
+    [[ -n "${HF_HUB_OFFLINE:-}" ]] && return 0          # user's explicit choice wins
+    [[ "${MARKER_HF_ONLINE:-}" == "1" ]] && return 0    # user forced online
+    if hf_models_cached; then
+        export HF_HUB_OFFLINE=1
+        info "HF offline mode (models cached) — skipping Hub checks; set MARKER_HF_ONLINE=1 to re-enable update checks."
+    fi
+}
+
 action_setup() {
     header "Setup / Install marker"
 
@@ -619,6 +664,7 @@ convert_selection() {
 action_convert() {
     require_marker || return
     ensure_surya_backend || true   # OCR needs llama-server on mac/CPU
+    apply_hf_offline               # skip Hub checks when models are cached
     header "Convert documents"
 
     # Two source models:
@@ -708,6 +754,17 @@ PY
         fi
     done
 
+    # Hugging Face model source / offline mode
+    if hf_models_cached; then
+        info "HF models: cached (reused indefinitely — no TTL)"
+    else
+        warn "HF models: not cached — the first conversion downloads them from the Hub."
+    fi
+    info "HF mode (next conversion): $(hf_mode)"
+    [[ -z "${HF_TOKEN:-}" ]] \
+        && info "  Tip: set HF_TOKEN for higher Hub rate limits (and no 'unauthenticated' warning) when online." \
+        || info "  HF_TOKEN: set"
+
     if [[ -d "${HOME}/.cache/datalab" ]] && gum confirm "Clear marker's model cache (~/.cache/datalab)? Models re-download on next run."; then
         rm -rf "${HOME}/.cache/datalab" && success "Cache cleared."
     fi
@@ -716,6 +773,7 @@ PY
 action_gui() {
     require_marker || return
     ensure_surya_backend || true   # GUI converts too — OCR needs llama-server on mac/CPU
+    apply_hf_offline               # skip Hub checks when models are cached
     # marker_gui shells out to `streamlit`, which isn't part of marker-pdf[full].
     ensure_injected streamlit streamlit || { warn "streamlit unavailable — cannot launch the GUI."; return 0; }
     local bin vbin
@@ -728,6 +786,7 @@ action_gui() {
 action_server() {
     require_marker || return
     ensure_surya_backend || true   # server converts too — OCR needs llama-server on mac/CPU
+    apply_hf_offline               # skip Hub checks when models are cached
     # marker_server needs fastapi + uvicorn + python-multipart (not in [full]).
     ensure_injected "fastapi, uvicorn, multipart" fastapi uvicorn python-multipart \
         || { warn "server deps unavailable — cannot launch the API server."; return 0; }
