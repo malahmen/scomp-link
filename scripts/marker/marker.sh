@@ -474,8 +474,11 @@ select_common_options() {
 
 # Choose a source by scanning the current folder tree. Echoes the selected file
 # path on stdout; returns 1 (with a message) if nothing is found or cancelled.
-detect_source_file() {
-    info "Scanning for supported files (depth ${DEFAULT_DEPTH})..." >&2
+# Echo every convertible file under a directory (recursive, up to DEFAULT_DEPTH),
+# one per line, as paths usable for conversion. A leading "./" is trimmed for
+# tidiness only. Nothing found → empty output (non-zero).
+scan_convertibles() {
+    local dir="${1:-.}" depth="${2:-$DEFAULT_DEPTH}"
     local find_args=() ext
     for ext in "${INPUT_EXTS[@]}"; do
         find_args+=(-iname "*.${ext}" -o)
@@ -483,20 +486,36 @@ detect_source_file() {
     unset 'find_args[${#find_args[@]}-1]'   # drop trailing -o
 
     local found
-    found=$(find . -maxdepth "$DEFAULT_DEPTH" -type f \( "${find_args[@]}" \) \
+    found=$(find "$dir" -maxdepth "$depth" -type f \( "${find_args[@]}" \) \
         ! -path "*/node_modules/*" ! -path "*/.git/*" \
         ! -path "*/${DEFAULT_OUTPUT_DIR#./}/*" ! -path "*/marker-output/*" \
-        | sed 's|^\./||' | sort)
+        2>/dev/null | sed 's|^\./||' | sort)
+    [[ -n "$found" ]] || return 1
+    printf '%s\n' "$found"
+}
 
-    [[ -z "$found" ]] && { warn "No supported files found within depth ${DEFAULT_DEPTH}."; return 1; }
+# Scan a folder, let the user multi-select 1..N convertible files, then convert
+# the selection. This is the folder behaviour: a folder is a menu of files, not
+# a "convert everything" command.
+convert_folder() {
+    local dir="$1"
+    info "Scanning ${dir} for supported files (depth ${DEFAULT_DEPTH})..." >&2
+    local found
+    if ! found=$(scan_convertibles "$dir" "$DEFAULT_DEPTH"); then
+        warn "No supported files under ${dir} (depth ${DEFAULT_DEPTH})."
+        return 0
+    fi
 
-    local count height file
-    count=$(echo "$found" | wc -l | tr -d ' ')
+    local count height picked
+    count=$(printf '%s\n' "$found" | wc -l | tr -d ' ')
     height=$(( count < 15 ? count + 2 : 17 ))
-    file=$(echo "$found" | gum choose --height "$height" \
-        --header "Select a file to convert:") || true
-    [[ -z "$file" ]] && { gum style --faint "Cancelled." >&2; return 1; }
-    printf '%s' "$file"
+    picked=$(printf '%s\n' "$found" | gum choose --no-limit --height "$height" \
+        --header "Select file(s) to convert — SPACE to toggle, ENTER to confirm (${count} found):") || true
+    [[ -z "$picked" ]] && { gum style --faint "Nothing selected."; return 0; }
+
+    local sel; mapfile -t sel <<< "$picked"
+    select_common_options || return 0
+    convert_selection "${sel[@]}"
 }
 
 # Ask the user to type a path to a file OR folder. Echoes the (existing) path on
@@ -534,8 +553,10 @@ run_single() {
 }
 
 # Batch-convert every supported file in a folder (marker); prompts for workers.
+# $2 (optional) — a friendly label for the input shown in the header.
 run_batch() {
     local in_dir="$1"
+    local label="${2:-$in_dir}"
     local workers
     workers=$(gum input --value "4" --header "Parallel workers (each ~3.5GB RAM/VRAM):") || true
     workers="${workers:-4}"
@@ -550,7 +571,7 @@ run_batch() {
     mkdir -p "$OUTPUT_DIR"
 
     header "Converting"
-    info "${in_dir}/ → ${OUTPUT_FORMAT} in ${OUTPUT_DIR}/"
+    info "${label} → ${OUTPUT_FORMAT} in ${OUTPUT_DIR}/"
     if "$bin" "$in_dir" --output_format "$OUTPUT_FORMAT" --output_dir "$OUTPUT_DIR" "${EXTRA_ARGS[@]}"; then
         success "Done → ${OUTPUT_DIR}/"
         open_path "$OUTPUT_DIR"
@@ -559,34 +580,76 @@ run_batch() {
     fi
 }
 
+# Symlink a set of files into a fresh temp dir (collision-safe names) and echo
+# the dir. Lets marker's batch CLI process an arbitrary selection while loading
+# its models only once (far faster than looping the single-file CLI per file).
+_link_into_tmp() {
+    local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/marker-sel.XXXXXX") || return 1
+    local f abs name stem ext i
+    for f in "$@"; do
+        [[ -f "$f" ]] || continue
+        abs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+        name="$(basename "$f")"
+        if [[ -e "${tmp}/${name}" ]]; then          # disambiguate same basenames
+            stem="${name%.*}"; ext="${name##*.}"; i=2
+            while [[ -e "${tmp}/${stem}_${i}.${ext}" ]]; do i=$(( i + 1 )); done
+            name="${stem}_${i}.${ext}"
+        fi
+        ln -s "$abs" "${tmp}/${name}"
+    done
+    printf '%s' "$tmp"
+}
+
+# Convert an explicit selection of files. One file → single CLI; several →
+# batch over a temp dir of symlinks (models load once). EXTRA_ARGS/OUTPUT_* are
+# already set by select_common_options.
+convert_selection() {
+    local files=("$@")
+    (( ${#files[@]} > 0 )) || { warn "Nothing to convert."; return 0; }
+    if (( ${#files[@]} == 1 )); then
+        run_single "${files[0]}"
+        return
+    fi
+    local tmp; tmp=$(_link_into_tmp "${files[@]}") \
+        || { warn "Could not stage the selection for batch conversion."; return 0; }
+    run_batch "$tmp" "${#files[@]} selected files"
+    rm -rf "$tmp"
+}
+
 action_convert() {
     require_marker || return
     ensure_surya_backend || true   # OCR needs llama-server on mac/CPU
     header "Convert documents"
 
-    # Pick HOW to choose the source: scan-and-detect, or type a path.
+    # Two source models:
+    #   file   → convert that file, period.
+    #   folder → list convertible files (recursively) and let you pick 1..N.
     local method
     method=$(gum choose \
-        "Detect files (scan this folder)" \
+        "Scan a folder → pick files" \
         "Enter a path (file or folder)" \
-        --header "How do you want to choose the source?") || true
+        --header "How do you want to choose the source?") || return 0
 
-    local src=""
     case "$method" in
-        "Detect files (scan this folder)") src=$(detect_source_file) || return 0 ;;
-        "Enter a path (file or folder)")   src=$(prompt_source_path) || return 0 ;;
+        "Scan a folder → pick files")
+            local dir
+            dir=$(gum input --value "." --header "Folder to scan (subfolders included):") || return 0
+            dir="${dir/#\~/$HOME}"; dir="${dir:-.}"
+            [[ -d "$dir" ]] || { warn "Not a folder: ${dir}"; return 0; }
+            convert_folder "$dir"
+            ;;
+        "Enter a path (file or folder)")
+            local src; src=$(prompt_source_path) || return 0
+            [[ -z "$src" ]] && return 0
+            if [[ -d "$src" ]]; then
+                convert_folder "$src"          # folder → multi-select
+            else
+                select_common_options || return 0
+                run_single "$src"              # file → just convert it
+            fi
+            ;;
         *) gum style --faint "Cancelled."; return 0 ;;
     esac
-    [[ -z "$src" ]] && return 0
-
-    select_common_options || return 0
-
-    # A folder → batch; anything else → single file.
-    if [[ -d "$src" ]]; then
-        run_batch "$src"
-    else
-        run_single "$src"
-    fi
 }
 
 # -----------------------------------------------------------------------------
