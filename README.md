@@ -95,6 +95,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | [`bmad/bmad.sh`](docs/scripts/bmad.md)                 | Manage BMAD-METHOD projects — create, update BMAD version, delete project |
 | [`younglings-key/younglings-key.sh`](docs/scripts/younglings-key.md) | Generate certificates (self-signed/CSR/template/convert) — front-end for the standalone [younglings-key](https://github.com/malahmen/younglings-key) engine |
 | [`navicomputer/navicomputer.sh`](docs/scripts/navicomputer.md) | Manage SSH profiles in `~/.ssh/config` — front-end for the standalone [navicomputer](https://github.com/malahmen/navicomputer) engine |
+| [`mind-trick/mind-trick.sh`](docs/scripts/mind-trick.md) | Scrub commit-message trailers (e.g. AI co-author) from git history, across all branches |
 
 ---
 
@@ -388,6 +389,8 @@ scomp-link/
     │   └── holo-convert.sh           # front-end for the holo-convert engine (its own repo)
     ├── navicomputer/
     │   └── navicomputer.sh           # front-end for the navicomputer SSH-profile engine (its own repo)
+    ├── mind-trick/
+    │   └── mind-trick.sh             # scrub commit-message trailers from git history
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
