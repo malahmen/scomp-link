@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Real-time container log viewer (no Helm required)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl
 # -----------------------------------------------------------------------------

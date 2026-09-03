@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Build & install the ComfyEngine memory scanner from source
 # Standalone export (export.sh): no extra setup deps — Python/build deps are installed at runtime.
 # -----------------------------------------------------------------------------
 # comfyengine.sh

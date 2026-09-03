@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Manage BMAD-METHOD projects (create, update version, delete)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: node uv python
 # -----------------------------------------------------------------------------

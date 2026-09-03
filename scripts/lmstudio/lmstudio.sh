@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Install and manage LM Studio (Flatpak), headless service support
 # Standalone export (export.sh): no extra setup deps — LM Studio app + display deps are handled at runtime.
 # -----------------------------------------------------------------------------
 # lmstudio.sh

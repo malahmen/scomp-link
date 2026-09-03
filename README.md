@@ -237,6 +237,7 @@ For best results, your scripts should:
 3. **Use strict mode** - `set -euo pipefail`
 4. **Source `_common/` vendor-aware** - Resolve `COMMON_DIR` so the script also works when [exported](#exporting-a-script) (deps sit alongside it instead of in `../_common`)
 5. **Declare an export manifest** - so a standalone export knows what to install
+6. **Add a `# description:` header** - a one-line summary the launcher shows next to the script in the picker (and filters on), e.g. `# description: Manage SSH profiles in ~/.ssh/config`
 
 Example script template:
 

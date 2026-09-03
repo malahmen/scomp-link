@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Manage SSH profiles in ~/.ssh/config
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: jq
 set -euo pipefail
