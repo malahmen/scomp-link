@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Redis: install, connect, queue listing (Docker/K8s)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl helm
 # -----------------------------------------------------------------------------

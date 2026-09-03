@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Configure & launch multiple vanilla WoW clients under Wine (multiboxing)
 # Standalone export (export.sh): no extra setup deps — Wine/Flatpak/display deps are handled at runtime (Linux).
 # -----------------------------------------------------------------------------
 # client.sh

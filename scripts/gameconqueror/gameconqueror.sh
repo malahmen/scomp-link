@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Build & install GameConqueror/scanmem (GUI memory scanner)
 # Standalone export (export.sh): no extra setup deps — OS packages are installed at runtime (Linux-only).
 # -----------------------------------------------------------------------------
 # gameconqueror.sh

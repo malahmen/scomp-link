@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Convert documents (Markdown <-> PDF/DOCX) via the holo-convert engine
 # -----------------------------------------------------------------------------
 # holo-convert.sh — gum front-end for the holo-convert engine.
 #

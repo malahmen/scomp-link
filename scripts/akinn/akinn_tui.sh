@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: git
 # -----------------------------------------------------------------------------
