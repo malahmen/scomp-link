@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Generate certificates (self-signed/CSR/template/convert) via the ignite engine
 # -----------------------------------------------------------------------------
 # younglings-key.sh — gum front-end for the ignite certificate engine.
 #

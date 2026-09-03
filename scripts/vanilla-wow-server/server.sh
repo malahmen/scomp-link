@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Build, containerize, and deploy a VMaNGOS vanilla WoW server
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl
 # -----------------------------------------------------------------------------

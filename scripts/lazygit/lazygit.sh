@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Install and launch lazygit, the terminal UI for git
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: lazygit
 # -----------------------------------------------------------------------------
