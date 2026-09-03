@@ -18,11 +18,13 @@ A script is worth extracting only when its core is:
 ## Already in this shape
 - **`akinn_tui`** — front-end for the standalone Akinn repo (resolve → cache → clone). The precedent.
 - **`holo-convert`** — engine in its own repo; scomp-link ships the TUI.
+- **`younglings-key`** (ignite) — certificate engine in its own repo; scomp-link ships the TUI.
+- **`navicomputer`** — SSH-profile engine (ex-`sshger`) in its own repo; scomp-link ships the TUI.
 
 ## Worth splitting (real standalone value) — ranked
 | Script | Rationale | Lift |
 | --- | --- | --- |
-| **`sshger`** ⭐ | `~/.ssh/config` CRUD as a flag-driven CLI (`add`/`list`/`remove`/`edit`) is scriptable and useful headless. Cleanest split. | Small |
+| ~~**`sshger`**~~ ✅ done → **navicomputer** | `~/.ssh/config` CRUD as a flag-driven CLI. Split into the navicomputer engine repo + scomp-link TUI. | Small |
 | **marker *service*** | Not marker (datalab's CLI is the engine) — the **containerized RAG-ingestion service** (api/worker/redis + Docker/k8s templates) is a deployable standalone artifact. Extract "marker-service"; keep local pipx bits as thin TUI. | Medium |
 | **`vanilla-wow-server`** | Real build/containerize/deploy logic + Dockerfile/entrypoint/k8s templates — a genuine "deploy a VMaNGOS server" tool. | Medium |
 | **`vanilla-wow-client`** | Non-trivial Wine multiboxing config/launch logic; standalone value for that community. | Medium |
@@ -36,6 +38,6 @@ A script is worth extracting only when its core is:
 - **`starlight`** — mostly `npm create astro` scaffolding; its converter already delegates to holo-convert.
 
 ## When we pick this up
-- Start with **sshger** (smallest, cleanest, highest ratio).
+- Next up: the **marker service**, then **vanilla-wow-server/client** (bigger lifts). (sshger done → navicomputer.)
 - Reuse the holo-convert engine-resolution pattern: `$XXX_DIR` override → sibling checkout → `~/.cache/scomp-link/<name>` clone → `git clone`.
 - Engine = gum-free, flags + guardrails (no auto-install); front-end = gum TUI that builds flags and offers `--setup` on missing deps.
