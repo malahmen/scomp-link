@@ -93,6 +93,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | [`marker/marker.sh`](docs/scripts/marker.md)            | Convert PDF/DOCX/etc -> Markdown/JSON for LLM ingestion (datalab-to/marker) |
 | [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
 | [`bmad/bmad.sh`](docs/scripts/bmad.md)                 | Manage BMAD-METHOD projects — create, update BMAD version, delete project |
+| [`younglings-key/younglings-key.sh`](docs/scripts/younglings-key.md) | Generate certificates (self-signed/CSR/template/convert) — front-end for the standalone [younglings-key](https://github.com/malahmen/younglings-key) engine |
 | [`sshger.sh`](docs/scripts/sshger.md)                  | Manage SSH profiles in `~/.ssh/config`          |
 
 ---
@@ -141,6 +142,7 @@ The setup script will:
 | Node.js                     | Starlight documentation sites                         |
 | pandoc                      | holo-convert (document conversion)                    |
 | TeX Live (xelatex/lualatex) | holo-convert PDF output                               |
+| openssl                     | younglings-key certificate generation                 |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
 | jq                          | SSH profile manager (`sshger.sh`)                     |
 | git, curl                   | Akinn node installer (fetches Akinn + version lists)  |
