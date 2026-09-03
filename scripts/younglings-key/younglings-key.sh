@@ -231,18 +231,21 @@ main() {
     while true; do
         header "younglings-key — certificates"
         local action
+        # Ordered as a typical workflow, for people who don't do this often:
+        # prepare a config → make a cert locally → post-process it → (advanced)
+        # request one from a real CA.
         action=$(gum choose \
-            "Self-signed certificate" \
-            "Certificate request (CSR)" \
             "Config template (.cfg)" \
+            "Self-signed certificate" \
             "Convert .crt → .cert/.pem" \
+            "Certificate request (CSR)" \
             "Quit" \
-            --header "What do you want to generate?") || exit 0
+            --header "Certificate task (listed in a typical order):") || exit 0
         case "$action" in
-            "Self-signed certificate")   mode_self_signed ;;
-            "Certificate request (CSR)") mode_csr ;;
             "Config template (.cfg)")    mode_template ;;
+            "Self-signed certificate")   mode_self_signed ;;
             "Convert .crt → .cert/.pem") mode_convert ;;
+            "Certificate request (CSR)") mode_csr ;;
             "Quit"|"")                   exit 0 ;;
         esac
     done

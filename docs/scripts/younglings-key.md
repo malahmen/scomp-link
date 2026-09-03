@@ -25,12 +25,15 @@ The front-end finds `ignite.sh` automatically, in order:
 
 ## Modes
 
+The menu lists them in a typical workflow order (prepare a config → make a cert
+locally → post-process it → request one from a real CA):
+
 | Mode | What it does | Engine flags |
 | ---- | ------------ | ------------ |
-| **Self-signed certificate** | Creates a CA and signs the cert with it | `-d -s 1 -n -t (-i\|-f) [-a]` |
-| **Certificate request (CSR)** | Key + CSR to send to a CA | `-d -s 0 -n (-i\|-f)` |
 | **Config template (.cfg)** | Writes an editable `openssl` config for the domain | `-d -g 1 -n` |
-| **Convert .crt → .cert/.pem** | Builds `.cert` (and `.pem` with the key) from a `.crt` | `-d -r [-k]` |
+| **Self-signed certificate** | Creates a CA and signs the cert with it | `-d -s 1 -n -t (-i\|-f) [-a]` |
+| **Convert .crt → .cert/.pem** | Builds `.cert` (and `.pem` with the key) from an existing `.crt` | `-d -r [-k]` |
+| **Certificate request (CSR)** | Key + CSR to send to a CA | `-d -s 0 -n (-i\|-f)` |
 
 For self-signed and CSR you pick a **subject source**: a subject string (`-i`, e.g.
 `/C=PT/O=Acme/CN=example.com`) or an `openssl` config file (`-f`).
