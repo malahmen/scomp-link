@@ -94,7 +94,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
 | [`bmad/bmad.sh`](docs/scripts/bmad.md)                 | Manage BMAD-METHOD projects — create, update BMAD version, delete project |
 | [`younglings-key/younglings-key.sh`](docs/scripts/younglings-key.md) | Generate certificates (self-signed/CSR/template/convert) — front-end for the standalone [younglings-key](https://github.com/malahmen/younglings-key) engine |
-| [`sshger.sh`](docs/scripts/sshger.md)                  | Manage SSH profiles in `~/.ssh/config`          |
+| [`navicomputer/navicomputer.sh`](docs/scripts/navicomputer.md) | Manage SSH profiles in `~/.ssh/config` — front-end for the standalone [navicomputer](https://github.com/malahmen/navicomputer) engine |
 
 ---
 
@@ -144,7 +144,7 @@ The setup script will:
 | TeX Live (xelatex/lualatex) | holo-convert PDF output                               |
 | openssl                     | younglings-key certificate generation                 |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
-| jq                          | SSH profile manager (`sshger.sh`)                     |
+| jq                          | navicomputer (SSH profile manager)                    |
 | git, curl                   | Akinn node installer (fetches Akinn + version lists)  |
 
 > **Helm and kubectl** are checked at runtime and can be auto-installed via `mise` if missing.
@@ -386,8 +386,8 @@ scomp-link/
     │       └── convert.sh            # per-project doc converter (vendors the holo-convert engine)
     ├── holo-convert/
     │   └── holo-convert.sh           # front-end for the holo-convert engine (its own repo)
-    ├── ssh/
-    │   └── sshger.sh                 # SSH profile manager (~/.ssh/config)
+    ├── navicomputer/
+    │   └── navicomputer.sh           # front-end for the navicomputer SSH-profile engine (its own repo)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
