@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Convert PDF/DOCX/etc to Markdown/JSON for LLM ingestion (marker)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: pipx
 # -----------------------------------------------------------------------------

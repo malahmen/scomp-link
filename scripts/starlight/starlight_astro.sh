@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Create and manage Starlight documentation sites
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: node tree vim
 # -----------------------------------------------------------------------------

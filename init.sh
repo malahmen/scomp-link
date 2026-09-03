@@ -47,6 +47,44 @@ get_scripts() {
     printf '%s\n' "${scripts[@]}"
 }
 
+# One-line "# description:" header from a script (empty when the script has none).
+_describe() {
+    sed -n 's/^#[[:space:]]*description:[[:space:]]*//p' "$1" 2>/dev/null | head -n1
+}
+
+MENU_SEP=" — "   # separates the path/action from its description in the picker
+
+# Build picker rows: "<path>   — <description>" (export action first), left-padded
+# so descriptions line up. A script with no description shows just its path.
+build_menu() {
+    local rels="$1" r d w=${#EXPORT_ENTRY}
+    while IFS= read -r r; do
+        [ -n "$r" ] && [ "${#r}" -gt "$w" ] && w=${#r}
+    done <<EOF
+$rels
+EOF
+    printf '%-*s%s%s\n' "$w" "$EXPORT_ENTRY" "$MENU_SEP" "Bundle any script into a standalone folder"
+    while IFS= read -r r; do
+        [ -z "$r" ] && continue
+        d="$(_describe "$SCRIPTS_DIR/$r")"
+        if [ -n "$d" ]; then
+            printf '%-*s%s%s\n' "$w" "$r" "$MENU_SEP" "$d"
+        else
+            printf '%s\n' "$r"
+        fi
+    done <<EOF
+$rels
+EOF
+}
+
+# Recover the leading path/action from a picker row (drop padding + description).
+strip_choice() {
+    local c="$1"
+    c="${c%%"$MENU_SEP"*}"                 # cut at the separator
+    c="${c%"${c##*[![:space:]]}"}"         # rtrim the alignment padding
+    printf '%s' "$c"
+}
+
 # ── main loop ─────────────────────────────────────────────────────────────────
 while true; do
     gum style \
@@ -62,9 +100,10 @@ while true; do
         exit 1
     fi
 
-    # Let user pick — type to filter, Enter to run, ESC to quit. The export
-    # action is offered as the first entry.
-    choice=$(printf '%s\n%s\n' "$EXPORT_ENTRY" "$available" | gum filter \
+    # Let user pick — type to filter, Enter to run, ESC to quit. Each row shows
+    # the script's "# description:" header; the export action is offered first.
+    # Filtering also matches description text, so "certificate" finds the cert tool.
+    choice=$(build_menu "$available" | gum filter \
         --header "Select a script to run" \
         --placeholder "type to filter..." \
         --height 15) || true
@@ -74,6 +113,9 @@ while true; do
         gum style --faint "Bye."
         exit 0
     fi
+
+    # Rows carry a description; recover the leading path/action.
+    choice="$(strip_choice "$choice")"
 
     # Pick a bash 4+ binary for the special-entry handoff.
     BASH_BIN="$(command -v bash)"

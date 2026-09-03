@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Install and launch k9s, the terminal UI for Kubernetes
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl k9s
 # -----------------------------------------------------------------------------

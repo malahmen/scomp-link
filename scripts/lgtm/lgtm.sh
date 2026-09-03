@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# description: Full LGTM stack (Loki, Grafana, Tempo, Mimir, OTel)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl helm
 # -----------------------------------------------------------------------------
