@@ -662,18 +662,21 @@ argoevents_install() {
         "Namespace: ${ARGOEVENTS_NAMESPACE}" \
         "" \
         "An EventBus is required before EventSources and Sensors can work." \
-        "A default native-NATS EventBus is recommended for Kind clusters."
+        "A default JetStream EventBus is created (native NATS is deprecated upstream)."
 
-    if gum confirm "Create default EventBus (native NATS, no auth)?"; then
+    if gum confirm "Create default EventBus (JetStream)?"; then
+        # JetStream is the recommended EventBus; native NATS (STAN) is deprecated.
+        # replicas below 3 are coerced to 3 by the controller; on a single-node
+        # Kind cluster the 3 pods simply co-locate.
         kubectl apply -n "${ARGOEVENTS_NAMESPACE}" -f - <<'EOF'
 apiVersion: argoproj.io/v1alpha1
 kind: EventBus
 metadata:
   name: default
 spec:
-  nats:
-    native:
-      auth: none
+  jetstream:
+    version: latest
+    replicas: 3
 EOF
         info "Default EventBus created."
         kubectl get eventbus -n "${ARGOEVENTS_NAMESPACE}" 2>/dev/null || true
