@@ -21,7 +21,7 @@ A script is worth extracting only when its core is:
 - **`younglings-key`** (ignite) — certificate engine in its own repo; scomp-link ships the TUI.
 - **`navicomputer`** — SSH-profile engine (ex-`sshger`) in its own repo; scomp-link ships the TUI.
 - **`mind-trick`** — git-history trailer scrubber in its own repo; scomp-link ships the TUI. (Small/generic — split mainly to keep the pattern; `export.sh` would also have made it standalone.)
-- **`protocol-droid`** — the whole document-conversion engine (ex-`marker`), covering **both** local pipx marker use *and* the containerized service (Redis queue + enqueue API + scalable marker workers + Docker/k8s templates). It's the engine scomp-link's TUI manages; protocol-droid is what refers to / runs marker. scomp-link ships only the front-end at `scripts/protocol-droid/`.
+- **`protocol-droid`** — the document-conversion engine (ex-`marker`), a **multi-backend** converter: local pipx use of **marker** (high-fidelity PDF/OCR) *and* **Microsoft markitdown** (fast, broad — audio/YouTube/ZIP), plus `--backend auto` routing, plus the containerized **service** (Redis queue + enqueue API + scalable marker workers + Docker/k8s). Backends live in the engine's `lib/<backend>.sh`. It's the engine scomp-link's TUI manages; protocol-droid is what runs marker/markitdown. scomp-link ships only the front-end at `scripts/protocol-droid/`. (markitdown was briefly a standalone script, then folded in as a backend since it does the same task.)
 
 ## Worth splitting (real standalone value) — ranked
 | Script | Rationale | Lift |
