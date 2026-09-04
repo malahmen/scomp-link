@@ -49,13 +49,12 @@ INPUT_EXTS=(pdf docx pptx xlsx html epub png jpg jpeg tiff tif webp gif bmp)
 
 PIPX=""   # resolved to "pipx" or "python3 -m pipx" by resolve_pipx()
 
-# Containerized service (Docker/K8s) — the scalable RAG-ingestion deployment.
-SERVICE_DIR="${SCRIPT_DIR}/templates/service"
-COMPOSE_FILE="${SERVICE_DIR}/docker-compose.yaml"
-K8S_DIR="${SERVICE_DIR}/k8s"
-MARKER_IMAGE="marker-service:latest"
-K8S_NS="marker"
-SVC_TARGET=""   # "docker" or "k8s", chosen in menu_service
+# Containerized service — the deployable conversion service lives in its own repo,
+# protocol-droid. menu_service is a thin front-end that resolves its CLI and
+# drives it by flags (the holo-convert / navicomputer / mind-trick pattern).
+PD_REPO="${PROTOCOL_DROID_REPO:-https://github.com/malahmen/protocol-droid.git}"
+PD_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/protocol-droid"
+PD_ENGINE=""    # resolved to protocol-droid.sh by resolve_protocol_droid()
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -807,118 +806,65 @@ action_uninstall() {
 }
 
 # =============================================================================
-# SERVICE — deploy marker as a scalable containerized ingestion service
-# (Redis queue + HTTP enqueue API + worker replicas + batch enqueuer).
-# Templates live in templates/service/ (+ k8s/). Static — this drives docker
-# compose / kubectl; it does not run the heavy image build here.
+# SERVICE — deploy the containerized conversion service (protocol-droid).
+# The deployable service (Redis queue + enqueue API + scalable marker workers +
+# Docker/K8s templates) lives in its own repo, protocol-droid. This is a thin
+# front-end: it resolves protocol-droid's CLI and drives it by flags. The heavy
+# lifting — and the marker credit — belongs to that repo.
+#
+# Engine resolution order:
+#   1. $PROTOCOL_DROID_DIR/protocol-droid.sh   (explicit override)
+#   2. ../../../protocol-droid/protocol-droid.sh (sibling dev checkout)
+#   3. ~/.cache/scomp-link/protocol-droid/…    (cached clone; offers git pull)
+#   4. git clone --depth 1 (public HTTPS)      (first run)
 # =============================================================================
 
-svc_build() {
-    command -v docker &>/dev/null || { warn "docker not found — needed to build the image."; return 0; }
-    info "Building ${MARKER_IMAGE} (large: installs torch + deps)..."
-    if docker build -t "$MARKER_IMAGE" "$SERVICE_DIR"; then
-        success "Built ${MARKER_IMAGE}."
-        [[ "$SVC_TARGET" == k8s ]] && info "For K8s, load/push it to the cluster (e.g. 'kind load docker-image ${MARKER_IMAGE}')."
-    else
-        warn "Build failed."
+resolve_protocol_droid() {
+    if [[ -n "${PROTOCOL_DROID_DIR:-}" && -f "${PROTOCOL_DROID_DIR}/protocol-droid.sh" ]]; then
+        PD_ENGINE="${PROTOCOL_DROID_DIR}/protocol-droid.sh"
+        info "Using protocol-droid from \$PROTOCOL_DROID_DIR: ${PROTOCOL_DROID_DIR}"; return 0
     fi
-}
-
-svc_deploy() {
-    if [[ "$SVC_TARGET" == docker ]]; then
-        local indir outdir
-        indir=$(gum input --value "./input"  --header "Host folder with source documents:") || true
-        outdir=$(gum input --value "./output" --header "Host folder for converted output:") || true
-        info "Building image + starting stack (first run downloads models — several GB)..."
-        MARKER_INPUT="${indir:-./input}" MARKER_OUTPUT="${outdir:-./output}" \
-            docker compose -f "$COMPOSE_FILE" up -d --build \
-            && success "Service up — API at http://localhost:8000 (POST /jobs)." \
-            || warn "docker compose up failed."
-    else
-        info "Applying manifests to namespace '${K8S_NS}'..."
-        kubectl apply -f "${K8S_DIR}/namespace.yaml" || { warn "apply failed."; return 0; }
-        kubectl apply -f "${K8S_DIR}/pvc.yaml" -f "${K8S_DIR}/redis.yaml" \
-                      -f "${K8S_DIR}/api.yaml" -f "${K8S_DIR}/worker.yaml" \
-            && success "Applied. Make image '${MARKER_IMAGE}' available to the cluster (push/registry or 'kind load')." \
-            || warn "kubectl apply failed."
-        info "Reach the API: kubectl -n ${K8S_NS} port-forward svc/marker-api 8000:8000"
+    local sib="${SCRIPT_DIR}/../../../protocol-droid/protocol-droid.sh"
+    if [[ -f "$sib" ]]; then
+        PD_ENGINE="$(cd "$(dirname "$sib")" && pwd)/protocol-droid.sh"
+        info "Using local protocol-droid checkout: $(dirname "$PD_ENGINE")"; return 0
     fi
-}
-
-svc_status() {
-    if [[ "$SVC_TARGET" == docker ]]; then
-        docker compose -f "$COMPOSE_FILE" ps || warn "Is the stack deployed?"
-    else
-        kubectl -n "$K8S_NS" get pods,svc,pvc || warn "Is the namespace deployed?"
-    fi
-}
-
-svc_logs() {
-    info "Streaming worker logs — Ctrl-C to stop and return."
-    if [[ "$SVC_TARGET" == docker ]]; then
-        run_foreground docker compose -f "$COMPOSE_FILE" logs -f worker
-    else
-        run_foreground kubectl -n "$K8S_NS" logs -f deploy/marker-worker
-    fi
-}
-
-svc_scale() {
-    local n
-    n=$(gum input --value "2" --header "Number of worker replicas:") || true
-    [[ "$n" =~ ^[0-9]+$ ]] || { warn "Not a number: '${n}'."; return 0; }
-    if [[ "$SVC_TARGET" == docker ]]; then
-        docker compose -f "$COMPOSE_FILE" up -d --scale worker="$n" \
-            && success "Workers scaled to ${n}." || warn "Scale failed."
-    else
-        kubectl -n "$K8S_NS" scale deploy/marker-worker --replicas="$n" \
-            && success "Workers scaled to ${n}." || warn "Scale failed."
-    fi
-}
-
-svc_ingest() {
-    if [[ "$SVC_TARGET" == docker ]]; then
-        info "Enqueuing every supported file under the mounted /data/input ..."
-        docker compose -f "$COMPOSE_FILE" run --rm api python enqueue_batch.py /data/input \
-            || warn "Batch enqueue failed (is the stack up?)."
-    else
-        warn "First ensure your documents are on the 'marker-input' PVC (e.g. via 'kubectl cp')."
-        gum confirm "Start the batch enqueue job now?" || return 0
-        kubectl -n "$K8S_NS" delete job/marker-batch --ignore-not-found >/dev/null 2>&1
-        kubectl apply -f "${K8S_DIR}/batch-job.yaml" \
-            && success "Batch job started — watch: kubectl -n ${K8S_NS} logs -f job/marker-batch" \
-            || warn "Failed to start batch job."
-    fi
-}
-
-svc_teardown() {
-    if [[ "$SVC_TARGET" == docker ]]; then
-        gum confirm "Stop and remove the Docker stack? (named volumes kept)" || return 0
-        docker compose -f "$COMPOSE_FILE" down && success "Stack stopped." || warn "compose down failed."
-    else
-        gum confirm "Delete the marker workloads in namespace '${K8S_NS}'? (PVCs/namespace kept)" || return 0
-        kubectl delete -f "${K8S_DIR}/worker.yaml" -f "${K8S_DIR}/api.yaml" -f "${K8S_DIR}/redis.yaml" --ignore-not-found
-        info "Data kept. To remove everything: kubectl delete ns ${K8S_NS}"
-    fi
-}
-
-menu_service() {
-    header "Deploy marker as a service"
-    if [[ ! -d "$SERVICE_DIR" ]]; then
-        warn "Service templates not found at ${SERVICE_DIR}."
+    if [[ -f "${PD_CACHE}/protocol-droid.sh" ]]; then
+        PD_ENGINE="${PD_CACHE}/protocol-droid.sh"; info "Using cached protocol-droid: ${PD_CACHE}"
+        if [[ -d "${PD_CACHE}/.git" ]] && gum confirm "Update protocol-droid (git pull)?"; then
+            gum spin --spinner dot --title "Updating protocol-droid..." -- \
+                git -C "$PD_CACHE" pull --ff-only || warn "Update failed; using existing copy."
+        fi
         return 0
     fi
+    gum confirm "protocol-droid engine not found. Clone it from ${PD_REPO}?" \
+        || { warn "protocol-droid is unavailable."; return 1; }
+    mkdir -p "$(dirname "$PD_CACHE")"
+    gum spin --spinner dot --title "Cloning protocol-droid..." -- \
+        git clone --depth 1 "$PD_REPO" "$PD_CACHE" \
+        || { warn "Failed to clone protocol-droid from ${PD_REPO}"; return 1; }
+    PD_ENGINE="${PD_CACHE}/protocol-droid.sh"; success "protocol-droid cloned to ${PD_CACHE}"
+}
 
-    local target
+# Drive the protocol-droid CLI (foreground so logs stream / Ctrl-C returns).
+pd() { run_foreground bash "$PD_ENGINE" "$@"; }
+
+menu_service() {
+    header "Deploy the conversion service (protocol-droid)"
+    command -v git &>/dev/null || { warn "git is required to fetch protocol-droid."; return 0; }
+    resolve_protocol_droid || return 0
+
+    local target flag
     target=$(gum choose "Docker (compose)" "Kubernetes (kubectl)" \
         --header "Deploy target:") || true
     case "$target" in
         "Docker (compose)")
             command -v docker &>/dev/null || { warn "docker not found."; return 0; }
             docker compose version &>/dev/null || { warn "'docker compose' plugin not available."; return 0; }
-            SVC_TARGET=docker ;;
+            flag=docker ;;
         "Kubernetes (kubectl)")
             command -v kubectl &>/dev/null || { warn "kubectl not found."; return 0; }
-            SVC_TARGET=k8s ;;
+            flag=k8s ;;
         *) return 0 ;;
     esac
 
@@ -930,19 +876,39 @@ menu_service() {
             "Status" \
             "Logs (workers)" \
             "Scale workers" \
-            "Ingest a folder (batch)" \
+            "Enqueue a folder (batch)" \
             "Tear down" \
             "Back" \
-            --header "marker service — ${SVC_TARGET}:") || true
+            --header "protocol-droid — ${flag}:") || true
         case "$action" in
-            "Build image")               svc_build ;;
-            "Deploy / update")           svc_deploy ;;
-            "Status")                    svc_status ;;
-            "Logs (workers)")            svc_logs ;;
-            "Scale workers")             svc_scale ;;
-            "Ingest a folder (batch)")   svc_ingest ;;
-            "Tear down")                 svc_teardown ;;
-            "Back"|"")                   return 0 ;;
+            "Build image")      pd build --target "$flag" ;;
+            "Deploy / update")
+                if [[ "$flag" == docker ]]; then
+                    local indir outdir
+                    indir=$(gum input --value "./input"  --header "Host folder with source documents:") || true
+                    outdir=$(gum input --value "./output" --header "Host folder for converted output:") || true
+                    pd deploy --target docker --input "${indir:-./input}" --output "${outdir:-./output}"
+                else
+                    pd deploy --target k8s
+                fi ;;
+            "Status")           pd status --target "$flag" ;;
+            "Logs (workers)")   pd logs --target "$flag" ;;
+            "Scale workers")
+                local n
+                n=$(gum input --value "2" --header "Number of worker replicas:") || true
+                [[ "$n" =~ ^[0-9]+$ ]] && pd scale --target "$flag" --replicas "$n" \
+                    || warn "Not a number: '${n}'." ;;
+            "Enqueue a folder (batch)")
+                if [[ "$flag" == docker ]]; then
+                    pd enqueue --target docker
+                else
+                    warn "First ensure your documents are on the 'marker-input' PVC (e.g. via 'kubectl cp')."
+                    gum confirm "Start the batch enqueue job now?" && pd enqueue --target k8s
+                fi ;;
+            "Tear down")
+                gum confirm "Tear down the ${flag} stack? (data/volumes kept)" \
+                    && pd teardown --target "$flag" --yes ;;
+            "Back"|"")          return 0 ;;
         esac
         echo ""
     done
