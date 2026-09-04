@@ -152,7 +152,15 @@ workflows_install() {
         kubectl create namespace "${WORKFLOWS_NAMESPACE}"
     fi
 
-    local install_url="${WORKFLOWS_INSTALL_BASE}/${SELECTED_VERSION}/install.yaml"
+    # When the release list couldn't be fetched, select_version yields "latest";
+    # GitHub's tagged-download path has no "latest" tag, so use its canonical
+    # /releases/latest/download/ redirect instead of /releases/download/latest/.
+    local install_url
+    if [[ "$SELECTED_VERSION" == "latest" ]]; then
+        install_url="https://github.com/argoproj/argo-workflows/releases/latest/download/install.yaml"
+    else
+        install_url="${WORKFLOWS_INSTALL_BASE}/${SELECTED_VERSION}/install.yaml"
+    fi
     info "Manifest URL: ${install_url}"
 
     # --server-side required for v4.0+ — CRD validation schemas exceed client-side annotation limit
@@ -365,7 +373,14 @@ argocd_install() {
         kubectl create namespace "${ARGOCD_NAMESPACE}"
     fi
 
-    local install_url="${ARGOCD_INSTALL_BASE}/${SELECTED_VERSION}/manifests/install.yaml"
+    # "latest" is not a git ref on raw.githubusercontent.com; argo-cd's "stable"
+    # branch tracks the latest stable release, so use it as the fallback.
+    local install_url
+    if [[ "$SELECTED_VERSION" == "latest" ]]; then
+        install_url="${ARGOCD_INSTALL_BASE}/stable/manifests/install.yaml"
+    else
+        install_url="${ARGOCD_INSTALL_BASE}/${SELECTED_VERSION}/manifests/install.yaml"
+    fi
     info "Manifest URL: ${install_url}"
 
     if ! gum spin --spinner dot \
@@ -633,7 +648,14 @@ argoevents_install() {
         kubectl create namespace "${ARGOEVENTS_NAMESPACE}"
     fi
 
-    local install_url="${ARGOEVENTS_INSTALL_BASE}/${SELECTED_VERSION}/install.yaml"
+    # See the Workflows note: use the /releases/latest/download/ redirect when the
+    # release list couldn't be fetched (SELECTED_VERSION == "latest").
+    local install_url
+    if [[ "$SELECTED_VERSION" == "latest" ]]; then
+        install_url="https://github.com/argoproj/argo-events/releases/latest/download/install.yaml"
+    else
+        install_url="${ARGOEVENTS_INSTALL_BASE}/${SELECTED_VERSION}/install.yaml"
+    fi
     info "Manifest URL: ${install_url}"
 
     if ! gum spin --spinner dot \
