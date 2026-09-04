@@ -5,19 +5,32 @@
 > "I am fluent in over six million forms of communication."
 
 A gum front-end for **[protocol-droid](https://github.com/malahmen/protocol-droid)**,
-a standalone, gum-free engine that drives
-[datalab-to/marker](https://github.com/datalab-to/marker) to convert documents
-**into** Markdown, JSON, HTML, or chunks — the inverse of
-[`holo-convert`](holo-convert.md). scomp-link ships only the front-end; the logic
-(and the marker dependency) lives in the engine's own repo — the same split as
-[holo-convert](holo-convert.md), [navicomputer](navicomputer.md), and
-[mind-trick](mind-trick.md).
+a standalone, gum-free **multi-backend** engine that converts documents **into**
+Markdown (or JSON/HTML/chunks) — the inverse of [`holo-convert`](holo-convert.md).
+scomp-link ships only the front-end; the logic (and the converter dependencies)
+live in the engine's own repo — the same split as [holo-convert](holo-convert.md),
+[navicomputer](navicomputer.md), and [mind-trick](mind-trick.md).
 
 The output is a first step toward LLM ingestion — protocol-droid **prepares**
 documents; chunking/embedding/indexing is **not** done here.
 
-**Supported inputs:** PDF, DOCX, PPTX, XLSX, HTML, EPUB, and images (PNG/JPG/TIFF/…). \
-**Output formats:** `markdown`, `json`, `html`, `chunks`.
+## Backends
+
+No single tool is best at everything, so the engine drives two converters and can
+pick per file:
+
+| Backend | Tool | Best for | Weight |
+| --- | --- | --- | --- |
+| `marker` (default) | [datalab-to/marker](https://github.com/datalab-to/marker) | high-fidelity PDF / OCR / layout, tables | heavy (PyTorch + GB of models) |
+| `markitdown` | [Microsoft markitdown](https://github.com/microsoft/markitdown) | breadth + speed; audio transcription, YouTube, ZIP, Outlook `.msg` | light (pip, no ML models) |
+| `auto` | routes per file | PDF/images → marker, everything else → markitdown | — |
+
+Each backend installs into its **own** isolated pipx environment.
+
+**marker inputs:** PDF, DOCX, PPTX, XLSX, HTML, EPUB, images. Output formats:
+`markdown` / `json` / `html` / `chunks`. \
+**markitdown inputs:** the above plus CSV, JSON, XML, ZIP, Outlook `.msg`, and
+audio (mp3/wav). Output: Markdown.
 
 ## Engine resolution
 
@@ -28,33 +41,37 @@ The front-end finds `protocol-droid.sh` automatically, in order:
 3. `~/.cache/scomp-link/protocol-droid/` (a cached clone; offers `git pull`)
 4. a fresh `git clone --depth 1` from the public repo
 
-## Two modes
+## Modes
 
-The engine (and this menu) work in two modes:
-
-- **local** — run marker on this machine, isolated in a pipx environment.
+- **local** — run a backend on this machine, isolated in a pipx environment.
 - **service** — deploy a scalable containerized service (Redis queue + enqueue
-  API + marker workers) via Docker or Kubernetes.
+  API + marker workers) via Docker or Kubernetes. **marker-only.**
 
 ## Menu
 
 The top level has three entries:
 
-- **Convert documents** — single file or a folder → pick output format, output
-  dir, options; drives `protocol-droid local convert` (local pipx).
-- **Local tool** — submenu for the local pipx install:
+- **Convert documents** — first pick a backend (marker / markitdown / auto), then
+  the source (a file, or scan a folder → multi-select), then backend-appropriate
+  options; drives `protocol-droid local convert --backend …`.
+- **Local tool** — pick a backend to manage its pipx install:
 
-  | Action                    | What it does                                                                                 |
-  | ------------------------- | -------------------------------------------------------------------------------------------- |
-  | Setup / install           | Check Python, install pipx if needed, install marker, install `llama-server` (OCR backend) |
-  | Upgrade                   | `protocol-droid local setup --upgrade`                                                        |
-  | Status                    | Version, CLIs-on-`PATH`, Torch device (CPU/MPS/CUDA), OCR backend + `llama-server`, model-cache sizes |
-  | Launch GUI (Streamlit)    | Runs marker's `marker_gui` for interactive testing                                            |
-  | Launch API server         | Runs marker's `marker_server` (FastAPI), single local process                                |
-  | Clear model cache         | Deletes `~/.cache/datalab` (models re-download next run)                                      |
-  | Uninstall                 | Removes marker's pipx env (model caches kept)                                                 |
+  | Action (marker) | Action (markitdown) | What it does |
+  | --- | --- | --- |
+  | Setup / install | Setup / install | Install pipx if needed, then the converter (marker installs `llama-server` too; markitdown offers `[all]` or picked extras) |
+  | Upgrade | Upgrade | `setup --upgrade` |
+  | Status | Status | Version, CLI-on-`PATH`, backend specifics (marker: torch device, OCR backend, caches; markitdown: ffmpeg, Doc Intelligence, plugins) |
+  | Launch GUI / API server | — | marker's `marker_gui` / `marker_server` |
+  | Clear model cache | — | Deletes `~/.cache/datalab` |
+  | — | Install a plugin | `pipx inject` a `#markitdown-plugin` package |
+  | Uninstall | Uninstall | Remove that backend's pipx env |
 
-- **Deploy as a service (Docker / K8s)** — the scalable deployment (see below).
+- **Deploy as a service (Docker / K8s)** — the scalable marker deployment (below).
+
+## The marker backend
+
+Everything below (isolation, OCR backend, HF offline, the service) is specific to
+the **marker** backend; the markitdown backend is covered [further down](#the-markitdown-backend).
 
 ## Isolation (pipx)
 
@@ -97,10 +114,10 @@ One file → marker's single CLI; several files (or a whole folder) → marker's
 batch CLI, which loads its models once (a selection is symlinked into a temp dir
 first).
 
-## Conversion options
+## Conversion options (marker)
 
 - **Output format** — `markdown` / `json` / `html` / `chunks`
-- **Output directory** — default `./marker-output`
+- **Output directory** — default `./converted`
 - **Force OCR** (`--force_ocr`) — re-OCR the whole document (fixes bad embedded text)
 - **Use an LLM** (`--use_llm`) — higher quality; pick a service: Google Gemini,
   OpenAI / OpenAI-compatible, Anthropic Claude, or Ollama (local). API keys are
@@ -208,14 +225,49 @@ plus the `surya-2` GGUFs for the llama.cpp OCR backend) into
 - **Air-gapped**: pre-populate `~/.cache/huggingface` (and `~/.cache/datalab`) on
   a connected machine, copy them over, and marker runs fully offline.
 
+## The markitdown backend
+
+The **markitdown** backend runs [Microsoft markitdown](https://github.com/microsoft/markitdown) —
+light, fast, and broad. Pick it in **Convert** or **Local tool** with `--backend
+markitdown`. It favours speed and format breadth over layout fidelity: ideal for
+getting a large, mixed corpus (including audio, ZIP, Outlook, YouTube) into "good
+enough" Markdown fast. For heavy PDF/OCR work, use the marker backend.
+
+- **Isolation (pipx)** — installed in its own pipx env (Python 3.10+). **Setup**
+  offers **all formats** (`markitdown[all]`) or a multi-select of individual
+  extras (`pptx docx xlsx xls pdf outlook az-doc-intel az-content-understanding
+  audio-transcription youtube-transcription`).
+- **Audio (mp3)** transcription also needs **ffmpeg** on your system — install it
+  separately (`brew`/`apt`/`dnf install ffmpeg`). Status reports whether it's found.
+- **Output** — one `<stem>.md` per input file (markitdown has no native batch
+  mode, so folders are converted by looping; same-named files are de-duplicated).
+- **Options** — **Use plugins** (`--use-plugins`, enable installed third-party
+  `#markitdown-plugin` packages) and **Azure Document Intelligence** (`-d`, with
+  the endpoint from `MARKITDOWN_DOCINTEL_ENDPOINT` or prompted `-e`).
+- **Plugins** — **Local tool → Install a plugin** runs `pipx inject markitdown
+  <package>`; **Status** lists installed plugins.
+
+> LLM-generated **image descriptions** are only in markitdown's *Python API*, not
+> its CLI, so the TUI doesn't offer them for this backend — use the marker
+> backend's `--use_llm` for LLM-assisted conversion.
+
 ## Driving the engine directly
 
 Skip the TUI:
 
 ```sh
+# marker (default backend)
 protocol-droid.sh local setup
 protocol-droid.sh local convert report.pdf --output-format markdown
 protocol-droid.sh local convert ./docs --workers 4 -- --force_ocr
+
+# markitdown
+protocol-droid.sh local setup   --backend markitdown --extras pdf,docx,audio-transcription
+protocol-droid.sh local convert --backend markitdown talk.mp3
+protocol-droid.sh local convert --backend markitdown scan.pdf -- -d -e "$ENDPOINT"
+
+# auto-route a mixed folder, and the service
+protocol-droid.sh local convert --backend auto ./mixed-corpus
 protocol-droid.sh service deploy --input ./input --output ./output
 protocol-droid.sh --help
 ```
@@ -225,7 +277,7 @@ flag reference.
 
 ## Notes
 
-- Set `TORCH_DEVICE` (e.g. `cuda`, `mps`, `cpu`) to override the detected device.
-- Model caches live under `~/.cache/datalab` (and `~/.cache/huggingface`); the
-  **Status** action reports their sizes, and **Clear model cache** clears the
-  datalab cache.
+- Default output directory is `./converted`.
+- (marker) Set `TORCH_DEVICE` (e.g. `cuda`, `mps`, `cpu`) to override the detected
+  device. Model caches live under `~/.cache/datalab` (and `~/.cache/huggingface`);
+  **Status** reports their sizes and **Clear model cache** clears the datalab cache.
