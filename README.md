@@ -90,7 +90,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | Script                                                  | Description                                                                 |
 | ------------------------------------------------------- | --------------------------------------------------------------------------- |
 | [`starlight_astro.sh`](docs/scripts/starlight.md)       | Create and manage Starlight documentation sites                             |                            |
-| [`protocol-droid/protocol-droid.sh`](docs/scripts/protocol-droid.md) | Convert PDF/DOCX/etc -> Markdown/JSON (locally or as a scalable service) — front-end for the standalone [protocol-droid](https://github.com/malahmen/protocol-droid) engine, which runs [marker](https://github.com/datalab-to/marker) |
+| [`protocol-droid/protocol-droid.sh`](docs/scripts/protocol-droid.md) | Convert PDF/Office/audio/etc -> Markdown/JSON (local or scalable service) — front-end for the standalone [protocol-droid](https://github.com/malahmen/protocol-droid) engine, a multi-backend converter driving [marker](https://github.com/datalab-to/marker) and [Microsoft markitdown](https://github.com/microsoft/markitdown) |
 | [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
 | [`bmad/bmad.sh`](docs/scripts/bmad.md)                 | Manage BMAD-METHOD projects — create, update BMAD version, delete project |
 | [`younglings-key/younglings-key.sh`](docs/scripts/younglings-key.md) | Generate certificates (self-signed/CSR/template/convert) — front-end for the standalone [younglings-key](https://github.com/malahmen/younglings-key) engine |
@@ -392,7 +392,7 @@ scomp-link/
     ├── mind-trick/
     │   └── mind-trick.sh             # front-end for the mind-trick git-history-scrub engine (its own repo)
     ├── protocol-droid/
-    │   └── protocol-droid.sh         # front-end for the protocol-droid doc-conversion engine (runs marker; its own repo)
+    │   └── protocol-droid.sh         # front-end for the protocol-droid doc-conversion engine (marker + markitdown backends; its own repo)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
