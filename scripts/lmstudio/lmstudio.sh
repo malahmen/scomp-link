@@ -34,6 +34,8 @@ fi
 
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/deps.sh
+source "${COMMON_DIR}/deps.sh"   # _ensure_pkg (dnf/apt/rpm-ostree), _require_sudo_or_instruct
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -82,56 +84,19 @@ EOF
 # Dependency helpers
 # -----------------------------------------------------------------------------
 
-_pkg_manager() {
-    if command -v dnf &>/dev/null; then echo "dnf";
-    elif command -v apt-get &>/dev/null; then echo "apt";
-    else error_exit "Unsupported distro — need dnf or apt to install flatpak/Xvfb."
-    fi
-}
-
-_require_sudo_or_instruct() {
-    # $1: human description, $2...: the command to hand back to the user
-    local desc="$1"; shift
-    if sudo -n true 2>/dev/null; then
-        return 0
-    fi
-    warn "${desc} requires sudo, and this session has no passwordless sudo / TTY for a password prompt."
-    error_exit "Please run this yourself in a terminal, then re-run this script:
-  $*"
-}
-
+# flatpak + Xvfb via the shared, rpm-ostree-aware _ensure_pkg (deps.sh). Using the
+# common helper is what lets the headless path work on immutable Fedora Atomic
+# hosts (Bazzite) — the previous private dnf/apt-only resolver aborted there.
 _ensure_flatpak() {
-    if command -v flatpak &>/dev/null; then
-        info "flatpak found: $(flatpak --version)"
-        return
-    fi
+    command -v flatpak &>/dev/null && { info "flatpak found: $(flatpak --version)"; return 0; }
     info "flatpak not found. Installing..."
-    local pm; pm="$(_pkg_manager)"
-    case "$pm" in
-        dnf) _require_sudo_or_instruct "Installing flatpak" "sudo dnf install -y flatpak"
-             sudo dnf install -y flatpak ;;
-        apt) _require_sudo_or_instruct "Installing flatpak" "sudo apt-get update -qq && sudo apt-get install -y flatpak"
-             sudo apt-get update -qq && sudo apt-get install -y flatpak ;;
-    esac
-    command -v flatpak &>/dev/null || error_exit "flatpak installation failed."
-    success "flatpak installed."
+    _ensure_pkg flatpak flatpak flatpak
 }
 
 _ensure_xvfb() {
-    if command -v Xvfb &>/dev/null; then
-        info "Xvfb found: $(command -v Xvfb)"
-        return
-    fi
+    command -v Xvfb &>/dev/null && { info "Xvfb found: $(command -v Xvfb)"; return 0; }
     info "Xvfb not found. Installing (needed to run LM Studio headless)..."
-    local pm; pm="$(_pkg_manager)"
-    case "$pm" in
-        dnf) _require_sudo_or_instruct "Installing Xvfb" "sudo dnf install -y xorg-x11-server-Xvfb"
-             sudo dnf install -y xorg-x11-server-Xvfb ;;
-        apt) _require_sudo_or_instruct "Installing Xvfb" "sudo apt-get update -qq && sudo apt-get install -y xvfb"
-             sudo apt-get update -qq && sudo apt-get install -y xvfb ;;
-    esac
-    command -v Xvfb &>/dev/null || error_exit "Xvfb installation failed."
-    success "Xvfb installed."
+    _ensure_pkg Xvfb xorg-x11-server-Xvfb xvfb
 }
 
 _ensure_flathub_remote() {
