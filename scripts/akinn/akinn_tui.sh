@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # description: Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
-# export-setup: git
+# export-setup: git curl
 # -----------------------------------------------------------------------------
 # akinn_tui.sh — gum front-end for Akinn (Automated Kubernetes Installation for
 # New Nodes).
@@ -96,6 +96,14 @@ load_akinn_defs() {
     source "${AKINN_DIR}/constants.sh"   # K_RELEASES, CRDS_RELEASES, ...
     # shellcheck disable=SC1090,SC1091
     source "${AKINN_DIR}/regex.sh"       # re_kver, re_crds_ver, ...
+
+    # These come from another repo's files; under `set -u` the first reference to
+    # any renamed/removed one would abort with a cryptic "unbound variable", so
+    # fail early with a clear message if akinn's layout has drifted.
+    : "${K_RELEASES:?akinn's constants.sh no longer defines K_RELEASES — update this front-end to match akinn}"
+    : "${CRDS_RELEASES:?akinn's constants.sh no longer defines CRDS_RELEASES — update this front-end to match akinn}"
+    : "${re_kver:?akinn's regex.sh no longer defines re_kver — update this front-end to match akinn}"
+    : "${re_crds_ver:?akinn's regex.sh no longer defines re_crds_ver — update this front-end to match akinn}"
 }
 
 # -----------------------------------------------------------------------------
