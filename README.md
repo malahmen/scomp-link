@@ -227,7 +227,9 @@ cp ~/my-scripts/deploy.sh scripts/deploy/
 ./init.sh
 ```
 
-**That's it.** The launcher auto-discovers all `.sh` files one level deep inside `scripts/` (excluding folders listed in `EXCLUDED_DIRS`, such as `_common`).
+**That's it.** The launcher auto-discovers all `.sh` files one level deep inside `scripts/` (excluding folders listed in `EXCLUDED_DIRS`, such as `_common` and `_templates`).
+
+**Starting from a template.** Rather than a blank file, copy one of the skeletons in [`scripts/_templates/`](scripts/_templates/) — `service.sh` (Docker/K8s deploy), `engine-frontend.sh` (thin front-end for a standalone flag-driven engine), or `build-from-source.sh` (Linux build-from-source) — into `scripts/<name>/<name>.sh` and replace the `TODO`/`foo` placeholders. See the [templates README](scripts/_templates/README.md).
 
 ### Script Guidelines
 
@@ -311,6 +313,11 @@ scomp-link/
     │   ├── portforward.sh             # Port-forward pid-file helpers (also reused for
     │   │                              #   tracking arbitrary background processes)
     │   └── gh_releases.sh             # GitHub release fetching helpers
+    │
+    ├── _templates/                     # [Excluded] Skeletons for new scripts, not run directly
+    │   ├── service.sh                  #   Docker/K8s deploy archetype
+    │   ├── engine-frontend.sh          #   thin front-end for a standalone flag-driven engine
+    │   └── build-from-source.sh        #   Linux build-from-source archetype
     │
     ├── # Infrastructure
     ├── akinn/
@@ -496,9 +503,8 @@ Scomp-Link is evolving into a comprehensive shell scripting framework:
 
 - ~~**Shared Library** - Common functions for logging, prompts, validation~~ ✓ done (`scripts/_common/`)
 - ~~**Standalone Export** - Bundle a script into a self-contained folder~~ ✓ done (`export.sh`)
-- **Plugin System** - Auto-discover scripts from `~/.config/scomp-link/plugins/`
-- **Tool Management** - Unified TUI for managing development tools via mise
-- **Script Templates** - Generators for new scripts with boilerplate
+- ~~**Script Templates** - Starting points for new scripts~~ ✓ done ([`scripts/_templates/`](scripts/_templates/) — service, engine-frontend, build-from-source skeletons)
+- **Engine split** - Continue factoring scripts whose core is real, reusable logic into standalone flag-driven CLI engines (own repos) with a thin gum front-end here — see [`docs/engine-split-candidates.md`](docs/engine-split-candidates.md)
 
 ---
 

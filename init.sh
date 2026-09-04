@@ -20,7 +20,7 @@ fi
 
 # Folders that contain shared utilities (sourced by other scripts), not
 # interactive TUIs. They are excluded from the script picker.
-EXCLUDED_DIRS="cluster _common"
+EXCLUDED_DIRS="cluster _common _templates"
 
 # Special picker entry: export a script as a standalone, scomp-link-free folder.
 # (holo-convert is a normal script under scripts/ and is auto-discovered.)
