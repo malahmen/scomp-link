@@ -40,12 +40,32 @@ DESKTOP_FILE="${HOME}/.local/share/applications/gameconqueror.desktop"
 # Dependencies
 # -----------------------------------------------------------------------------
 
+# scanmem/GameConqueror is a Linux-native tool (ptrace + /proc, GTK); nothing to
+# build elsewhere.
+_require_linux() {
+    [[ "$(uname -s)" == "Linux" ]] && return 0
+    error_exit "GameConqueror/scanmem is Linux-only (ptrace + GTK); it can't be built or run on $(uname -s)."
+}
+
 _ensure_build_deps() {
     _ensure_pkg git          git                  git
     _ensure_pkg make         make                 make
     _ensure_pkg gcc          gcc                  gcc
     _ensure_pkg autoreconf   autoconf             autoconf
     _ensure_pkg pkg-config   pkgconf-pkg-config    pkg-config
+    # autogen.sh drives aclocal/libtoolize/intltoolize; configure.ac needs readline
+    # and a python interpreter (AM_PATH_PYTHON) — none provided by the tools above.
+    _ensure_pkg aclocal      automake             automake
+    _ensure_pkg libtoolize   libtool              libtool
+    _ensure_pkg intltoolize  intltool             intltool
+    _ensure_pkg python3      python3              python3
+    _ensure_pkgs "readline-devel" "libreadline-dev"
+}
+
+# GameConqueror is a Python/GTK app; without these the built /usr/bin/gameconqueror
+# fails to launch (ModuleNotFoundError: gi) and pkexec privilege escalation won't work.
+_ensure_gui_runtime_deps() {
+    _ensure_pkgs "python3-gobject gtk3 polkit" "python3-gi gir1.2-gtk-3.0 policykit-1"
 }
 
 # -----------------------------------------------------------------------------
@@ -74,6 +94,7 @@ cmd_install() {
     header "GameConqueror — Install"
 
     _ensure_build_deps
+    _ensure_gui_runtime_deps
 
     if [[ -d "$INSTALL_DIR" ]]; then
         gum confirm "Existing checkout found at ${INSTALL_DIR}. Remove and rebuild from scratch?" \
@@ -109,6 +130,15 @@ cmd_uninstall() {
     gum confirm "This removes the binaries, source checkout, and desktop shortcut. Continue?" \
         || { info "Cancelled."; return; }
 
+    # Prefer 'make uninstall' from the build tree — it removes everything the build
+    # installed (binaries, libscanmem, the polkit policy, python modules, its own
+    # desktop entry). Fall back to removing the known paths when it isn't available.
+    if [[ -f "${INSTALL_DIR}/Makefile" ]]; then
+        _require_sudo_or_instruct "Uninstalling via make" "sudo make -C ${INSTALL_DIR} uninstall"
+        sudo make -C "$INSTALL_DIR" uninstall \
+            && success "Ran 'make uninstall'." \
+            || warn "'make uninstall' failed — falling back to manual removal."
+    fi
     _require_sudo_or_instruct "Removing /usr/bin/scanmem and /usr/bin/gameconqueror" \
         "sudo rm -f /usr/bin/scanmem /usr/bin/gameconqueror"
     sudo rm -f /usr/bin/scanmem /usr/bin/gameconqueror \
@@ -143,6 +173,7 @@ cmd_status() {
 # -----------------------------------------------------------------------------
 
 main() {
+    _require_linux
     if [[ $# -gt 0 ]]; then
         case "$1" in
             install)   cmd_install ;;
