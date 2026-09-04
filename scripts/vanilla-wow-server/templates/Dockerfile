@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     openssl \
     libace-dev \
-    libmysqlclient-dev \
+    default-libmysqlclient-dev \
     libssl-dev \
     libtbb-dev \
     zlib1g-dev \
@@ -46,7 +46,7 @@ FROM ubuntu:22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     libace-dev \
-    libmysqlclient-dev \
+    default-libmysqlclient-dev \
     libssl-dev \
     libtbb-dev \
     zlib1g \

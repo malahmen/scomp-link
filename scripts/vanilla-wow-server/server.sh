@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # description: Build, containerize, and deploy a VMaNGOS vanilla WoW server
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
-# export-setup: kubectl
+# export-setup: kubectl kind
 # -----------------------------------------------------------------------------
 # server.sh
 # Builds and runs a VMaNGOS-based vanilla WoW (1.12.1 / client build 5875)
@@ -194,7 +194,7 @@ cmd_install_deps() {
     _ensure_pkg cmake  cmake  cmake
     _ensure_pkg g++    gcc-c++ g++
     _ensure_pkgs "tbb-devel mariadb-devel openssl-devel zlib-ng-compat-devel p7zip" \
-                 "libtbb-dev libmysqlclient-dev libssl-dev zlib1g-dev p7zip-full"
+                 "libtbb-dev default-libmysqlclient-dev libssl-dev zlib1g-dev p7zip-full"
     _ensure_ace || true
 
     info "Docker (required for the DB container and the Docker/k8s deployment paths)..."
