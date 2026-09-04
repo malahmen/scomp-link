@@ -41,7 +41,7 @@ KARPENTER_REPO="https://github.com/kubernetes-sigs/karpenter"
 KWOK_REPO="https://github.com/kubernetes-sigs/kwok"
 DEFAULT_WORK_DIR="${HOME}/karpenter-local"
 KARPENTER_NAMESPACE="kube-system"
-CERT_MANAGER_VERSION="v1.16.1"
+CERT_MANAGER_VERSION="v1.20.1"   # keep on a supported release (1.19/1.20); v1.16 is EOL
 
 # Colours
 BLUE=39
