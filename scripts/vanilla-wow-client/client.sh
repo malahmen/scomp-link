@@ -369,7 +369,7 @@ cmd_configure() {
     cfg_set BOTTLES_RUNNER "$BOTTLES_RUNNER"
 
     local res_input
-    res_input=$(gum input --value "$DEFAULT_RESOLUTION" --header "Default window resolution (WxH, used as the Wine virtual desktop size):") || true
+    res_input=$(gum input --value "$DEFAULT_RESOLUTION" --header "Default window resolution (WxH) — sets WoW's gxResolution/gxWindow cvars:") || true
     if [[ "${res_input:-$DEFAULT_RESOLUTION}" =~ $RESOLUTION_RE ]]; then
         DEFAULT_RESOLUTION="${res_input:-$DEFAULT_RESOLUTION}"
     else
