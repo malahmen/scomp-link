@@ -5,7 +5,8 @@
 # -----------------------------------------------------------------------------
 # mysql.sh
 # Interactive TUI for installing and managing MySQL.
-# Supports Docker (local container) and Kubernetes (Bitnami Helm chart).
+# Supports Docker (local container) and Kubernetes (groundhog2k Helm chart,
+# which deploys the official mysql image — replaces the deprecated Bitnami chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   mysql CLI (connect feature — prompted if missing).
@@ -40,7 +41,13 @@ source "${COMMON_DIR}/cluster.sh"
 
 MY_NAMESPACE="mysql"
 MY_HELM_RELEASE="mysql"
-MY_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/mysql"
+# Bitnami's free catalog was gutted in 2025 (images moved to bitnamilegacy and
+# purged), so we use groundhog2k's chart, which deploys the official `mysql`
+# image — mirroring the Docker target. fullnameOverride keeps the Service named
+# after the release, so port-forward/connect below can address svc/<release>.
+MY_HELM_REPO_NAME="groundhog2k"
+MY_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
+MY_HELM_CHART="groundhog2k/mysql"
 MY_DEFAULT_PORT=3306
 _MY_PF_PID="/tmp/scomp-pf-mysql.pid"
 MY_DEFAULT_DB="app"
@@ -356,16 +363,20 @@ mysql_install_k8s() {
         --header "Persistent volume size (leave empty for '8Gi'):") || true
     storage_size="${storage_size:-8Gi}"
 
+    _ensure_helm_repo "$MY_HELM_REPO_NAME" "$MY_HELM_REPO_URL"
     _k8s_ensure_namespace
 
+    # groundhog2k/mysql keys: settings.rootPassword = MySQL root; userDatabase.*
+    # creates an app database + user. fullnameOverride pins the Service name.
     local helm_args=(
         "$MY_HELM_RELEASE" "$MY_HELM_CHART"
         --namespace "$MY_NAMESPACE"
-        --set auth.rootPassword="$MY_ROOT_PASSWORD"
-        --set auth.username="$MY_USER"
-        --set auth.password="$MY_PASSWORD"
-        --set auth.database="$MY_DB"
-        --set primary.persistence.size="$storage_size"
+        --set fullnameOverride="$MY_HELM_RELEASE"
+        --set settings.rootPassword="$MY_ROOT_PASSWORD"
+        --set userDatabase.name="$MY_DB"
+        --set userDatabase.user="$MY_USER"
+        --set userDatabase.password="$MY_PASSWORD"
+        --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
