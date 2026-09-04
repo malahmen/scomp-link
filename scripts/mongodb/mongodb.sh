@@ -5,7 +5,8 @@
 # -----------------------------------------------------------------------------
 # mongodb.sh
 # Interactive TUI for installing and managing MongoDB.
-# Supports Docker (local container) and Kubernetes (Bitnami Helm chart).
+# Supports Docker (local container) and Kubernetes (groundhog2k Helm chart,
+# which deploys the official mongo image — replaces the deprecated Bitnami chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   mongosh/mongo CLI (connect feature — prompted if missing).
@@ -40,7 +41,13 @@ source "${COMMON_DIR}/cluster.sh"
 
 MNG_NAMESPACE="mongodb"
 MNG_HELM_RELEASE="mongodb"
-MNG_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/mongodb"
+# Bitnami's free catalog was gutted in 2025 (images moved to bitnamilegacy and
+# purged), so we use groundhog2k's chart, which deploys the official `mongo`
+# image — mirroring the Docker target. fullnameOverride keeps the Service named
+# after the release, so port-forward/connect below can address svc/<release>.
+MNG_HELM_REPO_NAME="groundhog2k"
+MNG_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
+MNG_HELM_CHART="groundhog2k/mongodb"
 MNG_DEFAULT_PORT=27017
 _MNG_PF_PID="/tmp/scomp-pf-mongodb.pid"
 MNG_DEFAULT_DB="app"
@@ -393,18 +400,22 @@ mongodb_install_k8s() {
         --header "Persistent volume size (leave empty for '8Gi'):") || true
     storage_size="${storage_size:-8Gi}"
 
+    _ensure_helm_repo "$MNG_HELM_REPO_NAME" "$MNG_HELM_REPO_URL"
     _k8s_ensure_namespace
 
-    # auth.rootUser/rootPassword = admin; auth.username/password/database = app user
+    # groundhog2k/mongodb keys: settings.rootUsername/rootPassword = admin;
+    # userDatabase.* creates an app database + user. fullnameOverride pins the
+    # Service name to the release so svc/<release> resolves.
     local helm_args=(
         "$MNG_HELM_RELEASE" "$MNG_HELM_CHART"
         --namespace "$MNG_NAMESPACE"
-        --set auth.rootUser="$MNG_ROOT_USER"
-        --set auth.rootPassword="$MNG_ROOT_PASSWORD"
-        --set auth.username="$MNG_USER"
-        --set auth.password="$MNG_PASSWORD"
-        --set auth.database="$MNG_DB"
-        --set persistence.size="$storage_size"
+        --set fullnameOverride="$MNG_HELM_RELEASE"
+        --set settings.rootUsername="$MNG_ROOT_USER"
+        --set settings.rootPassword="$MNG_ROOT_PASSWORD"
+        --set userDatabase.name="$MNG_DB"
+        --set userDatabase.user="$MNG_USER"
+        --set userDatabase.password="$MNG_PASSWORD"
+        --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
