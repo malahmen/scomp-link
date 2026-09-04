@@ -20,6 +20,7 @@ A script is worth extracting only when its core is:
 - **`holo-convert`** — engine in its own repo; scomp-link ships the TUI.
 - **`younglings-key`** (ignite) — certificate engine in its own repo; scomp-link ships the TUI.
 - **`navicomputer`** — SSH-profile engine (ex-`sshger`) in its own repo; scomp-link ships the TUI.
+- **`mind-trick`** — git-history trailer scrubber in its own repo; scomp-link ships the TUI. (Small/generic — split mainly to keep the pattern; `export.sh` would also have made it standalone.)
 
 ## Worth splitting (real standalone value) — ranked
 | Script | Rationale | Lift |
