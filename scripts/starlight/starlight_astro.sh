@@ -97,6 +97,13 @@ preflight_checks() {
         error_exit "vim is not installed. Please run setup.sh first."
     fi
 
+    # 'create' (scaffold) calls 'mise trust'/'mise install', and every generated
+    # mise.toml task needs it. Not fatal (managing existing projects works without
+    # it), but warn so the failure isn't silent under set -uo pipefail.
+    if ! command -v mise &>/dev/null; then
+        warn "mise not found — 'create' and the generated mise.toml tasks require it. Install via setup.sh."
+    fi
+
     if command -v tree &>/dev/null; then
         HAS_TREE=1
     fi
@@ -157,7 +164,7 @@ create_collect_project_info() {
 create_scaffold() {
     header "Scaffolding Starlight"
 
-    info "Running: npm create astro@latest -- --template starlight --yes"
+    info "Running: npm create astro@latest ${PROJECT_SLUG} -- --template starlight --yes --no-install"
 
     gum spin --spinner dot --title "Creating Starlight project in ./${PROJECT_SLUG} ..." -- \
         npm create astro@latest "$PROJECT_SLUG" -- --template starlight --yes --no-install
