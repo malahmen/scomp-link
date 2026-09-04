@@ -5,7 +5,8 @@
 # -----------------------------------------------------------------------------
 # redis.sh
 # Interactive TUI for installing and managing Redis.
-# Supports Docker (local container) and Kubernetes (Bitnami Helm chart).
+# Supports Docker (local container) and Kubernetes (groundhog2k Helm chart,
+# which deploys the official redis image — replaces the deprecated Bitnami chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   redis-cli (connect + queue listing — prompted if missing).
@@ -44,7 +45,14 @@ source "${COMMON_DIR}/cluster.sh"
 
 RD_NAMESPACE="redis"
 RD_HELM_RELEASE="redis"
-RD_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/redis"
+# Bitnami's free catalog was gutted in 2025 (images moved to bitnamilegacy and
+# purged), so we use groundhog2k's chart, which deploys the official `redis`
+# image — mirroring the Docker target. It has no auth key, but a password can be
+# injected via redisConfig (requirepass). fullnameOverride keeps the Service
+# named after the release, so port-forward below can address svc/<release>.
+RD_HELM_REPO_NAME="groundhog2k"
+RD_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
+RD_HELM_CHART="groundhog2k/redis"
 RD_DEFAULT_PORT=6379
 _RD_PF_PID="/tmp/scomp-pf-redis.pid"
 RD_DEFAULT_IMAGE_TAG="7"
@@ -497,9 +505,9 @@ _k8s_check_cluster() {
 # Prints the PID to stdout; caller must kill it when done.
 _k8s_start_port_forward() {
     local port="$1"
-    # Bitnami Redis chart creates svc/<release>-master for standalone/replication
+    # groundhog2k chart (fullnameOverride) creates svc/<release>. The legacy
+    # Bitnami chart used svc/<release>-master — try that first, then fall back.
     local svc="${RD_HELM_RELEASE}-master"
-    # Fallback to plain release name (standalone without -master suffix on older charts)
     if ! kubectl get svc "$svc" -n "$RD_NAMESPACE" &>/dev/null 2>&1; then
         svc="$RD_HELM_RELEASE"
     fi
@@ -519,21 +527,21 @@ redis_install_k8s() {
         --header "Persistent volume size (leave empty for '8Gi'):") || true
     storage_size="${storage_size:-8Gi}"
 
+    _ensure_helm_repo "$RD_HELM_REPO_NAME" "$RD_HELM_REPO_URL"
     _k8s_ensure_namespace
 
-    # auth.enabled is automatically true when auth.password is non-empty in Bitnami chart.
+    # groundhog2k/redis keys: storage.requestedSize for the PVC; a password is set
+    # via redisConfig (requirepass). No password -> Redis runs without auth.
     local helm_args=(
         "$RD_HELM_RELEASE" "$RD_HELM_CHART"
         --namespace "$RD_NAMESPACE"
-        --set architecture=standalone
-        --set master.persistence.size="$storage_size"
+        --set fullnameOverride="$RD_HELM_RELEASE"
+        --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
     if [[ -n "$RD_PASSWORD" ]]; then
-        helm_args+=(--set auth.password="$RD_PASSWORD")
-    else
-        helm_args+=(--set auth.enabled=false)
+        helm_args+=(--set-string redisConfig="requirepass ${RD_PASSWORD}")
     fi
 
     if _k8s_detect_installed; then
