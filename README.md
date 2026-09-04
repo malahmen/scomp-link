@@ -539,7 +539,7 @@ Have a useful script? Contributions are welcome! Good candidates:
 - [mise](https://mise.jdx.dev/) for seamless tool version management
 - [Kind](https://kind.sigs.k8s.io/) for Kubernetes-in-Docker
 - [Akinn](https://github.com/malahmen/akinn) for automated Kubernetes node provisioning
-- [Bitnami](https://bitnami.com/) for production-grade Helm charts (PostgreSQL, MariaDB, MySQL, MongoDB, Redis, InfluxDB)
+- [groundhog2k](https://github.com/groundhog2k/helm-charts) for the PostgreSQL / MariaDB / MySQL / MongoDB / Redis Helm charts (deploying the official upstream images) and [InfluxData](https://github.com/influxdata/helm-charts) for the InfluxDB 2.x chart
 - [Prometheus Community](https://github.com/prometheus-community) for the Prometheus Helm chart
 - [Grafana](https://grafana.com/) for the Grafana Helm chart and observability tooling
 - [Dozzle](https://dozzle.dev/) for the real-time container log viewer

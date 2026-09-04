@@ -33,7 +33,7 @@ A script is worth extracting only when its core is:
 | **`comfyengine`** (leans no) | Third-party ([kashithecomfy/ComfyEngine](https://github.com/kashithecomfy/ComfyEngine)) — our script is a from-source CMake build/install wrapper (deps + desktop shortcut). Thin veneer over an upstream build (which also ships via AUR); splitting adds little. | Small |
 
 ## Not worth splitting (thin CLI wrappers — leave as TUI-over-CLI)
-- **Databases** (postgres, mariadb, mysql, mongodb, redis, qdrant, influxdb) — `docker`/`helm` (Bitnami) glue; shared logic already in `_common/`.
+- **Databases** (postgres, mariadb, mysql, mongodb, redis, qdrant, influxdb) — `docker`/`helm` glue (groundhog2k + InfluxData charts; ex-Bitnami); shared logic already in `_common/`.
 - **Observability** (lgtm, prometheus, grafana, dozzle) and **Platform** (harbor, n8n) — helm/docker glue.
 - **kind, karpenter, argo, docker, k9s, lazydocker, lazygit** — install/launch veneers over their own CLIs.
 - **`bmad`** — `npx bmad-method` is the engine (its own repo already); our script is lifecycle glue.
