@@ -5,7 +5,8 @@
 # -----------------------------------------------------------------------------
 # postgres.sh
 # Interactive TUI for installing and managing PostgreSQL.
-# Supports Docker (local container) and Kubernetes (Bitnami Helm chart).
+# Supports Docker (local container) and Kubernetes (groundhog2k Helm chart,
+# which deploys the official postgres image — replaces the deprecated Bitnami chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   psql (connect feature — prompted if missing).
@@ -40,7 +41,13 @@ source "${COMMON_DIR}/cluster.sh"
 
 PG_NAMESPACE="postgres"
 PG_HELM_RELEASE="postgresql"
-PG_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/postgresql"
+# Bitnami's free catalog was gutted in 2025 (images moved to bitnamilegacy and
+# purged), so we use groundhog2k's chart, which deploys the official `postgres`
+# image — mirroring the Docker target. fullnameOverride keeps the Service named
+# after the release, so port-forward/connect below can address svc/<release>.
+PG_HELM_REPO_NAME="groundhog2k"
+PG_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
+PG_HELM_CHART="groundhog2k/postgres"
 PG_DEFAULT_PORT=5432
 _PG_PF_PID="/tmp/scomp-pf-postgres.pid"
 PG_DEFAULT_DB="app"
@@ -334,17 +341,21 @@ postgres_install_k8s() {
         --header "Persistent volume size (leave empty for '8Gi'):") || true
     storage_size="${storage_size:-8Gi}"
 
+    _ensure_helm_repo "$PG_HELM_REPO_NAME" "$PG_HELM_REPO_URL"
     _k8s_ensure_namespace
 
-    # auth.postgresPassword = superuser; auth.username/password/database = app user
+    # groundhog2k/postgres keys: settings.superuserPassword = the 'postgres'
+    # superuser; userDatabase.* creates an app database + user. fullnameOverride
+    # pins the Service name to the release so svc/<release> resolves.
     local helm_args=(
         "$PG_HELM_RELEASE" "$PG_HELM_CHART"
         --namespace "$PG_NAMESPACE"
-        --set auth.postgresPassword="$PG_PASSWORD"
-        --set auth.username="$PG_USER"
-        --set auth.password="$PG_PASSWORD"
-        --set auth.database="$PG_DB"
-        --set primary.persistence.size="$storage_size"
+        --set fullnameOverride="$PG_HELM_RELEASE"
+        --set settings.superuserPassword="$PG_PASSWORD"
+        --set userDatabase.name="$PG_DB"
+        --set userDatabase.user="$PG_USER"
+        --set userDatabase.password="$PG_PASSWORD"
+        --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
