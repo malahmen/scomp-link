@@ -21,13 +21,13 @@ A script is worth extracting only when its core is:
 - **`younglings-key`** (ignite) — certificate engine in its own repo; scomp-link ships the TUI.
 - **`navicomputer`** — SSH-profile engine (ex-`sshger`) in its own repo; scomp-link ships the TUI.
 - **`mind-trick`** — git-history trailer scrubber in its own repo; scomp-link ships the TUI. (Small/generic — split mainly to keep the pattern; `export.sh` would also have made it standalone.)
-- **`protocol-droid`** — the containerized document-conversion service (Redis queue + enqueue API + scalable marker workers + Docker/k8s templates), split out of `marker`. scomp-link's marker "Deploy as a service" menu is now a thin front-end; local pipx conversion stays in `marker.sh`.
+- **`protocol-droid`** — the whole document-conversion engine (ex-`marker`), covering **both** local pipx marker use *and* the containerized service (Redis queue + enqueue API + scalable marker workers + Docker/k8s templates). It's the engine scomp-link's TUI manages; protocol-droid is what refers to / runs marker. scomp-link ships only the front-end at `scripts/protocol-droid/`.
 
 ## Worth splitting (real standalone value) — ranked
 | Script | Rationale | Lift |
 | --- | --- | --- |
 | ~~**`sshger`**~~ ✅ done → **navicomputer** | `~/.ssh/config` CRUD as a flag-driven CLI. Split into the navicomputer engine repo + scomp-link TUI. | Small |
-| ~~**marker *service***~~ ✅ done → **protocol-droid** | The containerized conversion service (api/worker/redis + Docker/k8s templates) extracted to its own repo; local pipx bits kept as the marker TUI. | Medium |
+| ~~**marker** (whole script)~~ ✅ done → **protocol-droid** | Entire document-conversion engine — local pipx marker *and* the containerized service — extracted to its own repo; scomp-link ships only the `protocol-droid` TUI. | Medium |
 | **`vanilla-wow-server`** | Real build/containerize/deploy logic + Dockerfile/entrypoint/k8s templates — a genuine "deploy a VMaNGOS server" tool. | Medium |
 | **`vanilla-wow-client`** | Non-trivial Wine multiboxing config/launch logic; standalone value for that community. | Medium |
 | **`comfyengine`** (maybe) | It's our own ComfyEngine build — the build script arguably belongs *with* ComfyEngine's repo. | Small–Med |
