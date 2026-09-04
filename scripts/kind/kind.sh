@@ -421,8 +421,16 @@ create_run() {
     gum log --level info "Creating kind cluster '${CLUSTER_NAME}'..."
     gum log --level warn "This may take a few minutes on first run — kind pulls node images from Docker Hub."
 
+    # Run the version the user picked in create_select_version (installed via mise).
+    # For 'latest'/unset, fall back to the mise shim's current kind. This is what
+    # actually pins the bundled Kubernetes version — a bare 'kind' would ignore it.
+    local kind_cmd=(kind)
+    if [[ -n "${KIND_VERSION:-}" && "$KIND_VERSION" != "latest" ]]; then
+        kind_cmd=(mise exec "kind@${KIND_VERSION#v}" -- kind)
+    fi
+
     # No gum spin — kind prints progress to stderr, swallowing it makes failures impossible to diagnose
-    if ! kind create cluster --config "${CONFIG_FILE}"; then
+    if ! "${kind_cmd[@]}" create cluster --config "${CONFIG_FILE}"; then
         gum log --level error "kind cluster creation failed. See output above for details."
         rm -f "${CONFIG_FILE}"
         return 1
