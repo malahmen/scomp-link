@@ -21,12 +21,13 @@ A script is worth extracting only when its core is:
 - **`younglings-key`** (ignite) — certificate engine in its own repo; scomp-link ships the TUI.
 - **`navicomputer`** — SSH-profile engine (ex-`sshger`) in its own repo; scomp-link ships the TUI.
 - **`mind-trick`** — git-history trailer scrubber in its own repo; scomp-link ships the TUI. (Small/generic — split mainly to keep the pattern; `export.sh` would also have made it standalone.)
+- **`protocol-droid`** — the containerized document-conversion service (Redis queue + enqueue API + scalable marker workers + Docker/k8s templates), split out of `marker`. scomp-link's marker "Deploy as a service" menu is now a thin front-end; local pipx conversion stays in `marker.sh`.
 
 ## Worth splitting (real standalone value) — ranked
 | Script | Rationale | Lift |
 | --- | --- | --- |
 | ~~**`sshger`**~~ ✅ done → **navicomputer** | `~/.ssh/config` CRUD as a flag-driven CLI. Split into the navicomputer engine repo + scomp-link TUI. | Small |
-| **marker *service*** | Not marker (datalab's CLI is the engine) — the **containerized RAG-ingestion service** (api/worker/redis + Docker/k8s templates) is a deployable standalone artifact. Extract "marker-service"; keep local pipx bits as thin TUI. | Medium |
+| ~~**marker *service***~~ ✅ done → **protocol-droid** | The containerized conversion service (api/worker/redis + Docker/k8s templates) extracted to its own repo; local pipx bits kept as the marker TUI. | Medium |
 | **`vanilla-wow-server`** | Real build/containerize/deploy logic + Dockerfile/entrypoint/k8s templates — a genuine "deploy a VMaNGOS server" tool. | Medium |
 | **`vanilla-wow-client`** | Non-trivial Wine multiboxing config/launch logic; standalone value for that community. | Medium |
 | **`comfyengine`** (maybe) | It's our own ComfyEngine build — the build script arguably belongs *with* ComfyEngine's repo. | Small–Med |
@@ -39,6 +40,6 @@ A script is worth extracting only when its core is:
 - **`starlight`** — mostly `npm create astro` scaffolding; its converter already delegates to holo-convert.
 
 ## When we pick this up
-- Next up: the **marker service**, then **vanilla-wow-server/client** (bigger lifts). (sshger done → navicomputer.)
+- Next up: **vanilla-wow-server/client** (bigger lifts). (sshger done → navicomputer; marker service done → protocol-droid.)
 - Reuse the holo-convert engine-resolution pattern: `$XXX_DIR` override → sibling checkout → `~/.cache/scomp-link/<name>` clone → `git clone`.
 - Engine = gum-free, flags + guardrails (no auto-install); front-end = gum TUI that builds flags and offers `--setup` on missing deps.
