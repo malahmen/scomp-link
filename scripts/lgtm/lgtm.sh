@@ -34,11 +34,12 @@ source "${COMMON_DIR}/deps.sh"
 
 # pinned chart versions
 # Update these explicitly when you want to bump a component.
-LOKI_CHART_VERSION="6.6.2"
-TEMPO_CHART_VERSION="1.10.3"
-MIMIR_CHART_VERSION="5.3.0"
-GRAFANA_CHART_VERSION="8.0.0"
-OTELCOL_CHART_VERSION="0.97.1"
+LOKI_CHART_VERSION="6.55.0"      # newest 6.x (7.x renames deploymentMode → Monolithic)
+TEMPO_CHART_VERSION="1.24.4"
+MIMIR_CHART_VERSION="5.8.0"      # newest 5.x (6.0 drops the mimir-nginx svc this script routes through)
+GRAFANA_CHART_VERSION="10.5.15"
+OTELCOL_CHART_VERSION="0.129.0"  # newest chart whose collector (0.130.0) still ships the 'loki' exporter
+                                 # used below; ≥0.131 removed it — see the values note in _helm_values_otelcol.
 
 HELM_REPO_NAME="grafana"
 HELM_REPO_URL="https://grafana.github.io/helm-charts"
@@ -48,7 +49,7 @@ OTEL_HELM_REPO_URL="https://open-telemetry.github.io/opentelemetry-helm-charts"
 
 METRICS_SERVER_HELM_REPO_NAME="metrics-server"
 METRICS_SERVER_HELM_REPO_URL="https://kubernetes-sigs.github.io/metrics-server/"
-METRICS_SERVER_CHART_VERSION="3.12.2"
+METRICS_SERVER_CHART_VERSION="3.14.0"
 
 NAMESPACE="monitoring"
 
@@ -123,11 +124,11 @@ declare -A COMP_CHART_VERSION=(
 
 # Container image names (for Compose mode)
 declare -A COMP_IMAGE=(
-    [grafana]="grafana/grafana:11.0.0"
-    [loki]="grafana/loki:3.0.0"
-    [tempo]="grafana/tempo:2.5.0"
-    [mimir]="grafana/mimir:2.12.0"
-    [otelcol]="otel/opentelemetry-collector-contrib:0.102.0"
+    [grafana]="grafana/grafana:12.3.1"
+    [loki]="grafana/loki:3.7.7"
+    [tempo]="grafana/tempo:2.10.8"
+    [mimir]="grafana/mimir:3.2.0"
+    [otelcol]="otel/opentelemetry-collector-contrib:0.130.0"
 )
 
 # config helpers────
@@ -613,6 +614,14 @@ config:
       endpoint: "http://tempo.${NAMESPACE}.svc.cluster.local:4317"
       tls:
         insecure: true
+    # NOTE: the 'loki' exporter was removed from the collector in v0.131.0, so
+    # OTELCOL_CHART_VERSION is pinned to 0.129.0 (collector 0.130.0), the last that
+    # ships it. To move to the latest collector, replace this exporter with an
+    # OTLP-HTTP one to Loki's native endpoint (Loki 3.x supports it):
+    #     otlphttp/loki:
+    #       logs_endpoint: "http://loki.${NAMESPACE}.svc.cluster.local:3100/otlp/v1/logs"
+    #       tls: { insecure: true }
+    # and set the logs pipeline exporters to [otlphttp/loki].
     loki:
       endpoint: "http://loki.${NAMESPACE}.svc.cluster.local:3100/loki/api/v1/push"
     prometheusremotewrite:
