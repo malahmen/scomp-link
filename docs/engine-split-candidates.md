@@ -30,7 +30,7 @@ A script is worth extracting only when its core is:
 | ~~**marker** (whole script)~~ ✅ done → **protocol-droid** | Entire document-conversion engine — local pipx marker *and* the containerized service — extracted to its own repo; scomp-link ships only the `protocol-droid` TUI. | Medium |
 | **`vanilla-wow-server`** | Real build/containerize/deploy logic + Dockerfile/entrypoint/k8s templates — a genuine "deploy a VMaNGOS server" tool. | Medium |
 | **`vanilla-wow-client`** | Non-trivial Wine multiboxing config/launch logic; standalone value for that community. | Medium |
-| **`comfyengine`** (maybe) | It's our own ComfyEngine build — the build script arguably belongs *with* ComfyEngine's repo. | Small–Med |
+| **`comfyengine`** (leans no) | Third-party ([kashithecomfy/ComfyEngine](https://github.com/kashithecomfy/ComfyEngine)) — our script is a from-source CMake build/install wrapper (deps + desktop shortcut). Thin veneer over an upstream build (which also ships via AUR); splitting adds little. | Small |
 
 ## Not worth splitting (thin CLI wrappers — leave as TUI-over-CLI)
 - **Databases** (postgres, mariadb, mysql, mongodb, redis, qdrant, influxdb) — `docker`/`helm` (Bitnami) glue; shared logic already in `_common/`.
