@@ -5,7 +5,8 @@
 # -----------------------------------------------------------------------------
 # mariadb.sh
 # Interactive TUI for installing and managing MariaDB.
-# Supports Docker (local container) and Kubernetes (Bitnami Helm chart).
+# Supports Docker (local container) and Kubernetes (groundhog2k Helm chart,
+# which deploys the official mariadb image — replaces the deprecated Bitnami chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   mariadb/mysql CLI (connect feature — prompted if missing).
@@ -40,7 +41,13 @@ source "${COMMON_DIR}/cluster.sh"
 
 MDB_NAMESPACE="mariadb"
 MDB_HELM_RELEASE="mariadb"
-MDB_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/mariadb"
+# Bitnami's free catalog was gutted in 2025 (images moved to bitnamilegacy and
+# purged), so we use groundhog2k's chart, which deploys the official `mariadb`
+# image — mirroring the Docker target. fullnameOverride keeps the Service named
+# after the release, so port-forward/connect below can address svc/<release>.
+MDB_HELM_REPO_NAME="groundhog2k"
+MDB_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
+MDB_HELM_CHART="groundhog2k/mariadb"
 MDB_DEFAULT_PORT=3306
 _MDB_PF_PID="/tmp/scomp-pf-mariadb.pid"
 MDB_DEFAULT_DB="app"
@@ -380,17 +387,21 @@ mariadb_install_k8s() {
         --header "Persistent volume size (leave empty for '8Gi'):") || true
     storage_size="${storage_size:-8Gi}"
 
+    _ensure_helm_repo "$MDB_HELM_REPO_NAME" "$MDB_HELM_REPO_URL"
     _k8s_ensure_namespace
 
-    # auth.rootPassword = MariaDB root; auth.username/password/database = app user
+    # groundhog2k/mariadb keys: settings.rootPassword = MariaDB root; userDatabase.*
+    # creates an app database + user. fullnameOverride pins the Service name to the
+    # release so svc/<release> resolves.
     local helm_args=(
         "$MDB_HELM_RELEASE" "$MDB_HELM_CHART"
         --namespace "$MDB_NAMESPACE"
-        --set auth.rootPassword="$MDB_ROOT_PASSWORD"
-        --set auth.username="$MDB_USER"
-        --set auth.password="$MDB_PASSWORD"
-        --set auth.database="$MDB_DB"
-        --set primary.persistence.size="$storage_size"
+        --set fullnameOverride="$MDB_HELM_RELEASE"
+        --set settings.rootPassword="$MDB_ROOT_PASSWORD"
+        --set userDatabase.name="$MDB_DB"
+        --set userDatabase.user="$MDB_USER"
+        --set userDatabase.password="$MDB_PASSWORD"
+        --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
