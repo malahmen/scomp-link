@@ -174,6 +174,11 @@ cmd_ubisoft_rws() {
 
     if [[ "${#windows[@]}" -eq 0 ]]; then
         warn "No Ubisoft Connect windows found."
+        # xwininfo/wmctrl/xdotool only see X11 windows. Under a native Wayland
+        # session, only XWayland clients are visible — Ubisoft Connect via Proton
+        # is XWayland, so it should appear, but a native-Wayland app never will.
+        [[ -n "${WAYLAND_DISPLAY:-}" ]] && \
+            warn "You're on Wayland — these X11 tools only see XWayland windows. Make sure Ubisoft Connect is actually running (it runs under XWayland via Proton)."
         return
     fi
 
