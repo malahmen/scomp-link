@@ -5,14 +5,15 @@
 # -----------------------------------------------------------------------------
 # influxdb.sh
 # Interactive TUI for installing and managing InfluxDB 2.x.
-# Supports Docker (local container) and Kubernetes (Bitnami Helm chart).
+# Supports Docker (local container) and Kubernetes (InfluxData influxdb2 chart,
+# official influxdb 2.x image — replaces the deprecated Bitnami chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Sources: scripts/cluster/cluster.sh for deployment target selection.
 #
 # InfluxDB 2.x uses an org/bucket/token model.
 # Docker: init env vars configure admin user, org, bucket, and optional token.
-# K8s:   same via Bitnami chart Helm values.
+# K8s:   same via InfluxData influxdb2 chart Helm values.
 # Connect: web UI at :8086 (Docker: already mapped; K8s: port-forward).
 # -----------------------------------------------------------------------------
 
@@ -44,7 +45,13 @@ source "${COMMON_DIR}/cluster.sh"
 
 IDB_NAMESPACE="influxdb"
 IDB_HELM_RELEASE="influxdb"
-IDB_HELM_CHART="oci://registry-1.docker.io/bitnamicharts/influxdb"
+# Bitnami's free catalog was gutted in 2025 (images moved to bitnamilegacy and
+# purged), so we use InfluxData's official influxdb2 chart, which deploys the
+# official `influxdb` 2.x image — mirroring the Docker target. fullnameOverride +
+# service.port=8086 keep the Service addressable as svc/<release>:8086.
+IDB_HELM_REPO_NAME="influxdata"
+IDB_HELM_REPO_URL="https://helm.influxdata.com/"
+IDB_HELM_CHART="influxdata/influxdb2"
 IDB_DEFAULT_PORT=8086
 _IDB_PF_PID="/tmp/scomp-pf-influxdb.pid"
 IDB_DEFAULT_IMAGE_TAG="2"
@@ -426,21 +433,28 @@ influxdb_install_k8s() {
         --header "Persistent volume size (leave empty for '8Gi'):") || true
     storage_size="${storage_size:-8Gi}"
 
+    _ensure_helm_repo "$IDB_HELM_REPO_NAME" "$IDB_HELM_REPO_URL"
     _k8s_ensure_namespace
 
+    # influxdata/influxdb2 keys: adminUser.* drives the initial setup; the chart's
+    # Service defaults to port 80 → force 8086 so svc/<release>:8086 works. persistence
+    # must be explicitly enabled. fullnameOverride pins the Service to the release.
     local helm_args=(
         "$IDB_HELM_RELEASE" "$IDB_HELM_CHART"
         --namespace "$IDB_NAMESPACE"
-        --set auth.admin.username="$IDB_ADMIN_USER"
-        --set auth.admin.password="$IDB_ADMIN_PASSWORD"
-        --set auth.admin.org="$IDB_ORG"
-        --set auth.admin.bucket="$IDB_BUCKET"
+        --set fullnameOverride="$IDB_HELM_RELEASE"
+        --set service.port=8086
+        --set adminUser.user="$IDB_ADMIN_USER"
+        --set adminUser.password="$IDB_ADMIN_PASSWORD"
+        --set adminUser.organization="$IDB_ORG"
+        --set adminUser.bucket="$IDB_BUCKET"
+        --set persistence.enabled=true
         --set persistence.size="$storage_size"
         --wait --timeout 5m
     )
 
     if [[ -n "$IDB_TOKEN" ]]; then
-        helm_args+=(--set auth.admin.token="$IDB_TOKEN")
+        helm_args+=(--set adminUser.token="$IDB_TOKEN")
     fi
 
     if _k8s_detect_installed; then
