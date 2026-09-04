@@ -86,8 +86,11 @@ preflight_checks() {
 
     local node_major
     node_major=$(node -e "process.stdout.write(String(process.versions.node.split('.')[0]))")
-    if [[ "$node_major" -lt 18 ]] || [[ "$node_major" -eq 19 ]] || [[ "$node_major" -eq 21 ]]; then
-        error_exit "Node.js v${node_major} is not supported by Astro. Supported: v18.20.8+, v20.3.0+, v22+. Please update via setup.sh."
+    # Current Astro (5.8+, Sept 2025) dropped Node 18 and 20 — the minimum is now
+    # Node v22.12.0, and odd-numbered majors are unsupported. `npm create astro@latest`
+    # pulls the newest, so guard for 22+ even to avoid a mid-scaffold engine error.
+    if [[ "$node_major" -lt 22 ]] || (( node_major % 2 != 0 )); then
+        error_exit "Node.js v${node_major} is not supported by current Astro. Requires Node v22.12.0+ (even-numbered releases only). Please update via setup.sh."
     fi
 
     if ! command -v vim &>/dev/null; then
