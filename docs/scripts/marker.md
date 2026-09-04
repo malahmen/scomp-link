@@ -107,10 +107,22 @@ Things to keep in mind:
 
 ## Deploy as a service (for RAG ingestion)
 
-The **Deploy as a service** menu deploys marker as a scalable, containerized
-ingestion service, the right shape for feeding a RAG pipeline (conversion is an
-offline/async indexing step, decoupled from your RAG query service). Templates
-live in [`scripts/marker/templates/service/`](../../scripts/marker/templates/service/).
+The **Deploy as a service** menu deploys a scalable, containerized **conversion
+service** — the right shape for feeding a RAG pipeline (conversion is an
+offline/async step that *prepares* documents, decoupled from your RAG query
+service; chunking/embedding/indexing happens downstream, not here).
+
+That service lives in its own repo, **[protocol-droid](https://github.com/malahmen/protocol-droid)**
+(a Redis queue + enqueue API + scalable marker workers + Docker/K8s templates).
+This menu is a thin **front-end**: it resolves protocol-droid's CLI and drives it
+by flags — the same split as [holo-convert](holo-convert.md),
+[navicomputer](navicomputer.md), and [mind-trick](mind-trick.md). The engine is
+found automatically, in order:
+
+1. `$PROTOCOL_DROID_DIR/protocol-droid.sh` (explicit override)
+2. `../../../protocol-droid/protocol-droid.sh` (a local sibling checkout)
+3. `~/.cache/scomp-link/protocol-droid/` (a cached clone; offers `git pull`)
+4. a fresh `git clone --depth 1` from the public repo
 
 **Architecture** (one system; HTTP, batch, and replicas are just producers/knobs
 around a queue + workers):
@@ -126,7 +138,8 @@ batch enqueuer  ──┴─▶ Redis queue ─▶ worker × N (marker, models l
 - **batch enqueuer** - walks a folder and enqueues one job per file (the "convert a whole folder in one shot" path); workers process in parallel.
 
 **Menu actions** (after choosing Docker or K8s): Build image · Deploy/update ·
-Status · Logs · Scale workers · Ingest a folder (batch) · Tear down.
+Status · Logs · Scale workers · Enqueue a folder (batch) · Tear down. Each maps
+to a `protocol-droid.sh <command> --target docker|k8s` call.
 
 **Targets:**
 
@@ -143,8 +156,9 @@ Status · Logs · Scale workers · Ingest a folder (batch) · Tear down.
   so replicas share it, needs an RWX StorageClass).
 - The image is **not** built here (it's multi-GB); **Build image** runs `docker build`, and
   for K8s you must push/`kind load` it to the cluster.
-- The `marker.sh` TUI is a management convenience; production RAG would call the API /
-  Python worker directly.
+- This TUI is a management convenience over protocol-droid; production RAG would
+  call the API / Python worker (or `protocol-droid.sh`) directly. See the
+  [protocol-droid README](https://github.com/malahmen/protocol-droid) for full details.
 
 ## Model downloads (Hugging Face) & offline use
 
