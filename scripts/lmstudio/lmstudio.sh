@@ -192,6 +192,81 @@ _bootstrap_cli() {
 }
 
 # -----------------------------------------------------------------------------
+# ROCm GPU sandbox fix
+# -----------------------------------------------------------------------------
+# Background: LM Studio's Flatpak only requests `devices=dri`, which exposes
+# /dev/dri (fine for Vulkan/OpenGL) but not /dev/kfd — the kernel interface
+# ROCm compute needs. On a host with a ROCm-capable AMD GPU this makes LM
+# Studio's bundled ROCm llama.cpp backend fail hardware survey with
+# "No ROCm supported accelerators found!" even though the kernel driver and
+# GPU both support it fine — /dev/kfd exists on the host, it's just invisible
+# inside the sandbox. Flatpak has no finer-grained "just kfd" device knob, so
+# the fix is `--device=all`, followed by an app restart so the new device
+# list takes effect. Vulkan (used via /dev/dri) is unaffected either way.
+
+_host_has_rocm_capable_gpu() {
+    [[ -e /dev/kfd ]] || return 1
+    lspci -k 2>/dev/null | grep -qi 'amdgpu'
+}
+
+_rocm_sandbox_fix_applied() {
+    flatpak override --user --show "$APP_ID" 2>/dev/null | grep -qE '^devices=.*\ball\b'
+}
+
+_apply_rocm_sandbox_override() {
+    info "Granting LM Studio's sandbox access to /dev/kfd (ROCm compute)..."
+    flatpak override --user --device=all "$APP_ID" \
+        || error_exit "flatpak override failed."
+    success "Sandbox override applied (devices=all)."
+}
+
+cmd_fix_rocm() {
+    header "LM Studio — ROCm sandbox fix"
+
+    _app_installed || error_exit "LM Studio is not installed. Run 'install' first."
+
+    if ! _host_has_rocm_capable_gpu; then
+        info "No ROCm-capable AMD GPU detected on this host (no /dev/kfd, or amdgpu not bound) — nothing to fix."
+        return
+    fi
+
+    if _rocm_sandbox_fix_applied; then
+        success "Fix already applied — sandbox already has full device access."
+        return
+    fi
+
+    warn "LM Studio's sandbox can't see /dev/kfd, so its ROCm backend can't detect this GPU (Vulkan still works fine in the meantime)."
+    gum confirm "Apply the fix now (flatpak override --device=all)?" || { info "Skipped."; return; }
+
+    _apply_rocm_sandbox_override
+
+    local running="false"
+    flatpak ps --columns=application 2>/dev/null | grep -qx "$APP_ID" && running="true"
+    local service_active="false"
+    systemctl --user is-active --quiet lmstudio.service 2>/dev/null && service_active="true"
+
+    if [[ "$running" == "true" || "$service_active" == "true" ]]; then
+        gum confirm "LM Studio needs to restart to pick up the new sandbox permissions. Restart it now?" || {
+            warn "Restart LM Studio manually (or 'systemctl --user restart lmstudio.service') for the fix to take effect."
+            return
+        }
+
+        if [[ "$service_active" == "true" ]]; then
+            systemctl --user restart lmstudio.service
+        else
+            flatpak kill "$APP_ID" 2>/dev/null || true
+            sleep 1
+            nohup flatpak run "$APP_ID" >/dev/null 2>&1 &
+            disown
+        fi
+        success "LM Studio restarted. To actually use ROCm for a model, select the engine with:"
+        info "  lms runtime select llama.cpp-linux-x86_64-amd-rocm-avx2 --latest"
+    else
+        info "LM Studio isn't currently running — the fix will take effect next launch."
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # service — headless boot-time autostart (Xvfb + LM Studio, no login required)
 # -----------------------------------------------------------------------------
 
@@ -367,7 +442,14 @@ cmd_status() {
     fi
 
     gum style --foreground "${CYAN}" --bold "── Sandbox permissions"
-    flatpak info --show-permissions "$APP_ID" 2>/dev/null | grep -E "^filesystems|^persistent" || warn "Could not read permissions."
+    flatpak info --show-permissions "$APP_ID" 2>/dev/null | grep -E "^filesystems|^persistent|^devices" || warn "Could not read permissions."
+    if _host_has_rocm_capable_gpu; then
+        if _rocm_sandbox_fix_applied; then
+            success "ROCm sandbox fix: applied."
+        else
+            warn "ROCm-capable AMD GPU detected but sandbox fix not applied. Run: lmstudio.sh fix-rocm"
+        fi
+    fi
 
     gum style --foreground "${CYAN}" --bold "── Headless service"
     if [[ -f "$APP_UNIT" ]]; then
@@ -429,9 +511,10 @@ main() {
             install)          cmd_install ;;
             uninstall)        cmd_uninstall ;;
             status)           cmd_status ;;
+            fix-rocm)         cmd_fix_rocm ;;
             service-enable)   cmd_service_enable ;;
             service-disable)  cmd_service_disable ;;
-            *) error_exit "Unknown command: $1 (expected: install|uninstall|status|service-enable|service-disable)" ;;
+            *) error_exit "Unknown command: $1 (expected: install|uninstall|status|fix-rocm|service-enable|service-disable)" ;;
         esac
         exit 0
     fi
@@ -440,7 +523,7 @@ main() {
         header "LM Studio Manager"
         local action
         action=$(gum choose \
-            "install" "status" "service-enable" "service-disable" "uninstall" "quit" \
+            "install" "status" "fix-rocm" "service-enable" "service-disable" "uninstall" "quit" \
             --header "Choose an action:") || true
 
         [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
@@ -448,6 +531,7 @@ main() {
         case "$action" in
             install)         cmd_install ;;
             status)          cmd_status ;;
+            fix-rocm)        cmd_fix_rocm ;;
             service-enable)  cmd_service_enable ;;
             service-disable) cmd_service_disable ;;
             uninstall)       cmd_uninstall ;;
