@@ -385,10 +385,20 @@ _pick_components() {
         labels+=("${COMP_LABEL[$c]}")
     done
 
-    # Pre-select defaults
+    # Map the default component keys to their labels for gum's pre-selection
+    # (comma-separated; the LGTM labels contain no commas).
+    local selected="" c
+    for c in $default_list; do
+        [[ -n "${COMP_LABEL[$c]:-}" ]] && selected+="${COMP_LABEL[$c]},"
+    done
+    selected="${selected%,}"
+
+    # Pre-select the defaults — the --selected flag the picker was missing, so
+    # default_list actually takes effect now instead of being silently ignored.
     local chosen
     chosen=$(printf '%s\n' "${labels[@]}" | gum choose \
         --no-limit \
+        --selected "$selected" \
         --header "$header" \
         --height 10) || true
 
