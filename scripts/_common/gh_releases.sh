@@ -8,20 +8,28 @@ select_version() {
 
     info "Fetching available ${label} versions from GitHub..."
 
-    local versions
-    if ! versions=$(gum spin --spinner dot --title "Fetching release list..." -- \
-        bash -c "curl -fsSL '${api_url}?per_page=30' 2>/dev/null \
-            | grep '\"tag_name\"' \
-            | sed 's/.*\"tag_name\": *\"\(.*\)\".*/\1/' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\$'"); then
+    # Fetch first (curl -f fails on HTTP errors), THEN filter — so a genuine fetch
+    # failure and "fetched fine, but no stable tags" are distinguished. Doing both
+    # in one piped `bash -c` made the pipeline's exit status the final grep's, so a
+    # repo with only pre-releases looked like a network failure.
+    local raw
+    if ! raw=$(gum spin --spinner dot --title "Fetching release list..." -- \
+        curl -fsSL "${api_url}?per_page=30" 2>/dev/null); then
         gum log --level warn "Failed to fetch version list. Falling back to latest stable."
         SELECTED_VERSION="latest"
         return
     fi
 
+    local versions
+    versions=$(printf '%s' "$raw" \
+        | grep '"tag_name"' \
+        | sed 's/.*"tag_name": *"\(.*\)".*/\1/' \
+        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+
     if [[ -z "$versions" ]]; then
-        gum log --level error "No stable releases found. Check your internet connection."
-        exit 1
+        gum log --level warn "No stable (vX.Y.Z) ${label} releases found — falling back to latest."
+        SELECTED_VERSION="latest"
+        return
     fi
 
     SELECTED_VERSION=$(echo "$versions" | gum choose \
