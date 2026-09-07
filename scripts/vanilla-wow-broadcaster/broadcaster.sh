@@ -83,14 +83,14 @@ _cfg_get() {
     grep -E "^${key}=" "$file" 2>/dev/null | cut -d= -f2- | sed 's/^"\(.*\)"$/\1/' || true
 }
 _cfg_set() {
-    local file="$1" key="$2" val="$3" quoted
-    quoted="\"${val}\""
+    local file="$1" key="$2" val="$3" tmp
     touch "$file"
-    if grep -qE "^${key}=" "$file" 2>/dev/null; then
-        sed -i.bak "s|^${key}=.*|${key}=${quoted}|" "$file" && rm -f "${file}.bak"
-    else
-        echo "${key}=${quoted}" >> "$file"
-    fi
+    # Rewrite without sed so value metacharacters (| & \) can't corrupt the line:
+    # drop any existing entry for this key, then append the new KEY="value".
+    tmp="$(mktemp "${file}.XXXXXX")"
+    grep -vE "^${key}=" "$file" > "$tmp" 2>/dev/null || true
+    printf '%s="%s"\n' "$key" "$val" >> "$tmp"
+    mv "$tmp" "$file"
 }
 
 # -----------------------------------------------------------------------------
