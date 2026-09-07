@@ -44,7 +44,13 @@ get_scripts() {
         _dir_excluded "$dir" && continue
         scripts+=("$rel")
     done < <(find "$SCRIPTS_DIR" -mindepth 2 -maxdepth 2 -name "*.sh" -print0 | sort -z)
-    printf '%s\n' "${scripts[@]}"
+    # Guard the expansion: with an empty array under `set -u`, "${scripts[@]}" is an
+    # unbound-variable error on bash < 4.4 (e.g. macOS system bash 3.2), which would
+    # abort before the caller's friendly "no scripts found" message. Use an `if`
+    # (not `&&`) so the function still returns 0 when no scripts are found.
+    if (( ${#scripts[@]} > 0 )); then
+        printf '%s\n' "${scripts[@]}"
+    fi
 }
 
 # One-line "# description:" header from a script (empty when the script has none).
