@@ -218,7 +218,9 @@ ensure_gum_width() {
     # If already configured, respect the existing value and move on
     if grep -qF "GUM_INPUT_WIDTH" "$profile_file" 2>/dev/null; then
         ok "GUM_INPUT_WIDTH already set in ${profile_file}."
-        export GUM_INPUT_WIDTH=$(grep "GUM_INPUT_WIDTH" "$profile_file" | grep -oE '[0-9]+' | tail -1)
+        local _w
+        _w=$(grep "GUM_INPUT_WIDTH" "$profile_file" | grep -oE '[0-9]+' | tail -1)
+        export GUM_INPUT_WIDTH="${_w:-60}"   # fall back if the line was hand-edited to a non-numeric value
         return
     fi
 

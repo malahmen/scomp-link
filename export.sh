@@ -124,8 +124,8 @@ out_setup="${target}/setup.sh"
 awk -v m="$BOOTSTRAP_MARKER" 'index($0,m){exit} {print}' "$SETUP_SH" > "$out_setup"
 # Scrub scomp-link-internal names from the reused functions' comments/messages
 # so the standalone setup doesn't reference tooling that isn't shipped with it.
-# (starlight-init.sh first, else the init.sh rule would mangle it.)
-perl -pi -e 's/\bstarlight-init\.sh\b/this tool/g; s/\binit\.sh\b/this tool/g' "$out_setup"
+# (any starlight-*/starlight_*.sh first, else the init.sh rule would mangle them.)
+perl -pi -e 's/\bstarlight[-_][A-Za-z0-9]+\.sh\b/this tool/g; s/\binit\.sh\b/this tool/g' "$out_setup"
 
 # A best-effort tool installer (only appended when the manifest lists tools).
 # Prefers mise (already bootstrapped, cross-platform — same path gum uses), then
