@@ -172,7 +172,7 @@ create_scaffold() {
     [[ ! -d "${ORIGIN_DIR}/${PROJECT_SLUG}" ]] && { warn "Scaffolding failed — directory not created."; return 1; }
     success "Scaffolded at ./${PROJECT_SLUG}"
 
-    cd "${ORIGIN_DIR}/${PROJECT_SLUG}"
+    cd "${ORIGIN_DIR}/${PROJECT_SLUG}" || { warn "Could not enter ./${PROJECT_SLUG}."; return 1; }
 
     gum spin --spinner dot --title "Installing dependencies ..." -- \
         npm install
