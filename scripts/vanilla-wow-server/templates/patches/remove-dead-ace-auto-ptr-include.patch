@@ -1,0 +1,20 @@
+--- a/src/framework/Network/MangosSocketImpl.h
++++ b/src/framework/Network/MangosSocketImpl.h
+@@ -7,7 +7,6 @@
+ #include <ace/os_include/sys/os_socket.h>
+ #include <ace/OS_NS_string.h>
+ #include <ace/Reactor.h>
+-#include <ace/Auto_Ptr.h>
+ 
+ #include "MangosSocket.h"
+ #include "Common.h"
+--- a/src/realmd/PatchHandler.h
++++ b/src/realmd/PatchHandler.h
+@@ -33,7 +33,6 @@
+ #include <ace/Svc_Handler.h>
+ #include <ace/SOCK_Stream.h>
+ #include <ace/Message_Block.h>
+-#include <ace/Auto_Ptr.h>
+ #include <string>
+ #include <map>
+ 

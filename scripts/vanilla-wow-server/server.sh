@@ -18,8 +18,9 @@
 # Two independent paths:
 #   - Local native (install-deps/configure/start/stop): builds mangosd/realmd
 #     directly on this host via cmake+make for fast iteration. ACE toolkit
-#     (a hard build dependency) isn't packaged for Fedora/RHEL — this path is
-#     Debian/Ubuntu-oriented; on other distros use the Docker path instead.
+#     (a hard build dependency) isn't packaged for Fedora/RHEL, so install-deps
+#     builds it from source there instead (cached under CONFIG_DIR/deps) —
+#     see _build_ace_from_source. Still works everywhere apt has libace-dev.
 #   - Container (build-image/run-docker/run-k8s): always builds inside an
 #     Ubuntu build stage regardless of host OS, so it works everywhere Docker
 #     does. This is the actual LAN-deployable artifact.
@@ -75,10 +76,16 @@ ETC_DIR="${CONFIG_DIR}/etc"
 PF_DIR="${CONFIG_DIR}/pf"
 MIGRATIONS_MARKER_DIR="${CONFIG_DIR}/applied-migrations"
 IMAGE_BUILD_CONTEXT="${CONFIG_DIR}/image-build-context"
+ACE_DEPS_DIR="${CONFIG_DIR}/deps/ACE_wrappers"
 
 mkdir -p "$CONFIG_DIR" "$ETC_DIR" "$PF_DIR" "$MIGRATIONS_MARKER_DIR"
 
 CLIENT_BUILD_DEFAULT=5875
+# Pinned release for the from-source ACE build (dnf/rpm-ostree hosts — no
+# native package exists). Bump deliberately, not casually: VMaNGOS's
+# FindACE.cmake has no version floor/ceiling of its own, so an untested newer
+# ACE could silently drop an API this codebase still uses.
+ACE_BUILD_VERSION="8.0.7"
 
 # -----------------------------------------------------------------------------
 # Config persistence (flat key=value file, lgtm.sh style — enough knobs here
@@ -169,20 +176,84 @@ _settings() {
 # install-deps
 # -----------------------------------------------------------------------------
 
+# _resolve_ace_root — echoes a usable ACE_ROOT and returns 0, checking (in
+# priority order): an already-exported ACE_ROOT, the Debian/Ubuntu package
+# location, then the from-source build this script maintains under
+# CONFIG_DIR (see _build_ace_from_source). Echoes nothing and returns 1 if
+# none are usable. No install/messaging side effects, so both install-deps
+# (_ensure_ace) and the build itself (_build_native) can check without
+# duplicating the lookup.
+_resolve_ace_root() {
+    [[ -n "${ACE_ROOT:-}" && -f "${ACE_ROOT}/ace/ACE.h" ]] && { echo "$ACE_ROOT"; return 0; }
+    [[ -f /usr/include/ace/ACE.h ]] && { echo "/usr/include/ace"; return 0; }
+    [[ -f "${ACE_DEPS_DIR}/ace/ACE.h" ]] && { echo "$ACE_DEPS_DIR"; return 0; }
+    return 1
+}
+
+_ace_present() { _resolve_ace_root &>/dev/null; }
+
+# _build_ace_from_source — builds ACE via its own classic Linux GNU
+# makefiles (the same mechanism the official ACE-INSTALL docs describe),
+# in place under CONFIG_DIR — no 'make install', nothing touches the system
+# outside this directory. FindACE.cmake only needs ACE_ROOT pointed at it
+# (it checks "$ACE_ROOT/ace/ACE.h" for the header and "$ACE_ROOT/lib" for
+# the library), which _resolve_ace_root wires up automatically once this
+# has run once. Verified against this project's actual FindACE.cmake and a
+# real cmake configure — ACE 8.0.7 is found and linked with no changes
+# needed on the VMaNGOS side (cmake auto-bumps to C++17 for it).
+_build_ace_from_source() {
+    [[ -f "${ACE_DEPS_DIR}/ace/ACE.h" && -f "${ACE_DEPS_DIR}/lib/libACE.so" ]] \
+        && { info "ACE ${ACE_BUILD_VERSION} already built at ${ACE_DEPS_DIR}."; return 0; }
+
+    info "No ACE package available for this distro — building ACE ${ACE_BUILD_VERSION} from source instead (one-time, a few minutes)."
+
+    local ver_us="${ACE_BUILD_VERSION//./_}"
+    local url="https://github.com/DOCGroup/ACE_TAO/releases/download/ACE%2BTAO-${ver_us}/ACE-${ACE_BUILD_VERSION}.tar.gz"
+    local deps_dir; deps_dir="$(dirname "$ACE_DEPS_DIR")"
+    local tarball="${deps_dir}/ACE-${ACE_BUILD_VERSION}.tar.gz"
+
+    mkdir -p "$deps_dir"
+    rm -rf "$ACE_DEPS_DIR"
+
+    gum spin --spinner dot --show-error --title "Downloading ACE ${ACE_BUILD_VERSION}..." -- \
+        curl -fsSL -o "$tarball" "$url" \
+        || { warn "Failed to download ACE source from ${url}."; return 1; }
+
+    gum spin --spinner dot --show-error --title "Extracting ACE..." -- \
+        tar -xzf "$tarball" -C "$deps_dir" \
+        || { warn "Failed to extract ACE tarball."; return 1; }
+    rm -f "$tarball"
+
+    echo '#include "ace/config-linux.h"' > "${ACE_DEPS_DIR}/ace/config.h"
+    echo 'include $(ACE_ROOT)/include/makeinclude/platform_linux.GNU' \
+        > "${ACE_DEPS_DIR}/include/makeinclude/platform_macros.GNU"
+
+    local jobs; jobs="$(nproc 2>/dev/null || echo 2)"
+    gum spin --spinner dot --show-error --title "Building ACE (make -j${jobs})..." -- \
+        bash -c "cd '${ACE_DEPS_DIR}/ace' && ACE_ROOT='${ACE_DEPS_DIR}' make -j${jobs}" \
+        || { warn "ACE build failed. See output above."; return 1; }
+
+    [[ -f "${ACE_DEPS_DIR}/lib/libACE.so" ]] \
+        || { warn "ACE build finished but libACE.so wasn't produced — something went wrong."; return 1; }
+    success "ACE ${ACE_BUILD_VERSION} built at ${ACE_DEPS_DIR}."
+}
+
 _ensure_ace() {
-    command -v pkg-config &>/dev/null && pkg-config --exists ACE 2>/dev/null && { info "ACE toolkit found."; return 0; }
-    [[ -f /usr/include/ace/ACE.h ]] && { info "ACE toolkit found (/usr/include/ace)."; return 0; }
+    _ace_present && { info "ACE toolkit found."; return 0; }
 
     local pm; pm="$(_pkg_manager)"
     if [[ "$pm" == "apt" ]]; then
         _require_sudo_or_instruct "Installing libace-dev" "sudo apt-get update -qq && sudo apt-get install -y libace-dev"
         sudo apt-get update -qq && sudo apt-get install -y libace-dev \
             && { success "libace-dev installed."; return 0; }
+        warn "libace-dev install failed — falling back to building ACE from source."
     fi
 
-    warn "ACE toolkit (a hard build dependency for local native builds) isn't packaged for ${pm:-this distro}."
-    warn "The local native path (start/stop) needs it; the Docker path (build-image/run-docker/run-k8s) does not"
-    warn "— it always builds inside an Ubuntu stage regardless of host OS. Prefer the Docker path on this machine."
+    _build_ace_from_source && return 0
+
+    warn "Could not get a working ACE toolkit (a hard build dependency for local native builds) on ${pm:-this distro}."
+    warn "The Docker path (build-image/run-docker/run-k8s) doesn't need it at all — it always builds inside an"
+    warn "Ubuntu stage regardless of host OS. Use that instead if this keeps failing."
     return 1
 }
 
@@ -644,9 +715,13 @@ cmd_configure() {
 
     info "Generating local conf files (native start/stop path)..."
     mkdir -p "$INSTALL_DIR"
-    # Warden.ModuleDir points straight at the repack's own warden_modules —
-    # local native runs directly against SOURCE_DIR, no copy/mount needed.
-    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.conf" "${INSTALL_DIR}/data" "${INSTALL_DIR}/logs" "${SOURCE_DIR}/warden_modules"
+    # DataDir and Warden.ModuleDir point straight at the repack's own data/
+    # and warden_modules — local native runs directly against SOURCE_DIR, no
+    # copy/mount needed (mirrors run-docker/run-k8s, which both mount
+    # SOURCE_DIR/data too). INSTALL_DIR/data is never populated by 'make
+    # install' — pointing DataDir there leaves mangosd unable to find any
+    # *.map/*.vmtree files and it refuses to start.
+    _render_mangosd_conf "${SOURCE_DIR}/mangosd.conf" "${ETC_DIR}/mangosd.conf" "${SOURCE_DIR}/data" "${INSTALL_DIR}/logs" "${SOURCE_DIR}/warden_modules"
     _render_realmd_conf  "${SOURCE_DIR}/realmd.conf"  "${ETC_DIR}/realmd.conf"  "${INSTALL_DIR}/logs"
     success "Conf files written to ${ETC_DIR}."
 
@@ -672,18 +747,29 @@ _unpack_source() {
 }
 
 # _apply_source_patches — scomp-link-maintained fixes to the repack's own
-# source, layered on top of the pristine unzip. Currently one: gates the
-# DBC-based profanity/reserved-name check (ValidateName, in ObjectMgr.cpp's
-# CheckPlayerName) behind StrictPlayerNames, the same setting that already
-# gates the character-set check right next to it — found live, with
-# StrictPlayerNames=0 that check still ran unconditionally on every login,
-# permanently blocking any character whose name matched an entry in the
-# client's NamesReserved.dbc/NamesProfanity.dbc (Blizzard's own original
-# content filter), with no config toggle to turn it off — before this fix
-# existed, working around it meant binary-editing the DBC file itself.
+# source, layered on top of the pristine unzip. Two so far:
+#   strict-player-names-gate-reserved-check.patch — gates the DBC-based
+#     profanity/reserved-name check (ValidateName, in ObjectMgr.cpp's
+#     CheckPlayerName) behind StrictPlayerNames, the same setting that
+#     already gates the character-set check right next to it — found live,
+#     with StrictPlayerNames=0 that check still ran unconditionally on every
+#     login, permanently blocking any character whose name matched an entry
+#     in the client's NamesReserved.dbc/NamesProfanity.dbc (Blizzard's own
+#     original content filter), with no config toggle to turn it off —
+#     before this fix existed, working around it meant binary-editing the
+#     DBC file itself.
+#   remove-dead-ace-auto-ptr-include.patch — drops two `#include
+#     <ace/Auto_Ptr.h>` lines (MangosSocketImpl.h, realmd/PatchHandler.h)
+#     that don't reference anything from it (verified: no ACE_Auto_Ptr/
+#     Auto_Basic_Ptr/Auto_Array_Ptr symbol appears in either file). ACE
+#     dropped that header in its 8.x line — it only ever wrapped
+#     std::auto_ptr, itself removed in C++17 — which is what a from-source
+#     ACE build on Fedora/RHEL resolves to (see _build_ace_from_source);
+#     without this patch the local native build fails on those hosts with
+#     "ace/Auto_Ptr.h: No such file or directory".
 # Idempotent via a marker per patch, independent of whether the unzip step
-# above actually ran this time — a source tree unpacked before this fix
-# existed (already has CMakeLists.txt, skips the unzip) still needs the
+# above actually ran this time — a source tree unpacked before a given fix
+# existed (already has CMakeLists.txt, skips the unzip) still gets that
 # patch applied on its next build.
 _apply_source_patches() {
     local patch_dir="${TEMPLATES_DIR}/patches"
@@ -706,13 +792,17 @@ _apply_source_patches() {
 }
 
 _build_native() {
-    _unpack_source
-    mkdir -p "$BUILD_DIR"
-    export ACE_ROOT="${ACE_ROOT:-/usr/include/ace}"
+    local ace_root
+    ace_root="$(_resolve_ace_root)" \
+        || error_exit "ACE toolkit not found — required for the local native build. Run 'install-deps' first (it installs the package on apt-based distros, or builds ACE from source otherwise)."
+    export ACE_ROOT="$ace_root"
     export TBB_ROOT_DIR="${TBB_ROOT_DIR:-/usr/include/tbb}"
 
+    _unpack_source
+    mkdir -p "$BUILD_DIR"
+
     info "Configuring (cmake, client build ${CLIENT_BUILD})..."
-    gum spin --spinner dot --title "cmake configure..." -- \
+    gum spin --spinner dot --show-error --title "cmake configure..." -- \
         cmake -S "$SRC_UNPACK_DIR" -B "$BUILD_DIR" \
             -DDEBUG=0 -DUSE_EXTRACTORS=0 \
             -DSUPPORTED_CLIENT_BUILD="${CLIENT_BUILD}" \
@@ -721,7 +811,7 @@ _build_native() {
 
     local jobs; jobs="$(nproc 2>/dev/null || echo 2)"
     info "Building (make -j${jobs}) — first build compiles ~1600 files, this takes a while..."
-    gum spin --spinner dot --title "Building mangosd/realmd..." -- \
+    gum spin --spinner dot --show-error --title "Building mangosd/realmd..." -- \
         bash -c "make -C '${BUILD_DIR}' -j${jobs} && make -C '${BUILD_DIR}' install" \
         || error_exit "Build failed. Re-run with 'make -C ${BUILD_DIR}' to see full compiler output."
 
@@ -741,9 +831,15 @@ cmd_start() {
         info "Using existing build at ${INSTALL_DIR} (delete it to force a rebuild)."
     fi
 
-    mkdir -p "${INSTALL_DIR}/logs"
-    cp -f "${ETC_DIR}/mangosd.conf" "${INSTALL_DIR}/bin/mangosd.conf"
-    cp -f "${ETC_DIR}/realmd.conf"  "${INSTALL_DIR}/bin/realmd.conf"
+    # Both binaries have their config path compiled in at build time as an
+    # absolute path under CMAKE_INSTALL_PREFIX/etc (confirmed via `strings
+    # install/bin/{mangosd,realmd} | grep .conf` — e.g.
+    # ".../install/etc/mangosd.conf"), not the cwd they're launched from or
+    # their own bin/ directory. Copying there instead of bin/ is required —
+    # not a style choice.
+    mkdir -p "${INSTALL_DIR}/logs" "${INSTALL_DIR}/etc"
+    cp -f "${ETC_DIR}/mangosd.conf" "${INSTALL_DIR}/etc/mangosd.conf"
+    cp -f "${ETC_DIR}/realmd.conf"  "${INSTALL_DIR}/etc/realmd.conf"
 
     local realmd_pf="${PF_DIR}/realmd.pid" mangosd_pf="${PF_DIR}/mangosd.pid"
 
@@ -1394,6 +1490,29 @@ cmd_run_docker() {
     info "Logs: docker logs -f ${SERVER_CONTAINER_NAME}"
 }
 
+# Stops the server container only — never the DB container, and never
+# `docker rm`/the Docker daemon itself (same "stop the server, leave
+# everything else alone" contract as cmd_stop for the local path). The
+# container has --restart unless-stopped (set in cmd_run_docker), which
+# specifically means "restart automatically after a daemon/host restart,
+# unless a human stopped it" — so a plain 'docker stop' here is exactly
+# enough to keep it down; no need to touch the restart policy.
+cmd_stop_docker() {
+    header "vanilla-wow — Stop (Docker)"
+    _settings
+
+    docker inspect --type container "$SERVER_CONTAINER_NAME" &>/dev/null \
+        || { info "Container '${SERVER_CONTAINER_NAME}' not found — nothing to stop."; return; }
+
+    [[ "$(docker inspect --type container "$SERVER_CONTAINER_NAME" --format='{{.State.Status}}' 2>/dev/null)" == "running" ]] \
+        || { info "Container '${SERVER_CONTAINER_NAME}' is not running."; return; }
+
+    docker stop "$SERVER_CONTAINER_NAME" &>/dev/null \
+        && success "Container '${SERVER_CONTAINER_NAME}' stopped (Docker itself keeps running)." \
+        || error_exit "Failed to stop container '${SERVER_CONTAINER_NAME}'."
+    info "Container kept, not removed — resume it with: docker start ${SERVER_CONTAINER_NAME} (re-running 'run-docker' instead will remove and recreate it fresh)."
+}
+
 # -----------------------------------------------------------------------------
 # run-k8s — hostNetwork so the fixed client-expected ports work without a
 # LoadBalancer controller. Reuses cluster.sh's select_target and the
@@ -1592,6 +1711,30 @@ cmd_run_k8s() {
     success "Deployed. hostNetwork pod — reachable on the node's LAN IP: realm ${REALM_PORT}, world ${WORLD_PORT}."
 }
 
+# Scales the server Deployment to 0 — never touches mariadb, the PVCs, or
+# the ConfigMap (same "stop the server, leave everything else alone"
+# contract as cmd_stop/cmd_stop_docker). No explicit select_target prompt:
+# like _detect_running_target, this just uses whatever kubectl context is
+# already ambient (or the one set by an earlier run-k8s/select_target call
+# in this same session) rather than forcing a re-selection to stop something.
+cmd_stop_k8s() {
+    header "vanilla-wow — Stop (Kubernetes)"
+    _settings
+
+    command -v kubectl &>/dev/null || error_exit "kubectl not found."
+
+    local ctx_flags; ctx_flags="$(kubectl_context_flag)"
+    # shellcheck disable=SC2086
+    kubectl $ctx_flags get deployment vanilla-wow-server -n "$K8S_NAMESPACE" &>/dev/null \
+        || { info "No 'vanilla-wow-server' deployment found in namespace '${K8S_NAMESPACE}' — nothing to stop."; return; }
+
+    # shellcheck disable=SC2086
+    kubectl $ctx_flags scale deployment/vanilla-wow-server -n "$K8S_NAMESPACE" --replicas=0 \
+        && success "Server deployment scaled to 0 replicas in namespace '${K8S_NAMESPACE}' (mariadb, PVCs, and the ConfigMap are untouched)." \
+        || error_exit "Failed to scale down the server deployment."
+    info "Resume it with: kubectl scale deployment/vanilla-wow-server -n ${K8S_NAMESPACE} --replicas=1 (or re-run 'run-k8s')."
+}
+
 # -----------------------------------------------------------------------------
 # Main dispatch
 # -----------------------------------------------------------------------------
@@ -1623,7 +1766,9 @@ _run_category_menu() {
             stop)           cmd_stop           || true ;;
             build-image)    cmd_build_image    || true ;;
             run-docker)     cmd_run_docker     || true ;;
+            stop-docker)    cmd_stop_docker    || true ;;
             run-k8s)        cmd_run_k8s        || true ;;
+            stop-k8s)       cmd_stop_k8s       || true ;;
             create-account)     cmd_create_account     || true ;;
             list-accounts)      cmd_list_accounts      || true ;;
             delete-account)     cmd_delete_account     || true ;;
@@ -1651,8 +1796,10 @@ main() {
             search)             cmd_search ;;
             build-image)        cmd_build_image ;;
             run-docker)         cmd_run_docker ;;
+            stop-docker)        cmd_stop_docker ;;
             run-k8s)            cmd_run_k8s ;;
-            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|rename-character|search|build-image|run-docker|run-k8s)" ;;
+            stop-k8s)           cmd_stop_k8s ;;
+            *) error_exit "Unknown command: $1 (expected: install-deps|configure|start|stop|status|edit|create-account|list-accounts|delete-account|set-account-level|rename-character|search|build-image|run-docker|stop-docker|run-k8s|stop-k8s)" ;;
         esac
         exit 0
     fi
@@ -1668,7 +1815,7 @@ main() {
         case "$category" in
             Setup)      _run_category_menu "Setup"      install-deps configure edit ;;
             Local)      _run_category_menu "Local"      start stop ;;
-            Deploy)     _run_category_menu "Deploy"     build-image run-docker run-k8s ;;
+            Deploy)     _run_category_menu "Deploy"     build-image run-docker stop-docker run-k8s stop-k8s ;;
             Accounts)   _run_category_menu "Accounts"   create-account list-accounts delete-account set-account-level ;;
             Characters) _run_category_menu "Characters" rename-character ;;
             Search)   cmd_search || true ;;
