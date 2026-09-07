@@ -47,7 +47,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
-COMMON_DIR="${SCRIPT_DIR}/../_common"
+# Vendor-aware: ../_common in the repo, or alongside this script when exported.
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
 
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
