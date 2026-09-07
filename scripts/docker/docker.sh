@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# description: Install, uninstall, and check the status of Docker itself
+# description: Install, uninstall, start/stop, and check the status of Docker itself
 # Standalone export (export.sh): no extra setup deps — Docker Engine + Compose are checked/instructed at runtime.
 # -----------------------------------------------------------------------------
 # docker.sh
@@ -60,6 +60,31 @@ _ensure_compose_v2() {
     return 1
 }
 
+# _add_to_docker_group <user>
+# On rpm-ostree/image-based hosts (e.g. Bazzite) the docker group is often
+# baked into the read-only /usr/lib/group at image/layer build time via
+# systemd-sysusers, with no corresponding line in the mutable /etc/group.
+# `usermod -aG` silently no-ops in that case — exit 0, nothing added — since
+# it only edits /etc/group and never finds a local line to append to. So
+# verify the result instead of trusting usermod's exit code, and fall back
+# to writing a local /etc/group override line (which NSS merges with the
+# image-provided entry) if usermod didn't actually take.
+_add_to_docker_group() {
+    local user="$1"
+    groups "$user" 2>/dev/null | grep -qw docker && return 0
+
+    _require_sudo_or_instruct "Adding ${user} to the docker group" "sudo usermod -aG docker ${user}"
+    sudo usermod -aG docker "$user" 2>/dev/null || true
+    groups "$user" 2>/dev/null | grep -qw docker && return 0
+
+    warn "usermod didn't take (docker group is likely defined only in /usr/lib/group, not /etc/group) — adding a local override instead."
+    local gid; gid="$(getent group docker | cut -d: -f3)"
+    [[ -n "$gid" ]] || { warn "Could not resolve the docker group's gid — add ${user} to it manually."; return 1; }
+    sudo sh -c "echo 'docker:x:${gid}:${user}' >> /etc/group" \
+        || { warn "Could not add ${user} to the docker group — add it manually."; return 1; }
+    groups "$user" 2>/dev/null | grep -qw docker
+}
+
 cmd_install() {
     header "Docker — Install"
 
@@ -84,9 +109,11 @@ cmd_install() {
     local user; user="$(whoami)"
     if ! groups "$user" 2>/dev/null | grep -qw docker; then
         info "Adding ${user} to the docker group (lets you run docker without sudo)..."
-        _require_sudo_or_instruct "Adding ${user} to the docker group" "sudo usermod -aG docker ${user}"
-        sudo usermod -aG docker "$user" || warn "Could not add ${user} to the docker group — you'll need sudo for docker commands, or add it manually."
-        warn "Group membership needs a fresh login session to take effect — log out/in, or start a new shell (e.g. 'newgrp docker') before using docker without sudo."
+        if _add_to_docker_group "$user"; then
+            warn "Group membership needs a fresh login session to take effect — log out/in, or start a new shell (e.g. 'newgrp docker') before using docker without sudo."
+        else
+            warn "Could not add ${user} to the docker group — you'll need sudo for docker commands, or add it manually."
+        fi
     fi
 
     if docker info &>/dev/null 2>&1; then
@@ -157,7 +184,7 @@ cmd_status() {
     if systemctl is-active docker &>/dev/null; then
         success "docker service: active"
     else
-        warn "docker service: not active (sudo systemctl start docker)"
+        warn "docker service: not active (run: docker.sh start)"
     fi
 
     if docker info &>/dev/null 2>&1; then
@@ -166,8 +193,49 @@ cmd_status() {
         warn "docker daemon not reachable from this shell — check group membership (are you in the 'docker' group? try a new shell) or run with sudo."
     fi
 
-    command -v docker-compose &>/dev/null && info "docker-compose: $(docker-compose --version)"
-    docker compose version &>/dev/null 2>&1 && info "docker compose plugin: $(docker compose version)"
+    if command -v docker-compose &>/dev/null; then
+        info "docker-compose: $(docker-compose --version)"
+    fi
+    if docker compose version &>/dev/null 2>&1; then
+        info "docker compose plugin: $(docker compose version)"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# start / stop
+# -----------------------------------------------------------------------------
+
+cmd_start() {
+    header "Docker — Start"
+
+    command -v docker &>/dev/null || error_exit "Docker isn't installed. Run: docker.sh install"
+
+    if systemctl is-active docker &>/dev/null; then
+        success "docker service is already active."
+        return
+    fi
+
+    _require_sudo_or_instruct "Starting the docker service" "sudo systemctl start docker"
+    sudo systemctl start docker || error_exit "Failed to start the docker service."
+    success "docker service started."
+}
+
+cmd_stop() {
+    header "Docker — Stop"
+
+    command -v docker &>/dev/null || error_exit "Docker isn't installed."
+
+    if ! systemctl is-active docker &>/dev/null; then
+        warn "docker service is already inactive."
+        return
+    fi
+
+    gum confirm "Stop the docker service? Running containers will be stopped too." \
+        || { info "Cancelled."; return; }
+
+    _require_sudo_or_instruct "Stopping the docker service" "sudo systemctl stop docker"
+    sudo systemctl stop docker || error_exit "Failed to stop the docker service."
+    success "docker service stopped."
 }
 
 # -----------------------------------------------------------------------------
@@ -180,7 +248,9 @@ main() {
             install)   cmd_install ;;
             uninstall) cmd_uninstall ;;
             status)    cmd_status ;;
-            *) error_exit "Unknown command: $1 (expected: install|uninstall|status)" ;;
+            start)     cmd_start ;;
+            stop)      cmd_stop ;;
+            *) error_exit "Unknown command: $1 (expected: install|uninstall|status|start|stop)" ;;
         esac
         exit 0
     fi
@@ -188,13 +258,15 @@ main() {
     while true; do
         header "Docker Manager"
         local action
-        action=$(gum choose "install" "uninstall" "status" "quit" --header "Choose an action:") || true
+        action=$(gum choose "install" "uninstall" "status" "start" "stop" "quit" --header "Choose an action:") || true
         [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
 
         case "$action" in
             install)   cmd_install ;;
             uninstall) cmd_uninstall ;;
             status)    cmd_status ;;
+            start)     cmd_start ;;
+            stop)      cmd_stop ;;
         esac
 
         echo ""

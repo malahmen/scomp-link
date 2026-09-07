@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# description: EA App staged-update fix + Ubisoft Connect offscreen-window fix
+# description: EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix
 # Standalone export (export.sh): no extra setup deps — OS packages are installed at runtime (Linux-only utility).
 # -----------------------------------------------------------------------------
 # bazzite-utils.sh
@@ -12,6 +12,11 @@
 #                    under Wine/Proton, leaving the launcher stuck).
 #   ubisoft-rws    — finds Ubisoft Connect windows that render off-screen or
 #                    invisible under Wine/Proton and repositions/raises them.
+#   kwin-greeter-fix — copies your KWin output config (monitor refresh rates,
+#                    positions, etc.) to the login-screen account (plasmalogin
+#                    or sddm). The greeter runs as its own user with its own
+#                    kwinoutputconfig.json, so a refresh-rate fix saved in your
+#                    session never reaches the login screen — this syncs it.
 #
 # Sourced helpers (scripts/_common/):
 #   ui.sh   — header/info/success/warn/error_exit
@@ -236,15 +241,65 @@ cmd_ubisoft_rws() {
 }
 
 # -----------------------------------------------------------------------------
+# kwin-greeter-fix — sync KWin output config to the login-screen account
+# -----------------------------------------------------------------------------
+# KDE's login screen runs as its own system user (plasmalogin, or sddm on
+# older setups) with its own ~/.config/kwinoutputconfig.json, separate from
+# yours. If your session has a working refresh-rate/layout fix that the
+# monitor's EDID-advertised max mode doesn't (e.g. a monitor that reports
+# 144Hz but only reliably links at 120Hz), the greeter never sees it and
+# defaults to the max mode — causing no-signal/blank screens at boot until
+# you replug a cable to force renegotiation. This copies your config over.
+
+_kwin_greeter_user() {
+    local dm_unit
+    dm_unit="$(basename "$(readlink -f /etc/systemd/system/display-manager.service 2>/dev/null)" .service)"
+    case "$dm_unit" in
+        plasmalogin|sddm) echo "$dm_unit" ;;
+        *)                echo "" ;;
+    esac
+}
+
+cmd_kwin_greeter_fix() {
+    header "Bazzite Utils — KDE Greeter Refresh-Rate Fix"
+
+    local src="${HOME}/.config/kwinoutputconfig.json"
+    [[ -f "$src" ]] || error_exit "No KWin output config found at ${src}. Set up your monitors (resolution/refresh rate) in System Settings first, then re-run this."
+
+    local greeter_user
+    greeter_user="$(_kwin_greeter_user)"
+    [[ -n "$greeter_user" ]] || error_exit "Could not detect a KDE greeter (plasmalogin/sddm) as the active display manager."
+
+    local greeter_home
+    greeter_home="$(getent passwd "$greeter_user" | cut -d: -f6)"
+    [[ -n "$greeter_home" ]] || error_exit "Could not resolve home directory for user '${greeter_user}'."
+
+    info "Active greeter: ${greeter_user} (${greeter_home})"
+    gum confirm "Copy ${src} to ${greeter_home}/.config/kwinoutputconfig.json ? (requires sudo)" \
+        || { info "Cancelled."; return; }
+
+    sudo install -d -o "$greeter_user" -g "$greeter_user" -m 0755 "${greeter_home}/.config" \
+        || error_exit "Failed to create ${greeter_home}/.config."
+    sudo cp -f "$src" "${greeter_home}/.config/kwinoutputconfig.json" \
+        || error_exit "Failed to copy output config."
+    sudo chown "${greeter_user}:${greeter_user}" "${greeter_home}/.config/kwinoutputconfig.json" \
+        || error_exit "Failed to set ownership on copied config."
+
+    success "Greeter output config synced. The login screen should now use your saved refresh rates/layout."
+    warn "Re-run this any time you change monitors, cables, or resolutions — the config is matched by monitor EDID, so a hardware change invalidates it."
+}
+
+# -----------------------------------------------------------------------------
 # Main dispatch
 # -----------------------------------------------------------------------------
 
 main() {
     if [[ $# -gt 0 ]]; then
         case "$1" in
-            ea-fix)       cmd_ea_fix ;;
-            ubisoft-rws)  cmd_ubisoft_rws ;;
-            *) error_exit "Unknown command: $1 (expected: ea-fix|ubisoft-rws)" ;;
+            ea-fix)           cmd_ea_fix ;;
+            ubisoft-rws)      cmd_ubisoft_rws ;;
+            kwin-greeter-fix) cmd_kwin_greeter_fix ;;
+            *) error_exit "Unknown command: $1 (expected: ea-fix|ubisoft-rws|kwin-greeter-fix)" ;;
         esac
         exit 0
     fi
@@ -253,16 +308,18 @@ main() {
         header "Bazzite Utils"
         local action
         action=$(gum choose \
-            "ea-fix       — apply EA App's staged self-update" \
-            "ubisoft-rws  — fix invisible/offscreen Ubisoft Connect windows" \
+            "ea-fix           — apply EA App's staged self-update" \
+            "ubisoft-rws      — fix invisible/offscreen Ubisoft Connect windows" \
+            "kwin-greeter-fix — sync monitor refresh rate/layout to the KDE login screen" \
             "quit" \
             --header "Choose a utility:") || true
 
         [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
 
         case "$action" in
-            ea-fix*)      cmd_ea_fix ;;
-            ubisoft-rws*) cmd_ubisoft_rws ;;
+            ea-fix*)           cmd_ea_fix ;;
+            ubisoft-rws*)      cmd_ubisoft_rws ;;
+            kwin-greeter-fix*) cmd_kwin_greeter_fix ;;
         esac
 
         echo ""
