@@ -42,7 +42,7 @@ grep -qF "$BOOTSTRAP_MARKER" "$SETUP_SH" || fatal "setup.sh is missing the '${BO
 # --- Discover runnable scripts (folder/script.sh, one level deep) ------------
 get_scripts() {
     find "$SCRIPTS_DIR" -mindepth 2 -maxdepth 2 -name "*.sh" \
-        ! -path "*/_common/*" ! -path "*/cluster/*" -print \
+        ! -path "*/_common/*" ! -path "*/cluster/*" ! -path "*/_templates/*" -print \
         | sed "s|^${SCRIPTS_DIR}/||" | sort
 }
 
