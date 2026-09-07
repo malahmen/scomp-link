@@ -28,7 +28,7 @@ WSL_PS1="${SCRIPT_DIR}/wsl-setup.ps1"
 BOOTSTRAP_MARKER='# === bootstrap entrypoint ==='
 
 # Known shared helpers that may be copied alongside an exported script.
-COMMON_FILES="ui deps gh_releases portforward cluster"
+COMMON_FILES="ui deps gh_releases portforward cluster windows"
 
 info()  { printf "\033[0;36m[INFO]  %s\033[0m\n" "$*"; }
 ok()    { printf "\033[0;32m[OK]    %s\033[0m\n" "$*"; }
