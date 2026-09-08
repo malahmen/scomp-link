@@ -106,6 +106,18 @@ _pick_instance() {
     printf '%s\n' "$names" | gum choose --header "$hdr"
 }
 
+# _pick_instances <header> — like _pick_instance, but multi-select
+# (space to toggle, enter to confirm) via --no-limit, for launch's multibox
+# case: picking instances one at a time to start a multibox session is
+# needlessly repetitive when they're all going to be launched anyway. Echoes
+# one name per line; empty/non-zero on cancel or none configured.
+_pick_instances() {
+    local hdr="$1" names
+    names="$(engine list-instances --names 2>/dev/null || true)"
+    [[ -n "$names" ]] || { warn "No instances configured yet — add one first."; return 1; }
+    printf '%s\n' "$names" | gum choose --no-limit --header "$hdr"
+}
+
 # Scan the LAN via the engine and persist the picked realm as the default.
 _discover_and_set() {
     local candidates chosen
@@ -234,9 +246,15 @@ action_winecfg() {
 }
 
 action_launch() {
-    local name; name=$(_pick_instance "Launch which instance?") || return 0
-    [[ -n "$name" ]] || return 0
-    engine_foreground launch --name "$name"
+    local names; names=$(_pick_instances "Launch which instance(s)? (space to select multiple, enter to launch)") || return 0
+    [[ -n "$names" ]] || return 0
+
+    local name
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        engine_foreground launch --name "$name"
+        echo ""
+    done <<< "$names"
 }
 
 action_stop() {
