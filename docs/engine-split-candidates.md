@@ -21,7 +21,8 @@ A script is worth extracting only when its core is:
 - **`younglings-key`** (ignite) — certificate engine in its own repo; scomp-link ships the TUI.
 - **`navicomputer`** — SSH-profile engine (ex-`sshger`) in its own repo; scomp-link ships the TUI.
 - **`mind-trick`** — git-history trailer scrubber in its own repo; scomp-link ships the TUI. (Small/generic — split mainly to keep the pattern; `export.sh` would also have made it standalone.)
-- **`nordrassil`** — the VMaNGOS vanilla-WoW server engine (ex-`vanilla-wow-server`): native/Docker/k8s build + deploy, DB bootstrap, account/character admin, plus the Dockerfile/entrypoint/k8s/patch templates, all flag-driven in its own repo. scomp-link ships only the front-end at `scripts/wow-nordrassil/` (named to sort next to the `vanilla-wow-*` client tools).
+- **`nordrassil`** — the VMaNGOS vanilla-WoW server engine (ex-`vanilla-wow-server`): native/Docker/k8s build + deploy, DB bootstrap, account/character admin, plus the Dockerfile/entrypoint/k8s/patch templates, all flag-driven in its own repo. scomp-link ships only the front-end at `scripts/wow-nordrassil/`.
+- **`dark-portal`** — the vanilla-WoW multibox client engine (ex-`vanilla-wow-client`): Bottles/Wine per-instance provisioning, full/shared isolation, direct WoW.exe launch + title-keeper, LAN realm discovery — flag-driven in its own repo, config in `~/.config/dark-portal/`. scomp-link ships only the front-end at `scripts/wow-dark-portal/` (named to sort next to `wow-nordrassil`).
 - **`protocol-droid`** — the document-conversion engine (ex-`marker`), a **multi-backend** converter: local pipx use of **marker** (high-fidelity PDF/OCR) *and* **Microsoft markitdown** (fast, broad — audio/YouTube/ZIP), plus `--backend auto` routing, plus the containerized **service** (Redis queue + enqueue API + scalable marker workers + Docker/k8s). Backends live in the engine's `lib/<backend>.sh`. It's the engine scomp-link's TUI manages; protocol-droid is what runs marker/markitdown. scomp-link ships only the front-end at `scripts/protocol-droid/`. (markitdown was briefly a standalone script, then folded in as a backend since it does the same task.)
 
 ## Worth splitting (real standalone value) — ranked
@@ -30,7 +31,7 @@ A script is worth extracting only when its core is:
 | ~~**`sshger`**~~ ✅ done → **navicomputer** | `~/.ssh/config` CRUD as a flag-driven CLI. Split into the navicomputer engine repo + scomp-link TUI. | Small |
 | ~~**marker** (whole script)~~ ✅ done → **protocol-droid** | Entire document-conversion engine — local pipx marker *and* the containerized service — extracted to its own repo; scomp-link ships only the `protocol-droid` TUI. | Medium |
 | ~~**`vanilla-wow-server`**~~ ✅ done → **nordrassil** | Real build/containerize/deploy logic + Dockerfile/entrypoint/k8s templates — extracted to its own repo; scomp-link ships only the `wow-nordrassil` TUI. | Medium |
-| **`vanilla-wow-client`** | Non-trivial Wine multiboxing config/launch logic; standalone value for that community. | Medium |
+| ~~**`vanilla-wow-client`**~~ ✅ done → **dark-portal** | Non-trivial Wine multiboxing config/launch logic — extracted to its own repo; scomp-link ships only the `wow-dark-portal` TUI. | Medium |
 | **`comfyengine`** (leans no) | Third-party ([kashithecomfy/ComfyEngine](https://github.com/kashithecomfy/ComfyEngine)) — our script is a from-source CMake build/install wrapper (deps + desktop shortcut). Thin veneer over an upstream build (which also ships via AUR); splitting adds little. | Small |
 
 ## Not worth splitting (thin CLI wrappers — leave as TUI-over-CLI)
@@ -41,6 +42,6 @@ A script is worth extracting only when its core is:
 - **`starlight`** — mostly `npm create astro` scaffolding; its converter already delegates to holo-convert.
 
 ## When we pick this up
-- Next up: **vanilla-wow-client** (Wine multiboxing). (sshger → navicomputer; marker → protocol-droid; vanilla-wow-server → nordrassil.)
+- Next up: **comfyengine** (leans no — thin veneer over an upstream build). (sshger → navicomputer; marker → protocol-droid; vanilla-wow-server → nordrassil; vanilla-wow-client → dark-portal.)
 - Reuse the holo-convert engine-resolution pattern: `$XXX_DIR` override → sibling checkout → `~/.cache/scomp-link/<name>` clone → `git clone`.
 - Engine = gum-free, flags + guardrails (no auto-install); front-end = gum TUI that builds flags and offers `--setup` on missing deps.
