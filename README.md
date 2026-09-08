@@ -82,7 +82,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | [`bazzite-utils.sh`](docs/scripts/bazzite-utils.md)                  | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix          |
 | [`comfyengine.sh`](docs/scripts/comfyengine.md)                      | -            | Build & install the ComfyEngine memory scanner from source               |
 | [`gameconqueror.sh`](docs/scripts/gameconqueror.md)                  | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
-| [`vanilla-wow-server/server.sh`](docs/scripts/vanilla-wow-server.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server             |
+| [`wow-nordrassil/wow-nordrassil.sh`](docs/scripts/wow-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
 | [`vanilla-wow-client/client.sh`](docs/scripts/vanilla-wow-client.md) | -            | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) |
 
 ### Utilities
@@ -381,9 +381,8 @@ scomp-link/
     │   └── comfyengine.sh            # ComfyEngine memory scanner (build from source)
     ├── gameconqueror/
     │   └── gameconqueror.sh          # GameConqueror/scanmem (build from source)
-    ├── vanilla-wow-server/
-    │   ├── server.sh                  # VMaNGOS server build/deploy (Docker · K8s)
-    │   └── templates/                 # Dockerfile, entrypoint.sh, k8s manifests
+    ├── wow-nordrassil/
+    │   └── wow-nordrassil.sh          # front-end for the nordrassil VMaNGOS server engine (Docker · K8s)
     ├── vanilla-wow-client/
     │   └── client.sh                  # Wine client multiboxing manager
     │
