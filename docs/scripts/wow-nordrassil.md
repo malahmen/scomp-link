@@ -117,4 +117,4 @@ builds inside an Ubuntu stage regardless of host OS. See the
 [engine README](https://github.com/malahmen/nordrassil) for the full flag
 reference.
 
-Companion script: [Vanilla WoW Client / Multiboxing](vanilla-wow-client.md).
+Companion script: [Vanilla WoW Client / Multiboxing](wow-dark-portal.md).
