@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
+# description: Broadcast one keystroke to a group of X11/XWayland windows (xbindkeys + xdotool)
 # -----------------------------------------------------------------------------
-# broadcaster.sh
+# clone-army.sh — "one command, and the whole army acts as one" (generic; not
+# tied to any game or launcher).
 # Generic key-stroke broadcaster: pick any currently open app window(s) into
 # a named group, configure a hotkey per group, and pressing that hotkey while
 # focused on a member of the group sends the same plain key to every other
@@ -40,7 +42,7 @@
 #   deps.sh    — _ensure_pkg/_pkg_manager (dnf/apt/rpm-ostree)
 #   windows.sh — _list_open_windows (wmctrl/xdotool-backed window discovery)
 #
-# Config: ~/.config/vanilla-wow-broadcaster/groups/<name>/{group.conf,titles.list}
+# Config: ~/.config/clone-army/groups/<name>/{group.conf,titles.list}
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -67,12 +69,12 @@ trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 # Constants / config
 # -----------------------------------------------------------------------------
 
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vanilla-wow-broadcaster"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/clone-army"
 CONFIG_DIR="${CONFIG_DIR/#\~/$HOME}"
 GROUPS_DIR="${CONFIG_DIR}/groups"
 XBINDKEYSRC_FILE="${CONFIG_DIR}/xbindkeysrc"
-PIDFILE="${CONFIG_DIR}/broadcaster.pid"
-LOG_FILE="${CONFIG_DIR}/broadcaster.log"
+PIDFILE="${CONFIG_DIR}/clone-army.pid"
+LOG_FILE="${CONFIG_DIR}/clone-army.log"
 
 mkdir -p "$GROUPS_DIR"
 
@@ -153,7 +155,7 @@ _group_target_windows() {
 # -----------------------------------------------------------------------------
 
 cmd_install_deps() {
-    header "Broadcaster — Install dependencies"
+    header "Clone Army — Install dependencies"
 
     _ensure_pkg xbindkeys xbindkeys xbindkeys
     _ensure_pkg xdotool xdotool xdotool
@@ -216,7 +218,7 @@ _configure_group_keys() {
 }
 
 cmd_add_group() {
-    header "Broadcaster — New group"
+    header "Clone Army — New group"
 
     local name
     name=$(gum input --placeholder "wow-boxes" --header "Group name (letters/digits/-/_ only):") || true
@@ -266,7 +268,7 @@ cmd_add_group() {
 }
 
 cmd_edit_group() {
-    header "Broadcaster — Edit group"
+    header "Clone Army — Edit group"
     local name; name="$(_pick_group "Choose a group to edit:")" || return 1
     [[ -z "$name" ]] && { info "Cancelled."; return 0; }
 
@@ -319,7 +321,7 @@ cmd_edit_group() {
 }
 
 cmd_remove_group() {
-    header "Broadcaster — Remove group"
+    header "Clone Army — Remove group"
     local name; name="$(_pick_group "Choose a group to remove:")" || return 1
     [[ -z "$name" ]] && { info "Cancelled."; return 0; }
 
@@ -329,7 +331,7 @@ cmd_remove_group() {
 }
 
 cmd_list_groups() {
-    header "Broadcaster — Groups"
+    header "Clone Army — Groups"
     local names; names="$(_list_group_names)"
     if [[ -z "$names" ]]; then
         info "No groups configured yet — run 'add-group'."
@@ -375,7 +377,7 @@ _generate_xbindkeysrc() {
 }
 
 cmd_start() {
-    header "Broadcaster — Start"
+    header "Clone Army — Start"
 
     command -v xbindkeys &>/dev/null || error_exit "xbindkeys not found — run 'install-deps' first."
     [[ -n "$(_list_group_names)" ]] || error_exit "No groups configured yet — run 'add-group' first."
@@ -391,14 +393,14 @@ cmd_start() {
 
     sleep 1
     if _daemon_running; then
-        success "Broadcaster running."
+        success "Clone Army running."
     else
         warn "Did not seem to start — check ${LOG_FILE}."
     fi
 }
 
 cmd_stop() {
-    header "Broadcaster — Stop"
+    header "Clone Army — Stop"
 
     if ! _daemon_running; then
         info "Not running."
@@ -408,11 +410,11 @@ cmd_stop() {
 
     kill "$(cat "$PIDFILE")" 2>/dev/null || true
     rm -f "$PIDFILE"
-    success "Broadcaster stopped."
+    success "Clone Army stopped."
 }
 
 cmd_status() {
-    header "Broadcaster — Status"
+    header "Clone Army — Status"
 
     if _daemon_running; then
         success "Running (pid $(cat "$PIDFILE"))."
@@ -484,7 +486,7 @@ _render_dashboard() {
 main_menu() {
     while true; do
         clear
-        header "Broadcaster"
+        header "Clone Army"
         _render_dashboard
 
         local action
