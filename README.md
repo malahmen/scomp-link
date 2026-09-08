@@ -96,6 +96,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | [`younglings-key/younglings-key.sh`](docs/scripts/younglings-key.md) | Generate certificates (self-signed/CSR/template/convert) — front-end for the standalone [younglings-key](https://github.com/malahmen/younglings-key) engine |
 | [`navicomputer/navicomputer.sh`](docs/scripts/navicomputer.md) | Manage SSH profiles in `~/.ssh/config` — front-end for the standalone [navicomputer](https://github.com/malahmen/navicomputer) engine |
 | [`mind-trick/mind-trick.sh`](docs/scripts/mind-trick.md) | Scrub commit-message trailers (e.g. AI co-author) from git history — front-end for the standalone [mind-trick](https://github.com/malahmen/mind-trick) engine |
+| [`clone-army/clone-army.sh`](docs/scripts/clone-army.md) | Broadcast one keystroke to a group of X11/XWayland windows in unison (xbindkeys + xdotool) — generic parallel-input / multiboxing helper |
 
 ---
 
@@ -400,6 +401,8 @@ scomp-link/
     │   └── mind-trick.sh             # front-end for the mind-trick git-history-scrub engine (its own repo)
     ├── protocol-droid/
     │   └── protocol-droid.sh         # front-end for the protocol-droid doc-conversion engine (marker + markitdown backends; its own repo)
+    ├── clone-army/
+    │   └── clone-army.sh             # broadcast one keystroke to a group of X11/XWayland windows (xbindkeys + xdotool)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
