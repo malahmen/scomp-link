@@ -83,7 +83,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 | [`comfyengine.sh`](docs/scripts/comfyengine.md)                      | -            | Build & install the ComfyEngine memory scanner from source               |
 | [`gameconqueror.sh`](docs/scripts/gameconqueror.md)                  | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
 | [`wow-nordrassil/wow-nordrassil.sh`](docs/scripts/wow-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
-| [`vanilla-wow-client/client.sh`](docs/scripts/vanilla-wow-client.md) | -            | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) |
+| [`wow-dark-portal/wow-dark-portal.sh`](docs/scripts/wow-dark-portal.md) | -            | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) — front-end for the standalone [dark-portal](https://github.com/malahmen/dark-portal) engine |
 
 ### Utilities
 
@@ -384,8 +384,8 @@ scomp-link/
     │   └── gameconqueror.sh          # GameConqueror/scanmem (build from source)
     ├── wow-nordrassil/
     │   └── wow-nordrassil.sh          # front-end for the nordrassil VMaNGOS server engine (Docker · K8s)
-    ├── vanilla-wow-client/
-    │   └── client.sh                  # Wine client multiboxing manager
+    ├── wow-dark-portal/
+    │   └── wow-dark-portal.sh         # front-end for the dark-portal Wine multibox client engine
     │
     ├── # Utilities
     ├── starlight/

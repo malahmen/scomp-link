@@ -41,7 +41,7 @@ editing a group to pick up changes.
 
 ## Multiboxing with vanilla WoW
 
-Pairs naturally with [`vanilla-wow-client`](vanilla-wow-client.md): that script's
+Pairs naturally with [`wow-dark-portal`](wow-dark-portal.md): that script's
 per-instance "title keeper" gives each game window a stable, unique title, which
 you then capture as a **titles** group here — so a single keypress drives every
 box. clone-army itself knows nothing about WoW; it just targets windows.
