@@ -2,7 +2,7 @@
 
 `vanilla-wow-client/client.sh`
 
-Configures and launches multiple vanilla WoW (1.12.1) game clients under Wine on a single Linux PC, for multiboxing. Companion to [Vanilla WoW Server](vanilla-wow-server.md) but entirely independent — it never touches the server, only the client(s) that connect to one (this repo's own server or any other vanilla-family realm on the LAN).
+Configures and launches multiple vanilla WoW (1.12.1) game clients under Wine on a single Linux PC, for multiboxing. Companion to [Vanilla WoW Server](wow-nordrassil.md) but entirely independent — it never touches the server, only the client(s) that connect to one (this repo's own server or any other vanilla-family realm on the LAN).
 
 - **Wine runtime is Bottles (Flatpak, `com.usebottles.bottles`)**, not a host-layered `wine`/`wine-core` package — on immutable/atomic hosts (e.g. Bazzite) a layered `wine-core` needs a reboot and its `wineboot --init` has been observed to hang indefinitely on some builds. Bottles bundles its own known-good runner, needs no reboot, and being a Flatpak works the same way on any distro with Flatpak+Flathub
 - **Multiple simultaneous instances**: each instance ("box") gets its own Bottles bottle (a real, independent Wine prefix — registry/DirectX state can't collide) and its own WTF/Cache/Logs (account state, saved vars, addon cache can't collide either)
