@@ -5,7 +5,7 @@
 # client.sh
 # Configures and launches one or more vanilla WoW (1.12.1) game clients under
 # Wine, for multiboxing on a single Linux PC. Companion to
-# scripts/vanilla-wow-server/server.sh (the server side) — this script never
+# scripts/wow-nordrassil/wow-nordrassil.sh (the server side) — this script never
 # touches the server, it only sets up the player-facing client(s) that connect
 # to one.
 #
