@@ -14,8 +14,10 @@ Create and manage Astro Starlight documentation sites:
 
 ## Requirements
 
-- **Node ≥ 22 with an even major** (current Astro dropped Node 18/20 and odd
-  releases), **npm**, and **vim** — all checked up front; a miss is fatal.
+- **Node ≥ 22.12** (current Astro's floor; older is fatal), **npm**, and **vim** —
+  all checked up front. Odd-numbered Node majors (23, 25, …) are outside Astro's
+  official support list but work in practice, so they only warn; switch with
+  `mise use --global node@lts`.
 - **mise** recommended — Create runs `mise trust` + `mise install`, and every
   generated `mise.toml` task needs it. Only a warning if missing (managing an
   existing project works without it).
