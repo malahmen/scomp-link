@@ -31,17 +31,17 @@ Scomp-Link comes with several ready-to-use scripts organized by category. Each l
 | Script                                        | Description                                                                 |
 | --------------------------------------------- | --------------------------------------------------------------------------- |
 | [`kind.sh`](docs/scripts/kind.md)             | Create and manage Kind Kubernetes clusters                                  |
-| [`karpenter.sh`](docs/scripts/karpenter.md)   | Install and manage Karpenter on any K8s cluster                             |
-| [`argo.sh`](docs/scripts/argo.md)             | Install and manage Argo Workflows & Argo CD                                 |
+| [`karpenter.sh`](docs/scripts/karpenter.md)   | Local dev/test Karpenter install (from source, KWOK provider) on any K8s cluster |
+| [`argo.sh`](docs/scripts/argo.md)             | Install and manage Argo Workflows, Argo CD & Argo Events                    |
 | [`akinn_tui.sh`](docs/scripts/akinn.md)       | Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn) |
-| [`docker.sh`](docs/scripts/docker.md)         | Install, uninstall, and check status of Docker itself                       |
+| [`docker.sh`](docs/scripts/docker.md)         | Install, uninstall, start/stop, and check the status of Docker itself (Linux) |
 | [`k9s.sh`](docs/scripts/k9s.md)               | Install and launch k9s, terminal UI for Kubernetes                          |
 | [`lazydocker.sh`](docs/scripts/lazydocker.md) | Install and launch lazydocker, terminal UI for Docker                       |
 | [`lazygit.sh`](docs/scripts/lazygit.md)       | Install and launch lazygit, terminal UI for git                             |
 
 ### Databases
 
-All database scripts follow the same pattern: Docker or K8s target, multiple named instances (namespace/release prompted per session), install/status/connect/uninstall actions.
+All database scripts follow the same pattern: Docker, kind, or K8s target (picked at runtime), multiple named instances (container name or namespace/release prompted per session), install/status/connect/uninstall actions plus a K8s `port-forward` toggle. Exceptions: Qdrant has `health-check` instead of `connect`; Redis adds `list-queues`. K8s connect/port-forward paths use `nc` for readiness checks.
 
 | Script                                    | Targets      | Description                                    |
 | ----------------------------------------- | ------------ | ---------------------------------------------- |
@@ -79,9 +79,9 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 
 | Script                                                               | Targets      | Description                                                              |
 | -------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------ |
-| [`bazzite-utils.sh`](docs/scripts/bazzite-utils.md)                  | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix          |
-| [`comfyengine.sh`](docs/scripts/comfyengine.md)                      | -            | Build & install the ComfyEngine memory scanner from source               |
-| [`gameconqueror.sh`](docs/scripts/gameconqueror.md)                  | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
+| [`bazzite-utils/bazzite-utils.sh`](docs/scripts/bazzite-utils.md)    | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix |
+| [`comfyengine/comfyengine.sh`](docs/scripts/comfyengine.md)          | -            | Build & install the ComfyEngine memory scanner from source               |
+| [`gameconqueror/gameconqueror.sh`](docs/scripts/gameconqueror.md)    | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
 | [`wow-nordrassil/wow-nordrassil.sh`](docs/scripts/wow-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
 | [`wow-dark-portal/wow-dark-portal.sh`](docs/scripts/wow-dark-portal.md) | -            | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) — front-end for the standalone [dark-portal](https://github.com/malahmen/dark-portal) engine |
 
@@ -89,7 +89,7 @@ All database scripts follow the same pattern: Docker or K8s target, multiple nam
 
 | Script                                                  | Description                                                                 |
 | ------------------------------------------------------- | --------------------------------------------------------------------------- |
-| [`starlight_astro.sh`](docs/scripts/starlight.md)       | Create and manage Starlight documentation sites                             |                            |
+| [`starlight/starlight_astro.sh`](docs/scripts/starlight.md) | Create and manage Starlight documentation sites                          |
 | [`protocol-droid/protocol-droid.sh`](docs/scripts/protocol-droid.md) | Convert PDF/Office/audio/etc -> Markdown/JSON (local or scalable service) — front-end for the standalone [protocol-droid](https://github.com/malahmen/protocol-droid) engine, a multi-backend converter driving [marker](https://github.com/datalab-to/marker) and [Microsoft markitdown](https://github.com/microsoft/markitdown) |
 | [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
 | [`bmad/bmad.sh`](docs/scripts/bmad.md)                 | Manage BMAD-METHOD projects — create, update BMAD version, delete project |
@@ -114,7 +114,7 @@ cd scomp-link
 The setup script will:
 
 1. Detect your operating system
-2. Install required dependencies (mise, gum, vim, tree)
+2. Install required dependencies (curl, mise, bash 4+ on macOS, gum, vim, tree) and persist mise activation in your shell profile
 3. Optionally install Node.js LTS
 4. Launch the main menu
 
@@ -141,15 +141,23 @@ The setup script will:
 | kubectl                     | Any Kubernetes-target script                          |
 | helm                        | K8s database, observability, and platform scripts     |
 | kind                        | Kind cluster management                               |
-| Node.js                     | Starlight documentation sites                         |
+| Node.js                     | Starlight documentation sites, bmad (npx bmad-method) |
 | pandoc                      | holo-convert (document conversion)                    |
 | TeX Live (xelatex/lualatex) | holo-convert PDF output                               |
 | openssl                     | younglings-key certificate generation                 |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
 | jq                          | navicomputer (SSH profile manager)                    |
-| git, curl                   | Akinn node installer (fetches Akinn + version lists)  |
+| git, curl                   | Akinn, Argo (curl), karpenter (git), and every engine front-end (clones its engine) |
+| nc (netcat)                 | K8s port-forward/connect readiness checks (DB, observability, platform scripts; not auto-checked) |
+| docker-compose (v1 binary)  | lgtm and dozzle Docker targets (not auto-checked)     |
+| psql, mysql/mariadb, mongosh | DB connect on the K8s target (prompted at runtime)   |
+| go, make, ko                | karpenter local from-source build (go required; make/ko offered) |
+| lsof or ss                  | kind port-conflict check, lgtm/dozzle port checks     |
+| xbindkeys, xdotool, wmctrl  | clone-army, bazzite-utils (auto-installed via dnf/apt/rpm-ostree) |
+| uv, python3                 | bmad                                                  |
+| flatpak, Xvfb, systemd      | lmstudio (Linux only)                                 |
 
-> **Helm and kubectl** are checked at runtime and can be auto-installed via `mise` if missing.
+> **Helm** is checked at runtime and can be auto-installed via `mise` if missing. **kubectl** is checked but not installed by the shared helpers; only `kind.sh` and `karpenter.sh` install it themselves via `mise`.
 
 ## Usage
 
@@ -189,7 +197,7 @@ on its own — no scomp-link checkout, no `init.sh`, no `_common/` parent.
 ./export.sh postgres ~/pg     # or pass them directly
 ```
 
-You can also trigger it from the launcher: pick **“⇱ Export a script → standalone folder”** at the top of the `init.sh` menu.
+You can also trigger it from the launcher: pick **“Export a script → standalone folder”** at the top of the `init.sh` menu.
 
 The result is a **flat** directory:
 
@@ -313,7 +321,8 @@ scomp-link/
     │   │                              #   dnf/apt/rpm-ostree package install helpers
     │   ├── portforward.sh             # Port-forward pid-file helpers (also reused for
     │   │                              #   tracking arbitrary background processes)
-    │   └── gh_releases.sh             # GitHub release fetching helpers
+    │   ├── gh_releases.sh             # GitHub release fetching helpers
+    │   └── windows.sh                 # X11/XWayland window discovery (wmctrl + xdotool)
     │
     ├── _templates/                     # [Excluded] Skeletons for new scripts, not run directly
     │   ├── service.sh                  #   Docker/K8s deploy archetype
@@ -324,13 +333,13 @@ scomp-link/
     ├── akinn/
     │   └── akinn_tui.sh              # Akinn node installer front-end (master/worker)
     ├── argo/
-    │   └── argo.sh                   # Argo Workflows & CD manager
+    │   └── argo.sh                   # Argo Workflows, CD & Events manager
     ├── karpenter/
-    │   └── karpenter.sh              # Karpenter setup (any K8s cluster)
+    │   └── karpenter.sh              # Karpenter local dev install (from source + KWOK)
     ├── kind/
     │   └── kind.sh                   # Kind cluster manager
     ├── docker/
-    │   └── docker.sh                 # Install/uninstall/status for Docker itself
+    │   └── docker.sh                 # Install/uninstall/start/stop/status for Docker itself
     ├── k9s/
     │   └── k9s.sh                    # k9s: Kubernetes terminal UI (install + launch)
     ├── lazydocker/
@@ -377,7 +386,7 @@ scomp-link/
     │
     ├── # Gaming
     ├── bazzite-utils/
-    │   └── bazzite-utils.sh          # EA App / Ubisoft Connect fixes
+    │   └── bazzite-utils.sh          # EA App / Ubisoft Connect / KDE greeter fixes
     ├── comfyengine/
     │   └── comfyengine.sh            # ComfyEngine memory scanner (build from source)
     ├── gameconqueror/
@@ -391,7 +400,7 @@ scomp-link/
     ├── starlight/
     │   ├── starlight_astro.sh        # Starlight documentation manager
     │   └── converter/
-    │       └── convert.sh            # per-project doc converter (vendors the holo-convert engine)
+    │       └── convert.sh            # per-project doc converter (runs the holo-convert engine vendored at scaffold time)
     ├── holo-convert/
     │   └── holo-convert.sh           # front-end for the holo-convert engine (its own repo)
     ├── navicomputer/
@@ -434,8 +443,9 @@ Generated projects include a `mise.toml` with useful tasks:
 mise run dev          # Start development server
 mise run build        # Build for production
 mise run preview      # Preview production build
-mise run convert      # Convert to PDF (full mode)
-mise run convert:pdf  # Convert to PDF (fast mode)
+mise run convert      # Interactive: pick files, PDF or DOCX, TOC / title page / strip-rules prompts
+mise run convert:pdf  # PDF preset: title page, TOC (depth 3), rules stripped, Helvetica
+mise run convert:docx # DOCX preset: plain reference doc, TOC (depth 3)
 ```
 
 ---
@@ -549,10 +559,10 @@ Have a useful script? Contributions are welcome! Good candidates:
 - [Akinn](https://github.com/malahmen/akinn) for automated Kubernetes node provisioning
 - [groundhog2k](https://github.com/groundhog2k/helm-charts) for the PostgreSQL / MariaDB / MySQL / MongoDB / Redis Helm charts (deploying the official upstream images) and [InfluxData](https://github.com/influxdata/helm-charts) for the InfluxDB 2.x chart
 - [Prometheus Community](https://github.com/prometheus-community) for the Prometheus Helm chart
-- [Grafana](https://grafana.com/) for the Grafana Helm chart and observability tooling
+- [Grafana](https://grafana.com/) for the Grafana, Loki, Tempo and Mimir Helm charts and observability tooling, and [OpenTelemetry](https://github.com/open-telemetry/opentelemetry-helm-charts) for the collector chart
 - [Dozzle](https://dozzle.dev/) for the real-time container log viewer
 - [Harbor](https://goharbor.io/) for the open-source container registry
-- [n8n](https://n8n.io/) for the workflow automation platform
-- [Qdrant](https://qdrant.tech/) for the vector database
+- [n8n](https://n8n.io/) for the workflow automation platform and [community-charts](https://github.com/community-charts/helm-charts) for its Helm chart
+- [Qdrant](https://qdrant.tech/) for the vector database and its Helm chart
 - [Astro](https://astro.build/) and [Starlight](https://starlight.astro.build/) for documentation tooling
 - [Pandoc](https://pandoc.org/) for document conversion

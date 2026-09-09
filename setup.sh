@@ -248,7 +248,7 @@ ensure_gum_width() {
     ok "Added GUM_INPUT_WIDTH=${width} to ${profile_file}."
     info "Restart your terminal or run: source ${profile_file}"
 }
-# vim — required by starlight-manage.sh for editing content files
+# vim — required by starlight_astro.sh for editing content files
 ensure_vim() {
     info "Looking for vim..."
 
@@ -279,7 +279,7 @@ Please ask your administrator to install vim."
     ok "vim installed: $(command -v vim)"
 }
 
-# tree — required by starlight-manage.sh for site structure overview
+# tree — required by starlight_astro.sh for site structure overview
 ensure_tree() {
     info "Looking for tree..."
 
@@ -315,17 +315,18 @@ ensure_tree() {
     ok "tree installed: $(command -v tree)"
 }
 
-# Node.js / npm via mise (optional — required by starlight-init.sh and similar scripts)
+# Node.js / npm via mise (optional — required by starlight_astro.sh, bmad.sh and similar scripts)
 ensure_node() {
     info "Looking for node / npm..."
 
     if command_exists node && command_exists npm; then
         ok "node found: $(node --version)  npm: $(npm --version)"
+        _warn_node_version
         return
     fi
 
     warn "Node.js / npm not found."
-    warn "Some scripts (e.g. starlight-init.sh) require Node.js."
+    warn "Some scripts (e.g. starlight_astro.sh, bmad.sh) require Node.js."
 
     if ! gum confirm "Install Node.js LTS via mise?"; then
         warn "Skipping Node.js installation. Re-run setup.sh or install manually if needed."
@@ -344,16 +345,22 @@ Please install it manually: https://nodejs.org
 Or via mise: mise use --global node@lts"
     fi
 
-    # Verify the installed version is Astro-compatible (not v19 or v21)
-    local node_major
-    node_major=$(node -e "process.stdout.write(String(process.versions.node.split('.')[0]))")
-    if [[ "$node_major" -eq 19 ]] || [[ "$node_major" -eq 21 ]]; then
-        fatal "mise installed Node.js v${node_major}, which is not supported by Astro.
-Please run: mise use --global node@20
-Then re-run setup.sh."
-    fi
-
+    _warn_node_version
     ok "Node.js installed: node $(node --version)  npm $(npm --version)"
+}
+
+# Astro (starlight_astro.sh) needs Node >= 22.12 and officially supports even
+# (LTS) majors only. Never fatal here: an existing node is the user's choice and
+# odd majors work in practice; starlight_astro.sh applies the hard floor itself.
+_warn_node_version() {
+    local major minor
+    major=$(node -e "process.stdout.write(String(process.versions.node.split('.')[0]))" 2>/dev/null) || return 0
+    minor=$(node -e "process.stdout.write(String(process.versions.node.split('.')[1]))" 2>/dev/null) || return 0
+    if [ "$major" -lt 22 ] || { [ "$major" -eq 22 ] && [ "$minor" -lt 12 ]; }; then
+        warn "Node.js $(node --version) is below Astro's floor (v22.12.0). Starlight scripts will refuse to run; switch with: mise use --global node@lts"
+    elif [ $((major % 2)) -ne 0 ]; then
+        warn "Node.js $(node --version) is an odd-numbered release; Astro officially supports even (LTS) majors. Usually fine; switch with: mise use --global node@lts"
+    fi
 }
 
 # bash 4+ — macOS ships bash 3.2 forever; several scripts (starlight_astro.sh and

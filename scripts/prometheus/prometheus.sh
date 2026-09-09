@@ -8,7 +8,7 @@
 # Kubernetes only — uses prometheus-community/prometheus Helm chart.
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: kubectl + helm.
-# Sources: scripts/cluster/cluster.sh for deployment target selection.
+# Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh, deps.sh, portforward.sh
 #
 # Optional components (selected at install time):
 #   alertmanager, node-exporter, kube-state-metrics, pushgateway

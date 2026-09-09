@@ -41,6 +41,12 @@ The front-end finds `protocol-droid.sh` automatically, in order:
 3. `~/.cache/scomp-link/protocol-droid/` (a cached clone; offers `git pull`)
 4. a fresh `git clone --depth 1` from the public repo
 
+Set `$PROTOCOL_DROID_REPO` to clone from a different remote (a fork or mirror).
+The cache honours `XDG_CACHE_HOME` (`${XDG_CACHE_HOME:-~/.cache}/scomp-link/protocol-droid`).
+
+Ctrl-C is handled: the engine runs in the foreground, so an interrupt stops
+just the running conversion (or setup/logs) and returns you to the TUI.
+
 ## Modes
 
 - **local** — run a backend on this machine, isolated in a pipx environment.
@@ -124,11 +130,13 @@ first).
   read from the environment when present (`GEMINI_API_KEY`, `OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`) or prompted for (hidden input). **OpenAI / OpenAI-compatible**
   also asks for a **base URL**, so it can target a local/LAN server (see below).
-- **Page range** (`--page_range`, single-file only) — e.g. `0,5-10,20`
-- **Workers** (`--workers`, batch only) — parallel processes (~3.5 GB RAM/VRAM each)
+- **Page range** (`--page-range`, single-file only) — e.g. `0,5-10,20`
+- **Workers** (`--workers`, batch only; default 4) — parallel processes (~3.5 GB RAM/VRAM each)
 
-The front-end builds these into flags; anything marker-specific (force OCR, LLM
-service + keys) is forwarded to the engine after a `--` separator.
+The front-end builds these into flags: `--page-range` / `--workers` are engine
+flags passed *before* the `--` separator (marker's own flag is spelled
+`--page_range`; the engine translates); anything marker-specific (force OCR, LLM
+service + keys) is forwarded to the engine after `--`.
 
 ## Local / LAN LLM
 
@@ -183,6 +191,13 @@ batch enqueuer  ──┴─▶ Redis queue ─▶ worker × N (marker, models l
 
 **Menu actions** (after choosing Docker or K8s): Build image · Deploy/update ·
 Status · Logs · Scale workers · Enqueue a folder (batch) · Tear down.
+
+- **Deploy/update** on Docker prompts for the host **input** and **output**
+  folders (defaults `./input` and `./output`) to mount into the stack.
+- **Enqueue a folder** on K8s first warns that your documents must already be on
+  the `marker-input` PVC (e.g. via `kubectl cp`).
+- **Tear down** removes the stack but **keeps volumes/PVCs** (model cache,
+  input, output).
 
 **Targets:**
 

@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 command -v gum    &>/dev/null || { echo "[error] gum is required. Install via mise or brew." >&2; exit 1; }
-command -v pandoc &>/dev/null || { echo "[error] pandoc not found. Run 'mise install' from the project root first." >&2; exit 1; }
+command -v pandoc &>/dev/null || { echo "[error] pandoc not found. Run 'bash converter/holo-convert.sh --setup --to pdf' from the project root (or install pandoc via brew/apt/dnf)." >&2; exit 1; }
 
 ENGINE="${SCRIPT_DIR}/holo-convert.sh"
 [[ -f "$ENGINE" ]] || {

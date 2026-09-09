@@ -9,7 +9,8 @@
 # official influxdb 2.x image — replaces the deprecated Bitnami chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
-# Sources: scripts/cluster/cluster.sh for deployment target selection.
+# Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh,
+#          deps.sh, portforward.sh.
 #
 # InfluxDB 2.x uses an org/bucket/token model.
 # Docker: init env vars configure admin user, org, bucket, and optional token.
@@ -272,7 +273,8 @@ influxdb_status_docker() {
 
     echo ""
     info "Health check (http://127.0.0.1:${port}/health):"
-    if curl -sf "http://127.0.0.1:${port}/health" 2>/dev/null | python3 -m json.tool 2>/dev/null; then
+    if curl -sf "http://127.0.0.1:${port}/health" 2>/dev/null \
+        | (command -v python3 &>/dev/null && python3 -m json.tool || cat); then
         :
     else
         warn "Could not reach InfluxDB — container may still be starting."
@@ -544,13 +546,9 @@ influxdb_connect_k8s() {
         --header "Local port (leave empty for ${IDB_DEFAULT_PORT}):") || true
     local port="${port_input:-$IDB_DEFAULT_PORT}"
 
-    local svc="${IDB_HELM_RELEASE}-influxdb"
-    if ! kubectl get svc "$svc" -n "$IDB_NAMESPACE" &>/dev/null 2>&1; then
-        svc="$IDB_HELM_RELEASE"
-    fi
-
-    kubectl -n "$IDB_NAMESPACE" port-forward "svc/${svc}" "${port}:8086" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_IDB_PF_PID"
+    local pf_pid
+    pf_pid=$(_k8s_start_port_forward "$port")
+    echo "${pf_pid}:${port}" > "$_IDB_PF_PID"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

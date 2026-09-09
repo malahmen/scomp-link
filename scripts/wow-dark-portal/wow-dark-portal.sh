@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Vanilla WoW multibox client — gum front-end for the dark-portal engine
+# Standalone export (export.sh): no extra setup deps — git is checked at runtime (engine clone).
 # -----------------------------------------------------------------------------
 # gum front-end for the standalone, flag-driven `dark-portal` engine — provisions
 # and launches multiple vanilla WoW (1.12.1) clients under Wine (Bottles) for
@@ -25,8 +26,14 @@ fi
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
+
 # shellcheck source=../_common/ui.sh
-source "${SCRIPT_DIR}/../_common/ui.sh"
+source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
 command -v git &>/dev/null || { echo "[error] git is required." >&2; exit 1; }

@@ -22,7 +22,8 @@ The front-end finds `dark-portal.sh` automatically, in order:
 1. `$DARK_PORTAL_DIR/dark-portal.sh` (explicit override)
 2. `../../../dark-portal/dark-portal.sh` (a local sibling checkout)
 3. `~/.cache/scomp-link/dark-portal/` (a cached clone; offers `git pull`)
-4. a fresh `git clone --depth 1` from the public repo
+4. a fresh `git clone --depth 1` from the public repo (`$DARK_PORTAL_REPO`
+   overrides the clone URL)
 
 All interactivity stays in the front-end — it collects options with gum and
 persists them into the engine's config store (`~/.config/dark-portal/`) with the
@@ -39,6 +40,15 @@ engine itself never prompts.
 - **Multiple simultaneous instances**: each "box" gets its own Bottles bottle (a
   real, independent Wine prefix — registry/DirectX state can't collide) and its
   own WTF/Cache/Logs (account state, saved vars, addon cache can't collide).
+- **Configure** prompts for the pristine client path (`CLIENT_SOURCE_DIR`), the
+  file-isolation mode (below), the bottle architecture (`WINE_ARCH`: `win32` —
+  matches this 32-bit-era client — or `win64`), the Bottles Wine runner
+  (`BOTTLES_RUNNER`, picked from the engine's `list-runners` output; if none is
+  listed yet, run install-deps and open Bottles once so it downloads a runner),
+  the default window resolution (`DEFAULT_RESOLUTION`, WxH), and the default
+  realm (entered manually or discovered on the LAN). Each answer is persisted
+  with `set` and pre-fills on the next run; the engine's own `configure` then
+  validates the settings and grants Bottles host-filesystem access.
 - **Two file-isolation modes** (`set CLIENT_ISOLATION_MODE`): `full` (a complete
   copy per instance — more disk, but avoids the read contention/disconnects that
   many Wine processes hitting a symlink-shared install cause at higher instance
@@ -82,6 +92,12 @@ the client's own login/character-creation screens against the server.
 Categories mirror the workflow: **Setup** (install-deps, configure,
 discover-realm, winecfg) · **Instances** (add / list / edit / remove) · **Launch**
 (launch, stop, stop-all) · **Status**.
+
+**Launch** is a multi-select (`gum choose --no-limit`: space to toggle, enter to
+confirm) over the engine's instance list, and runs `launch --name <instance>`
+once per selection, in order — starting a whole multibox session is one pick
+instead of one round-trip per box. `stop` still targets a single instance;
+`stop-all` covers everything.
 
 ## Driving the engine directly
 

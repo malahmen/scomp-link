@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# description: Install and manage Argo Workflows & Argo CD
+# description: Install and manage Argo Workflows, Argo CD & Argo Events
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl
 # -----------------------------------------------------------------------------

@@ -44,4 +44,4 @@ A script is worth extracting only when its core is:
 ## When we pick this up
 - Next up: **comfyengine** (leans no — thin veneer over an upstream build). (sshger → navicomputer; marker → protocol-droid; vanilla-wow-server → nordrassil; vanilla-wow-client → dark-portal.)
 - Reuse the holo-convert engine-resolution pattern: `$XXX_DIR` override → sibling checkout → `~/.cache/scomp-link/<name>` clone → `git clone`.
-- Engine = gum-free, flags + guardrails (no auto-install); front-end = gum TUI that builds flags and offers `--setup` on missing deps.
+- Engine = gum-free, flags + guardrails (no auto-install); front-end = gum TUI that builds flags. On missing deps the ideal is to offer the engine's `--setup` and retry (holo-convert does this); today protocol-droid exposes setup as a menu item, younglings-key/navicomputer install their one small dep (openssl/jq) themselves, mind-trick needs only git.
