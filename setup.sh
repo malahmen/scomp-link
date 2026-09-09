@@ -248,7 +248,7 @@ ensure_gum_width() {
     ok "Added GUM_INPUT_WIDTH=${width} to ${profile_file}."
     info "Restart your terminal or run: source ${profile_file}"
 }
-# vim — required by starlight-manage.sh for editing content files
+# vim — required by starlight_astro.sh for editing content files
 ensure_vim() {
     info "Looking for vim..."
 
@@ -279,7 +279,7 @@ Please ask your administrator to install vim."
     ok "vim installed: $(command -v vim)"
 }
 
-# tree — required by starlight-manage.sh for site structure overview
+# tree — required by starlight_astro.sh for site structure overview
 ensure_tree() {
     info "Looking for tree..."
 
@@ -315,7 +315,7 @@ ensure_tree() {
     ok "tree installed: $(command -v tree)"
 }
 
-# Node.js / npm via mise (optional — required by starlight-init.sh and similar scripts)
+# Node.js / npm via mise (optional — required by starlight_astro.sh, bmad.sh and similar scripts)
 ensure_node() {
     info "Looking for node / npm..."
 
@@ -325,7 +325,7 @@ ensure_node() {
     fi
 
     warn "Node.js / npm not found."
-    warn "Some scripts (e.g. starlight-init.sh) require Node.js."
+    warn "Some scripts (e.g. starlight_astro.sh, bmad.sh) require Node.js."
 
     if ! gum confirm "Install Node.js LTS via mise?"; then
         warn "Skipping Node.js installation. Re-run setup.sh or install manually if needed."

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Vanilla WoW (VMaNGOS) server — gum front-end for the nordrassil engine
+# Standalone export (export.sh): no extra setup deps — git is checked at runtime (engine clone).
 # -----------------------------------------------------------------------------
 # gum front-end for the standalone, flag-driven `nordrassil` engine (the World
 # Tree for a VMaNGOS vanilla WoW server). The real logic — native/Docker/k8s
@@ -8,8 +9,8 @@
 # and drives it by flags. Same split as protocol-droid / navicomputer /
 # holo-convert / mind-trick / younglings-key.
 #
-# Named wow-nordrassil (not just "nordrassil") so it sorts next to the other
-# vanilla-wow-* client tools in the launcher.
+# Named wow-nordrassil (not just "nordrassil") so it sorts next to
+# wow-dark-portal (the client front-end) in the launcher.
 #
 # Engine resolution order:
 #   1. $NORDRASSIL_DIR/nordrassil.sh        (explicit override — a checkout you control)
@@ -26,8 +27,14 @@ fi
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
+    COMMON_DIR="${SCRIPT_DIR}/../_common"   # scomp-link repo layout
+else
+    COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
+fi
+
 # shellcheck source=../_common/ui.sh
-source "${SCRIPT_DIR}/../_common/ui.sh"
+source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
 command -v git &>/dev/null || { echo "[error] git is required." >&2; exit 1; }

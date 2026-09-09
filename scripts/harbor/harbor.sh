@@ -8,7 +8,7 @@
 # Kubernetes only — uses the official Harbor Helm chart.
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: kubectl + helm.
-# Sources: scripts/cluster/cluster.sh for deployment target selection.
+# Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh, deps.sh, portforward.sh
 #
 # Storage options (selected at install time):
 #   StorageClass — dynamic provisioning (covers NFS-backed classes too)
