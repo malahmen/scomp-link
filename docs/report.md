@@ -50,4 +50,5 @@ Ordered by impact.
 
 - README, docs/export.md, docs/engine-split-candidates.md, 27 docs under docs/scripts/, setup.sh comments, export.sh comment, `_templates/engine-frontend.sh` (vendor-aware sourcing).
 - Scripts: mongodb.sh (Docker app-user init script, app-user connect, K8s auth-database prompt), lgtm.sh (`_write_docker_configs` + two compose fixes), influxdb.sh (use `_k8s_start_port_forward`, optional python3), wow-nordrassil.sh and wow-dark-portal.sh (vendor-aware sourcing, export note), redis.sh / clone-army.sh / karpenter.sh / starlight_astro.sh / convert.sh (comments and messages), argo.sh description header, eleven `# Sources:` header lines.
-- All modified scripts pass `bash -n`. Nothing committed.
+- starlight_astro.sh / setup.sh (follow-up, after the first commit): the Node preflight rejected every odd major, so v23 failed with "update via setup.sh", which setup.sh could not act on because it never replaces an existing node. Now a hard floor of v22.12.0 with a warning on odd majors in starlight_astro.sh, and setup.sh warns instead of rejecting.
+- All modified scripts pass `bash -n`.
