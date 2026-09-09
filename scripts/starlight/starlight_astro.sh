@@ -3,10 +3,10 @@
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: node tree vim
 # -----------------------------------------------------------------------------
-# starlight.sh
+# starlight_astro.sh
 # Interactive TUI for creating and managing Astro Starlight documentation projects.
 # Called by init.sh — expects gum to already be available.
-# Dependencies: gum (managed by init.sh), npm, vim
+# Dependencies: gum (managed by init.sh), node (>= 22, even major), npm, vim; mise recommended; tree optional
 # Optional: tree (site structure view)
 # -----------------------------------------------------------------------------
 

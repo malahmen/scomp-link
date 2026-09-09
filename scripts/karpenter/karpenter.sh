@@ -8,7 +8,7 @@
 # Uses KWOK as the simulated cloud provider.
 # Works with kind clusters or any existing kubectl-reachable cluster.
 # Called by init.sh - expects gum to be available.
-# Hard dependencies (abort if missing): docker, go  - install via their
+# Hard dependencies (abort if missing): docker, go, git  - install via their
 #   dedicated scripts first.
 # Soft dependencies (offer to install): ko, make, kubectl.
 # kind is only required when choosing to use/create a kind cluster.

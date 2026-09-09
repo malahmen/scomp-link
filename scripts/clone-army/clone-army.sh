@@ -82,7 +82,8 @@ MODIFIER_CHOICES=("control" "alt" "control+shift" "control+alt" "super")
 GROUP_NAME_RE='^[A-Za-z0-9_-]{1,32}$'
 
 # -----------------------------------------------------------------------------
-# Config persistence — same simple KEY="value" convention as client.sh
+# Config persistence — simple KEY="value" files, the same convention the
+# dark-portal engine uses for its per-instance config.
 # -----------------------------------------------------------------------------
 
 _cfg_get() {
@@ -101,7 +102,8 @@ _cfg_set() {
 }
 
 # -----------------------------------------------------------------------------
-# Group helpers — mirrors client.sh's per-instance directory convention
+# Group helpers — one directory per group, mirroring the dark-portal engine's
+# per-instance directory convention.
 # -----------------------------------------------------------------------------
 
 _group_dir()   { echo "${GROUPS_DIR}/$1"; }

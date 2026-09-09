@@ -12,7 +12,9 @@ at once" workflow. (Formerly `vanilla-wow-broadcaster`; renamed since the tool i
 game-agnostic.)
 
 **Linux only** — X11 or XWayland. It can't intercept the hotkey while a
-native-Wayland window has focus (a Wayland security boundary, not a bug).
+native-Wayland window has focus (a Wayland security boundary, not a bug). There's
+no OS guard enforcing this: on another host it simply fails where GNU `find
+-printf` and the X11 tools (`xbindkeys`/`xdotool`/`wmctrl`) are missing.
 
 ## How it works
 
@@ -38,6 +40,35 @@ native-Wayland window has focus (a Wayland security boundary, not a bug).
 
 Config lives in `~/.config/clone-army/groups/<name>/`. Restart broadcasting after
 editing a group to pick up changes.
+
+With no arguments the menu opens under a **dashboard**: the daemon state
+(running with its pid, or stopped), then one line per group with its match mode,
+modifier, keys, and *live* window count — re-discovered on every render, so
+closed/renamed windows drop out of the count on their own.
+
+## CLI
+
+Every menu action is also a subcommand, so the tool can be scripted without the
+TUI:
+
+`install-deps` · `add-group` · `list-groups` · `edit-group` · `remove-group` ·
+`start` · `stop` · `status` · `send <group> <key>`
+
+`status` prints the daemon state followed by the group listing. `send` is what
+the generated xbindkeys bindings call on every hotkey press — it deliberately
+avoids gum (a subprocess spawn per keypress would add input lag) and isn't meant
+to be run by hand.
+
+- **Modifier** (per group): `control`, `alt`, `control+shift`, `control+alt`, or
+  `super`. Keys are space-separated (e.g. `1 2 3 F1`), pressed as
+  `<modifier>+<key>` and delivered to each member as the plain `<key>`.
+- **Group names** must match `^[A-Za-z0-9_-]{1,32}$` — letters, digits, `-`,
+  `_`; max 32 chars.
+- **Files** under `~/.config/clone-army/`: `groups/<name>/` (`group.conf` with
+  `MATCH_MODE`/`MATCH_CLASS`/`MODIFIER`/`KEYS`, plus `titles.list` for a
+  titles-matched group), `xbindkeysrc` (regenerated on every `start`),
+  `clone-army.pid` (the xbindkeys daemon pid), and `clone-army.log` (the
+  daemon's stdout/stderr — check it if `start` reports it didn't come up).
 
 ## Multiboxing with vanilla WoW
 

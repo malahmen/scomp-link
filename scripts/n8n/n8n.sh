@@ -8,7 +8,7 @@
 # Supports Docker (local container) and Kubernetes (community Helm chart).
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
-# Sources: scripts/cluster/cluster.sh for deployment target selection.
+# Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh, deps.sh, portforward.sh
 #
 # Database backends:
 #   SQLite    — default, zero-config, single-instance only.

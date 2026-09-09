@@ -13,8 +13,8 @@ shipping the whole repo.
 ./export.sh postgres ~/pg            # fully non-interactive
 ```
 
-From the launcher, choose **“Export a script → standalone folder”** — one of the
-special entries in the `init.sh` menu.
+From the launcher, choose **“Export a script → standalone folder”** — the
+special entry at the top of the `init.sh` menu.
 
 You can pass either a folder name (`postgres`) or the discovered
 `folder/script.sh` path.
@@ -60,10 +60,10 @@ copied next to it. `_common` files don't source each other, so a script's
 **What `export.sh` does:**
 
 1. Copies the script's folder contents (the `.sh` + co-located assets like
-   `.fcc/`) flat into the target.
+   dozzle's `templates/`) flat into the target.
 2. Greps the script's `source` lines and copies **only** the `_common` helpers
    it references (`ui.sh`, `deps.sh`, `gh_releases.sh`, `portforward.sh`,
-   `cluster.sh`).
+   `cluster.sh`, `windows.sh`).
 3. Generates a slimmed `setup.sh` (see below).
 4. Copies `wsl-setup.ps1` (already scomp-link-agnostic).
 
