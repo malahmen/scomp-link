@@ -11,7 +11,8 @@ front-end, auto-discovered in the launcher like any other script; the build /
 deploy / DB / admin logic lives in the engine's own repo — the same split as
 [holo-convert](holo-convert.md), [protocol-droid](protocol-droid.md), and
 [younglings-key](younglings-key.md). It's named `wow-nordrassil` so it sorts
-next to the other `vanilla-wow-*` client tools in the launcher.
+next to [wow-dark-portal](wow-dark-portal.md) (the client front-end) in the
+launcher.
 
 ## Engine resolution
 
@@ -20,7 +21,8 @@ The front-end finds `nordrassil.sh` automatically, in order:
 1. `$NORDRASSIL_DIR/nordrassil.sh` (explicit override)
 2. `../../../nordrassil/nordrassil.sh` (a local sibling checkout)
 3. `~/.cache/scomp-link/nordrassil/` (a cached clone; offers `git pull`)
-4. a fresh `git clone --depth 1` from the public repo
+4. a fresh `git clone --depth 1` from the public repo (`$NORDRASSIL_REPO`
+   overrides the clone URL)
 
 The front-end keeps **all** interactivity — it collects options with gum and
 persists them into the engine's config store (`~/.config/nordrassil/`) with the
@@ -111,9 +113,9 @@ nordrassil.sh create-account --name admin --pass secret --level 6
 nordrassil.sh --help
 ```
 
-The local native build (`start`/`stop`) is Debian/Ubuntu-oriented (the ACE
-toolkit build dependency isn't packaged for Fedora/RHEL); the Docker path always
-builds inside an Ubuntu stage regardless of host OS. See the
+The engine's native build (`start`/`stop`) targets Debian/Ubuntu first; check
+the engine README for Fedora support. The Docker path always builds inside an
+Ubuntu stage regardless of host OS. See the
 [engine README](https://github.com/malahmen/nordrassil) for the full flag
 reference.
 

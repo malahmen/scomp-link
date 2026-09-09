@@ -12,15 +12,18 @@ install`); this script is a lifecycle wrapper around it plus a small project reg
 BMAD needs **Node.js ≥ 20.12** (for `npx`), **Python ≥ 3.10**, and **uv** (Astral's
 Python package manager). The script checks these before Create/Update and offers to
 install `uv` (Homebrew or the official installer); Node/Python it guides you to
-install. `python3` is also used for the registry, so it's always required.
+install. A missing/too-old Node or a failed `uv` install **blocks**; a Python older
+than 3.10 only **warns** (uv can provide a newer interpreter for BMAD). `python3` is
+also used for the registry, so it's always required — List/Delete need it too even
+though only Create/Update run the dependency check.
 
 ## Menu
 
 | Action | What it does |
 | ------ | ------------ |
-| **Create a new project** | Prompts a name + parent dir, creates the folder, runs `npx bmad-method install` interactively (you answer BMAD's own module/tool prompts), and registers the project. |
+| **Create a new project** | Prompts a name + parent dir, creates the folder, runs `npx bmad-method install` interactively (you answer BMAD's own module/tool prompts), registers the project, and opens the new folder in your file manager. Refuses to create into a folder that is already a BMAD project (use Update). |
 | **Update BMAD in a project** | Pick a project (registry or folder scan), choose **stable** or **prerelease** (`@next`), and rerun the installer — BMAD detects the existing install and updates it. |
-| **Delete a project** | Pick a project, see a git-safety report, retype the project name to confirm, then the **entire folder** is removed and dropped from the registry. |
+| **Delete a project** | Pick a project, see its folder size and a git-safety report, retype the project name to confirm, then the **entire folder** is removed and dropped from the registry. |
 | **List managed projects** | Shows registered projects (flags any whose folder is gone) and offers to prune stale entries. |
 
 ## Project registry
@@ -29,16 +32,19 @@ The script remembers the projects it manages in a JSON file at
 `${XDG_CONFIG_HOME:-~/.config}/scomp-link/bmad/projects.json` (each entry: `path`,
 `name`, `created`, `last_update`), managed with `python3` (no extra dependency, since
 BMAD needs Python anyway). This means a project created in an unusual folder is still
-found later. Update/Delete also offer a **folder scan** — any directory containing a
-`_bmad/` folder is a BMAD project — and register what you pick. `List` prunes entries
+found later. Update/Delete also offer a **folder scan** (depth 5) — any directory
+containing a `_bmad/` folder is a BMAD project — and register what you pick. `List` prunes entries
 whose folder no longer exists.
 
 ## Create
 
 Interactive passthrough: the script makes the directory and hands off to
 `npx bmad-method install`, so you get BMAD's real prompts (modules, target AI tools,
-etc.). If a `_bmad/` directory appears afterward the project is registered; if you
-cancel the installer, nothing is registered.
+etc.). If the target folder already contains `_bmad/` the script stops and points you
+to **Update**; an existing non-BMAD folder asks for confirmation first. If a `_bmad/`
+directory appears afterward the project is registered and the folder is opened in
+the OS file manager (`xdg-open`/`open`, best-effort); if you cancel the installer,
+nothing is registered.
 
 ## Update
 

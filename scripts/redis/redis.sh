@@ -10,10 +10,11 @@
 # Called by init.sh — expects gum to be available.
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   redis-cli (connect + queue listing — prompted if missing).
-# Sources: scripts/cluster/cluster.sh for deployment target selection.
+# Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh,
+#          deps.sh, portforward.sh.
 #
-# Queue listing scans all keys and reports type + size, useful for inspecting
-# job queues (BullMQ / Celery / Sidekiq / Resque / Streams).
+# Queue listing scans up to RD_QUEUE_SCAN_LIMIT keys and reports type + size,
+# useful for inspecting job queues (BullMQ / Celery / Sidekiq / Resque / Streams).
 # Uses SCAN (non-blocking) rather than KEYS to be safe on live instances.
 # -----------------------------------------------------------------------------
 

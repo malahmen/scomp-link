@@ -3,7 +3,7 @@
 # export.sh — Export a single script as a standalone, scomp-link-free folder.
 #
 # Produces a FLAT directory containing:
-#   <name>.sh            the script (+ its co-located assets, e.g. .fcc/)
+#   <name>.sh            the script (+ its co-located assets, e.g. templates/)
 #   ui.sh deps.sh …      only the _common helpers the script actually sources
 #   setup.sh             slimmed bootstrap (framework floor + the script's
 #                        declared `# export-setup:` extras); no init.sh
