@@ -47,7 +47,7 @@ in the source file before conversion runs.
 **DOCX letterhead & document options:**
 
 - **Reference styles**: **letterhead** (running header with optional logo + title/version, footer with date · classification · `Page X / Y`), **plain** (styled, no header/footer), or **none** (pandoc default)
-- **Metadata**: author / classification / version / logo resolve from `.fcc/docx/config` (key=value) → per-file YAML front matter → flags (title auto-extracts from the first `#`; date defaults to today)
+- **Metadata**: author / classification / version / logo resolve, highest precedence first, from per-file YAML front matter > flags > `.fcc/docx/config` (key=value) > built-in defaults (title auto-extracts from the first `#`; date defaults to today)
 - **Page size**: A4 or Letter (built-in references)
 - **Title-page chrome toggles**: show/hide the header, footer, and page number on the title page (page number nested under the footer)
 - **Concatenate** several Markdown files into one document (optional page break; the first `#` becomes the Title)

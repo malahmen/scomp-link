@@ -36,8 +36,25 @@ Launched from the scomp-link menu it:
 - **Dry-run first**; nothing changes until you confirm.
 - **Backup** — a `git bundle` of the whole repo is written to `~/.cache/mind-trick/`
   before any rewrite (restore: `git clone <bundle>`).
-- Refuses a dirty working tree; force-push is a separate confirmation.
+- Refuses a dirty working tree (untracked files count as dirty too); force-push
+  is a separate confirmation.
 - Only commit *messages* change — content (trees) is identical.
+
+## Limitations (read before pushing)
+
+- **Tags are not rewritten or pushed.** `filter-branch` runs over `--all`
+  without a tag-name filter, so annotated/lightweight tags keep pointing at the
+  *old* commits, which therefore survive on the remote; a later `git fetch
+  --tags` brings the scrubbed commits (trailer included) straight back. Delete
+  and re-create tags by hand, or run it on a repo without tags.
+- **Signatures are stripped** — rewritten commits lose their GPG/SSH signatures.
+- **Push scope**: only local branches that have a matching `origin/<branch>`
+  are force-pushed (plain `--force`, not `--force-with-lease`). Other remotes
+  and remote-only branches are left untouched.
+- **Shallow clones are unsupported** — `filter-branch` on a `--depth` clone
+  produces broken history; use a full clone.
+- The engine still uses `git filter-branch`, which git deprecates in favour of
+  `git filter-repo` (`--message-callback` does the same job).
 
 ## What it can't do
 
