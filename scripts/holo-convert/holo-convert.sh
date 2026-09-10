@@ -377,12 +377,15 @@ main() {
     local preview; printf -v preview ' %q' holo-convert.sh "${FLAGS[@]}" "${FILES[@]}"
     info "Running:${preview}"
     # Guardrails only: if a dependency is missing the engine errors; offer --setup.
-    if ! bash "$ENGINE" "${FLAGS[@]}" "${FILES[@]}"; then
+    # "$BASH" (the interpreter running this script, already checked to be 4+)
+    # rather than a PATH lookup of `bash`: on macOS that finds /bin/bash 3.2,
+    # which the engine's array expansions abort under.
+    if ! "$BASH" "$ENGINE" "${FLAGS[@]}" "${FILES[@]}"; then
         warn "Conversion failed — a dependency may be missing."
         if gum confirm "Run 'holo-convert --setup' to install dependencies, then retry?"; then
             # Scope the setup to the chosen target (--from/--to are already in FLAGS).
-            bash "$ENGINE" --setup "${FLAGS[@]}" || error_exit "Setup failed."
-            bash "$ENGINE" "${FLAGS[@]}" "${FILES[@]}" || error_exit "Conversion failed after setup."
+            "$BASH" "$ENGINE" --setup "${FLAGS[@]}" || error_exit "Setup failed."
+            "$BASH" "$ENGINE" "${FLAGS[@]}" "${FILES[@]}" || error_exit "Conversion failed after setup."
         else
             exit 1
         fi
