@@ -66,7 +66,10 @@ engine itself never prompts.
   (not a hash safe to hand-edit), so these send `account create` / `account set
   gmlevel` / `account delete` through mangosd's own console (fed via a FIFO so a
   backgrounded container still has a reachable console). All account commands
-  auto-detect whether the server is running locally, in Docker, or in K8s.
+  auto-detect whether the server is running locally, in Docker, or in K8s;
+  when it runs in more than one place the engine needs `--where
+  local|docker|k8s`, so the front-end asks first (auto-detect / local /
+  docker / k8s — the last also asks for the kube target).
   `delete-account` also sweeps a leftover `account_access` row the server's own
   delete misses; `set-account-level` promotes/demotes without recreating (which
   would lose characters).

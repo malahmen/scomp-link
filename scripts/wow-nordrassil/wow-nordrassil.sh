@@ -210,6 +210,29 @@ _prompt_kube_target() {
     esac
 }
 
+# Where mangosd is running, for the console-driven account commands. The
+# engine auto-detects a single running target, but with mangosd up in more
+# than one place (native + Docker while iterating, say) it refuses and asks
+# for `--where local|docker|k8s` — which this front-end never sent, so those
+# actions dead-ended. Sets WHERE_FLAGS (empty = let the engine detect) and,
+# for k8s, GLOBAL_FLAGS: the engine's detection helpers run kubectl with the
+# global --context/--kind target, which _submenu resets before every action.
+# Only the account commands take --where; search/rename-character read the
+# DB directly and have no such flag.
+WHERE_FLAGS=()
+_prompt_where() {
+    WHERE_FLAGS=()
+    local choice
+    choice=$(gum choose "Auto-detect (mangosd runs in one place)" "local (native start)" "docker (run-docker)" "k8s (run-k8s)" \
+        --header "Where is mangosd running?") || return 1
+    case "$choice" in
+        local*)  WHERE_FLAGS=(--where local) ;;
+        docker*) WHERE_FLAGS=(--where docker) ;;
+        k8s*)    WHERE_FLAGS=(--where k8s); _prompt_kube_target || return 1 ;;
+        *) ;;   # auto-detect
+    esac
+}
+
 # -----------------------------------------------------------------------------
 # Actions — collect with gum, run the engine by flags.
 # -----------------------------------------------------------------------------
@@ -307,35 +330,44 @@ action_stop_k8s() {
 
 action_create_account() {
     header "nordrassil — Create account"
+    _prompt_where || { info "Cancelled."; return 0; }
     local name pass level
     name=$(gum input --placeholder "username" --header "New account username:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
     pass=$(gum input --password --placeholder "password" --header "New account password:") || return 0
     [[ -n "$pass" ]] || { info "Cancelled."; return 0; }
     level=$(_pick_gm_level "Account access level" "0")
-    engine create-account --name "$name" --pass "$pass" --level "$level"
+    engine create-account --name "$name" --pass "$pass" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+}
+
+action_list_accounts() {
+    header "nordrassil — List accounts"
+    _prompt_where || { info "Cancelled."; return 0; }
+    engine list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 
 action_delete_account() {
     header "nordrassil — Delete account"
-    engine list-accounts || true
+    _prompt_where || { info "Cancelled."; return 0; }
+    engine list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"} || true
     echo ""
     local name
     name=$(gum input --placeholder "username" --header "Account to delete:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
     gum confirm "Delete account '${name}'? This also removes its characters." || { info "Cancelled."; return 0; }
-    engine delete-account --name "$name"
+    engine delete-account --name "$name" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 
 action_set_account_level() {
     header "nordrassil — Set account level"
-    engine list-accounts || true
+    _prompt_where || { info "Cancelled."; return 0; }
+    engine list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"} || true
     echo ""
     local name level
     name=$(gum input --placeholder "username" --header "Account to change:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
     level=$(_pick_gm_level "New access level" "0")
-    engine set-account-level --name "$name" --level "$level"
+    engine set-account-level --name "$name" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 
 action_rename_character() {
@@ -376,7 +408,7 @@ _submenu() {
         local action
         action=$(printf '%s\n' "${opts[@]}" "back" | gum choose --header "Choose an action:") || true
         [[ -z "$action" || "$action" == "back" ]] && return
-        GLOBAL_FLAGS=()   # only the k8s actions repopulate this (a kube target)
+        GLOBAL_FLAGS=()   # only the k8s / --where=k8s actions repopulate this (a kube target)
         case "$action" in
             install-deps)      engine_foreground install-deps ;;
             configure)         action_configure || true ;;
@@ -389,7 +421,7 @@ _submenu() {
             run-k8s)           action_run_k8s || true ;;
             stop-k8s)          action_stop_k8s || true ;;
             create-account)    action_create_account || true ;;
-            list-accounts)     engine list-accounts || true ;;
+            list-accounts)     action_list_accounts || true ;;
             delete-account)    action_delete_account || true ;;
             set-account-level) action_set_account_level || true ;;
             rename-character)  action_rename_character || true ;;
