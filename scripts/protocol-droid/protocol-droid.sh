@@ -67,8 +67,14 @@ resolve_engine() {
     ENGINE="${PD_CACHE}/protocol-droid.sh"; success "protocol-droid cloned to ${PD_CACHE}"
 }
 
+# engine: for calls whose exit status the caller inspects (scan). Every action
+# the menus run — convert included — goes through engine_foreground instead:
+# under `set -e` a bare `engine` that exits non-zero (a failed conversion, a
+# missing dependency) or a Ctrl-C (our INT trap is `exit 0`) would end the
+# whole TUI, while the doc promises an interrupt/error returns to the menu.
 engine() { bash "$ENGINE" "$@"; }
-# Foreground engine command (setup/gui/server/logs) — Ctrl-C stops just the child.
+# Foreground engine command — Ctrl-C stops just the child, errors are the
+# engine's own (already printed), and control comes back to the menu.
 engine_foreground() {
     trap ':' INT
     bash "$ENGINE" "$@" || true
@@ -121,27 +127,38 @@ build_llm_args() {
     svc=$(gum choose "Google Gemini (default)" "OpenAI / OpenAI-compatible" "Anthropic Claude" "Ollama (local)" \
         --header "Select the LLM service for --use_llm:") || true
     [[ -z "$svc" ]] && { gum style --faint "Cancelled."; return 1; }
+    # API keys travel in the ENVIRONMENT, never on argv: a key passed as
+    # --gemini_api_key/--openai_api_key/--claude_api_key is visible to every
+    # user on the box via `ps` for the whole (long) conversion. marker's
+    # services fall back to the SDK defaults when no key flag is given, and
+    # those read GOOGLE_API_KEY (google-genai — marker's own env name, not
+    # GEMINI_API_KEY), OPENAI_API_KEY and ANTHROPIC_API_KEY. A typed key is
+    # exported into this process so the engine (a child) inherits it; the
+    # base-URL / model flags carry no secret and stay on argv.
     _key() {
         local env_name="$1" label="$2" val=""
-        if [[ -n "${!env_name:-}" ]]; then info "Using ${env_name} from environment."; printf '%s' "${!env_name}"; return; fi
+        if [[ -n "${!env_name:-}" ]]; then info "Using ${env_name} from environment."; return 0; fi
         val=$(gum input --password --header "Enter ${label} (leave empty to rely on env/config):") || true
-        printf '%s' "$val"
+        [[ -n "$val" ]] && export "${env_name?}=${val}"
+        return 0
     }
     case "$svc" in
         "Google Gemini (default)")
             LLM_ARGS+=(--llm_service marker.services.gemini.GoogleGeminiService)
-            local k; k=$(_key GEMINI_API_KEY "Gemini API key"); [[ -n "$k" ]] && LLM_ARGS+=(--gemini_api_key "$k") ;;
+            # Honour the GEMINI_API_KEY spelling earlier docs suggested by
+            # mapping it onto the name marker actually reads.
+            [[ -z "${GOOGLE_API_KEY:-}" && -n "${GEMINI_API_KEY:-}" ]] && export GOOGLE_API_KEY="$GEMINI_API_KEY"
+            _key GOOGLE_API_KEY "Gemini API key" ;;
         "OpenAI / OpenAI-compatible")
             LLM_ARGS+=(--llm_service marker.services.openai.OpenAIService)
             local b; b=$(gum input --header "Base URL (blank = OpenAI cloud; local e.g. http://192.168.1.50:1234/v1):") || true
             [[ -n "$b" ]] && LLM_ARGS+=(--openai_base_url "$b")
-            local k; k=$(_key OPENAI_API_KEY "API key (a local server usually ignores this — any non-empty value)")
-            [[ -n "$k" ]] && LLM_ARGS+=(--openai_api_key "$k")
+            _key OPENAI_API_KEY "API key (a local server usually ignores this — any non-empty value)"
             local m; m=$(gum input --header "Model name (blank = marker default; local server: the loaded vision model id):") || true
             [[ -n "$m" ]] && LLM_ARGS+=(--openai_model "$m") ;;
         "Anthropic Claude")
             LLM_ARGS+=(--llm_service marker.services.claude.ClaudeService)
-            local k; k=$(_key ANTHROPIC_API_KEY "Anthropic API key"); [[ -n "$k" ]] && LLM_ARGS+=(--claude_api_key "$k")
+            _key ANTHROPIC_API_KEY "Anthropic API key"
             local m; m=$(gum input --header "Claude model name (blank = marker default):") || true
             [[ -n "$m" ]] && LLM_ARGS+=(--claude_model_name "$m") ;;
         "Ollama (local)")
@@ -218,18 +235,18 @@ action_convert() {
                 [[ "$w" =~ ^[0-9]+$ ]] && pos+=(--workers "$w") || warn "Invalid worker count — letting the engine decide."
             fi
             header "Converting"
-            engine local convert --backend marker --output-format "$OUTPUT_FORMAT" --output-dir "$OUTPUT_DIR" \
+            engine_foreground local convert --backend marker --output-format "$OUTPUT_FORMAT" --output-dir "$OUTPUT_DIR" \
                 "${pos[@]}" "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
         markitdown)
             select_markitdown_options || { info "Cancelled."; return 0; }
             header "Converting"
-            engine local convert --backend markitdown --output-dir "$OUTPUT_DIR" \
+            engine_foreground local convert --backend markitdown --output-dir "$OUTPUT_DIR" \
                 "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
         auto)
             OUTPUT_DIR=$(gum input --value "$DEFAULT_OUTPUT_DIR" --header "Output directory:") || return 0
             OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_OUTPUT_DIR}"
             header "Converting"
-            engine local convert --backend auto --output-dir "$OUTPUT_DIR" "${PICKED_PATHS[@]}" ;;
+            engine_foreground local convert --backend auto --output-dir "$OUTPUT_DIR" "${PICKED_PATHS[@]}" ;;
     esac
 }
 
@@ -245,25 +262,28 @@ menu_local_marker() {
         case "$c" in
             "Setup / install")        engine_foreground local setup --backend marker ;;
             "Upgrade")                engine_foreground local setup --backend marker --upgrade ;;
-            "Status")                 engine local status --backend marker ;;
+            "Status")                 engine_foreground local status --backend marker ;;
             "Launch GUI (Streamlit)") engine_foreground local gui --backend marker ;;
             "Launch API server")      engine_foreground local server --backend marker ;;
-            "Clear model cache")      gum confirm "Delete ~/.cache/datalab? Models re-download next run." && engine local clear-cache --backend marker --yes ;;
-            "Uninstall")              gum confirm "Uninstall marker's pipx env? (model caches kept)" && engine local uninstall --backend marker --yes ;;
+            "Clear model cache")      gum confirm "Delete ~/.cache/datalab? Models re-download next run." && engine_foreground local clear-cache --backend marker --yes ;;
+            "Uninstall")              gum confirm "Uninstall marker's pipx env? (model caches kept)" && engine_foreground local uninstall --backend marker --yes ;;
             "Back"|"")                return 0 ;;
         esac
         echo ""
     done
 }
 
-markitdown_setup_flags() {   # echoes optional "--extras <csv>"
+markitdown_setup_flags() {   # echoes optional "--extras <csv>"; non-zero = cancelled
     local mode
     mode=$(gum choose "All formats  (markitdown[all], recommended)" "Pick specific formats" \
         --header "Which format support to install?") || return 1
     [[ "$mode" == "Pick specific formats" ]] || return 0
+    # Esc (or confirming with nothing ticked) in the extras picker must abort
+    # the setup — an empty echo here would mean "no --extras" and silently
+    # install the full [all] set the operator just declined.
     local picked; picked=$(printf '%s\n' "${MID_EXTRAS[@]}" | gum choose --no-limit --height 14 \
-        --header "Select extras — SPACE to toggle, ENTER to confirm:") || return 0
-    [[ -z "$picked" ]] && return 0
+        --header "Select extras — SPACE to toggle, ENTER to confirm:") || return 1
+    [[ -n "$picked" ]] || return 1
     local joined; joined=$(printf '%s,' $picked); joined="${joined%,}"
     printf -- '--extras %s' "$joined"
 }
@@ -275,15 +295,19 @@ menu_local_markitdown() {
             --header "Local markitdown (pipx):") || true
         case "$c" in
             "Setup / install")
-                local ef; ef=$(markitdown_setup_flags) || { echo ""; continue; }
+                local ef; ef=$(markitdown_setup_flags) || { gum style --faint "Cancelled."; echo ""; continue; }
                 # shellcheck disable=SC2086
                 engine_foreground local setup --backend markitdown $ef ;;
             "Upgrade")   engine_foreground local setup --backend markitdown --upgrade ;;
-            "Status")    engine local status --backend markitdown ;;
+            "Status")    engine_foreground local status --backend markitdown ;;
             "Install a plugin")
                 local pkg; pkg=$(gum input --header "Plugin pip package (e.g. markitdown-sample-plugin):") || true
-                [[ -n "$pkg" ]] && engine local install-plugin --backend markitdown "$pkg" || gum style --faint "Cancelled." ;;
-            "Uninstall") gum confirm "Uninstall markitdown's pipx env?" && engine local uninstall --backend markitdown --yes ;;
+                # if/else, not `A && engine … || "Cancelled."`: with that chain
+                # a failed install also printed "Cancelled." (and a bare
+                # `engine` exit tripped set -e).
+                if [[ -n "$pkg" ]]; then engine_foreground local install-plugin --backend markitdown "$pkg"
+                else gum style --faint "Cancelled."; fi ;;
+            "Uninstall") gum confirm "Uninstall markitdown's pipx env?" && engine_foreground local uninstall --backend markitdown --yes ;;
             "Back"|"")   return 0 ;;
         esac
         echo ""
@@ -332,18 +356,19 @@ menu_service() {
                     outdir=$(gum input --value "./output" --header "Host folder for converted output:") || true
                     engine_foreground service deploy --target docker --input "${indir:-./input}" --output "${outdir:-./output}"
                 else engine_foreground service deploy --target k8s; fi ;;
-            "Status")         engine service status --target "$flag" ;;
+            "Status")         engine_foreground service status --target "$flag" ;;
             "Logs (workers)") engine_foreground service logs --target "$flag" ;;
             "Scale workers")
                 local n; n=$(gum input --value "2" --header "Number of worker replicas:") || true
-                [[ "$n" =~ ^[0-9]+$ ]] && engine service scale --target "$flag" --replicas "$n" || warn "Not a number: '${n}'." ;;
+                if [[ "$n" =~ ^[0-9]+$ ]]; then engine_foreground service scale --target "$flag" --replicas "$n"
+                else warn "Not a number: '${n}'."; fi ;;
             "Enqueue a folder (batch)")
-                if [[ "$flag" == docker ]]; then engine service enqueue --target docker
+                if [[ "$flag" == docker ]]; then engine_foreground service enqueue --target docker
                 else
                     warn "First ensure your documents are on the 'marker-input' PVC (e.g. via 'kubectl cp')."
-                    gum confirm "Start the batch enqueue job now?" && engine service enqueue --target k8s
+                    gum confirm "Start the batch enqueue job now?" && engine_foreground service enqueue --target k8s
                 fi ;;
-            "Tear down")      gum confirm "Tear down the ${flag} stack? (data/volumes kept)" && engine service teardown --target "$flag" --yes ;;
+            "Tear down")      gum confirm "Tear down the ${flag} stack? (data/volumes kept)" && engine_foreground service teardown --target "$flag" --yes ;;
             "Back"|"")        return 0 ;;
         esac
         echo ""
