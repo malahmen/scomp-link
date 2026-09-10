@@ -61,8 +61,9 @@ engine itself never prompts.
   WMs force-fullscreen regardless of size, defeating multi-box tiling.
 - **Window identity for key broadcasters**: `launch` spawns a small background
   "title keeper" that finds the window this instance just created (a
-  before/after window-ID diff, since Wine doesn't reliably expose `_NET_WM_PID`
-  or a unique `WM_CLASS` here) and re-asserts its title to the instance name for
+  before/after window-ID diff: the Flatpak-sandboxed runner reports its
+  in-sandbox PID in `_NET_WM_PID` — a PID-namespace artifact, not the host PID
+  — and a `WM_CLASS` shared by every instance) and re-asserts its title to the instance name for
   as long as the game runs — a stable, unique handle to target (e.g. from
   [clone-army](clone-army.md)). Requires `xdotool`.
 - **LAN realm discovery**: `discover-realm` scans the local `/24` for hosts with
@@ -78,8 +79,10 @@ engine itself never prompts.
 - **`winecfg`**: the standard Wine configuration GUI scoped to one instance's
   bottle, for DirectX/sound/DLL tuning the script doesn't guess per distro.
 - **`stop`** kills via `wineserver -k` scoped to that instance's own bottle,
-  with a `pkill` fallback on the instance's own client path — each bottle's
-  `wineserver` is independent, so this can never affect another instance.
+  with a `pkill` fallback anchored to that instance's own `<client>/WoW.exe`
+  invocation — each bottle's `wineserver` is independent and instance names are
+  validated (letters/digits/`-`/`_` only), so other instances should be left
+  alone; a process you started yourself with that exact exe path would match.
 
 Account creation/login isn't handled here — same as real WoW, that happens in
 the client's own login/character-creation screens against the server.

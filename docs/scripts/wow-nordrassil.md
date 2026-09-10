@@ -49,14 +49,16 @@ engine itself never prompts.
   file by file, not one all-or-nothing yes/no — repacks bundle unrelated things
   there (e.g. a one-line SQL that spawns every new character in the same spot).
   Already-applied files are skipped on a later run.
-- **Source patches**: `build-image` applies scomp-link-maintained fixes to the
-  repack's C++ source (`templates/patches/*.patch` in the engine, via
-  `git apply`) on top of the pristine unzip, before compiling. Currently one:
-  gates the DBC-based profanity/reserved-name check behind `StrictPlayerNames`
-  (the same setting that already gates the character-set check next to it),
-  which otherwise runs unconditionally and permanently blocks any character
-  whose name matches `NamesReserved.dbc`/`NamesProfanity.dbc`. Idempotent per
-  patch.
+- **Source patches**: both `start` (native build) and `build-image` apply
+  scomp-link-maintained fixes to the repack's C++ source
+  (`templates/patches/*.patch` in the engine, via `git apply`) on top of the
+  pristine unzip, before compiling. Currently two: one gates the DBC-based
+  profanity/reserved-name check behind `StrictPlayerNames` (the same setting
+  that already gates the character-set check next to it), which otherwise runs
+  unconditionally and permanently blocks any character whose name matches
+  `NamesReserved.dbc`/`NamesProfanity.dbc`; the other drops two dead
+  `#include <ace/Auto_Ptr.h>` lines so the source compiles against the ACE 8.x
+  the from-source build on Fedora/RHEL produces. Idempotent per patch.
 - **Edit**: opens an already-configured conf file (`mangosd`/`realmd`) in
   `$EDITOR` (default vim) for anything the prompts don't cover; deploy commands
   pick up manual edits instead of overwriting them.
@@ -113,9 +115,11 @@ nordrassil.sh create-account --name admin --pass secret --level 6
 nordrassil.sh --help
 ```
 
-The engine's native build (`start`/`stop`) targets Debian/Ubuntu first; check
-the engine README for Fedora support. The Docker path always builds inside an
-Ubuntu stage regardless of host OS. See the
+The engine's native build (`start`/`stop`) supports apt (Debian/Ubuntu), dnf
+(Fedora/RHEL) and rpm-ostree hosts (Bazzite/Silverblue — layered packages need
+a reboot); on dnf/rpm-ostree there is no ACE package, so the engine builds a
+pinned ACE from source into `~/.cache/ace-wrappers/<version>`. The Docker path
+always builds inside an Ubuntu stage regardless of host OS. See the
 [engine README](https://github.com/malahmen/nordrassil) for the full flag
 reference.
 

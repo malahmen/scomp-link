@@ -114,10 +114,10 @@ load_akinn_defs() {
 # (pkgs.k8s.io/.../stable:/v1.30/deb/). A full patch tag like v1.30.2 would
 # produce an invalid repo URL, so we collapse to minor versions here.
 #
-# We try akinn's own re_kver first (so the list matches what akinn validates),
-# then fall back to bare semver tags — GitHub's releases page dropped the
-# "Kubernetes vX.Y.Z" wording the original regex relied on, so the strict match
-# can come back empty on the current markup.
+# akinn's re_kver is now itself a bare vX.Y.Z tag match (the releases page
+# dropped its old "Kubernetes vX.Y.Z" wording), so the list is exactly what
+# akinn validates; the sed and the bare-tag fallback below are kept only as
+# harmless belt-and-braces should the regex ever regain a prefix.
 choose_k_version() {
     local versions
     versions=$(K_RELEASES="$K_RELEASES" RE="$re_kver" gum spin --spinner dot \
@@ -125,7 +125,7 @@ choose_k_version() {
         bash -c '
             out=$(curl -s "$K_RELEASES")
             mins=$(printf "%s" "$out" | grep -Eo "$RE" | sed "s/Kubernetes //")
-            # Fallback: bare v1.2.3 tags when the strict regex finds nothing.
+            # Fallback (normally a no-op — see above): bare v1.2.3 tags.
             [ -z "$mins" ] && mins=$(printf "%s" "$out" | grep -Eo "v[0-9]+\.[0-9]+\.[0-9]+")
             printf "%s\n" "$mins" | sed -E "s/(v[0-9]+\.[0-9]+)\.[0-9]+/\1/" | sort -ru
         ') || versions=""
@@ -155,8 +155,9 @@ choose_crds_version() {
 
 # -----------------------------------------------------------------------------
 # Flag builders. Each populates the global FLAGS array.
-# akinn parses -l/-i/-p/-t/-h only AFTER it has seen -w, so the node-type flag
-# is always emitted first.
+# akinn's getopts loop is order-independent (and -i is valid for a master too,
+# as the advertise address); the node-type flag is still emitted first purely
+# for readability of the printed command.
 # -----------------------------------------------------------------------------
 
 DEFAULT_ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"

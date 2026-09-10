@@ -29,8 +29,8 @@ Each backend installs into its **own** isolated pipx environment.
 
 **marker inputs:** PDF, DOCX, PPTX, XLSX, HTML, EPUB, images. Output formats:
 `markdown` / `json` / `html` / `chunks`. \
-**markitdown inputs:** the above plus CSV, JSON, XML, ZIP, Outlook `.msg`, and
-audio (mp3/wav). Output: Markdown.
+**markitdown inputs:** the above plus XLS, `.htm`, CSV, JSON, XML, ZIP, Outlook
+`.msg`, and audio (mp3/wav/m4a). Output: Markdown.
 
 ## Engine resolution
 
@@ -44,8 +44,9 @@ The front-end finds `protocol-droid.sh` automatically, in order:
 Set `$PROTOCOL_DROID_REPO` to clone from a different remote (a fork or mirror).
 The cache honours `XDG_CACHE_HOME` (`${XDG_CACHE_HOME:-~/.cache}/scomp-link/protocol-droid`).
 
-Ctrl-C is handled: the engine runs in the foreground, so an interrupt stops
-just the running conversion (or setup/logs) and returns you to the TUI.
+Ctrl-C is handled: every engine call the menus make runs in the foreground, so
+an interrupt (or an engine error) stops just the running conversion — or
+setup/logs — and returns you to the TUI.
 
 ## Modes
 
@@ -58,8 +59,8 @@ just the running conversion (or setup/logs) and returns you to the TUI.
 The top level has three entries:
 
 - **Convert documents** — first pick a backend (marker / markitdown / auto), then
-  the source (a file, or scan a folder → multi-select), then backend-appropriate
-  options; drives `protocol-droid local convert --backend …`.
+  the source (a typed file/folder path, or scan a folder → multi-select), then
+  backend-appropriate options; drives `protocol-droid local convert --backend …`.
 - **Local tool** — pick a backend to manage its pipx install:
 
   | Action (marker) | Action (markitdown) | What it does |
@@ -114,7 +115,8 @@ Convert first asks **how** to pick the source:
 - **Scan a folder → pick files** — the engine scans the folder tree (depth 3) for
   supported files (`protocol-droid local scan`) and you multi-select 1..N.
 - **Enter a path (file or folder)** — a leading `~` is expanded. A **file** →
-  single-file conversion; a **folder** → scan + multi-select.
+  single-file conversion; a **folder** → the whole folder is batch-converted
+  (every supported file under it, no picker — use *Scan a folder* to choose).
 
 One file → marker's single CLI; several files (or a whole folder) → marker's
 batch CLI, which loads its models once (a selection is symlinked into a temp dir
@@ -127,16 +129,19 @@ first).
 - **Force OCR** (`--force_ocr`) — re-OCR the whole document (fixes bad embedded text)
 - **Use an LLM** (`--use_llm`) — higher quality; pick a service: Google Gemini,
   OpenAI / OpenAI-compatible, Anthropic Claude, or Ollama (local). API keys are
-  read from the environment when present (`GEMINI_API_KEY`, `OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY`) or prompted for (hidden input). **OpenAI / OpenAI-compatible**
-  also asks for a **base URL**, so it can target a local/LAN server (see below).
+  read from the environment when present (`GOOGLE_API_KEY` — marker's own name
+  for the Gemini key; a `GEMINI_API_KEY` is mapped onto it — `OPENAI_API_KEY`,
+  `ANTHROPIC_API_KEY`) or prompted for (hidden input); either way they reach the
+  engine through its **environment**, never on the command line. **OpenAI /
+  OpenAI-compatible** also asks for a **base URL**, so it can target a local/LAN
+  server (see below).
 - **Page range** (`--page-range`, single-file only) — e.g. `0,5-10,20`
 - **Workers** (`--workers`, batch only; default 4) — parallel processes (~3.5 GB RAM/VRAM each)
 
 The front-end builds these into flags: `--page-range` / `--workers` are engine
 flags passed *before* the `--` separator (marker's own flag is spelled
 `--page_range`; the engine translates); anything marker-specific (force OCR, LLM
-service + keys) is forwarded to the engine after `--`.
+service, base URL, model) is forwarded to the engine after `--`.
 
 ## Local / LAN LLM
 
@@ -193,7 +198,10 @@ batch enqueuer  ──┴─▶ Redis queue ─▶ worker × N (marker, models l
 Status · Logs · Scale workers · Enqueue a folder (batch) · Tear down.
 
 - **Deploy/update** on Docker prompts for the host **input** and **output**
-  folders (defaults `./input` and `./output`) to mount into the stack.
+  folders (defaults `./input` and `./output`) to mount into the stack. A
+  **relative** path resolves against the engine's own directory (where its
+  compose file lives), not the directory you launched the TUI from — give
+  absolute paths for anything outside the engine checkout.
 - **Enqueue a folder** on K8s first warns that your documents must already be on
   the `marker-input` PVC (e.g. via `kubectl cp`).
 - **Tear down** removes the stack but **keeps volumes/PVCs** (model cache,
@@ -248,7 +256,8 @@ markitdown`. It favours speed and format breadth over layout fidelity: ideal for
 getting a large, mixed corpus (including audio, ZIP, Outlook, YouTube) into "good
 enough" Markdown fast. For heavy PDF/OCR work, use the marker backend.
 
-- **Isolation (pipx)** — installed in its own pipx env (Python 3.10+). **Setup**
+- **Isolation (pipx)** — installed in its own pipx env (Python 3.10–3.13, picked
+  the same way as for marker). **Setup**
   offers **all formats** (`markitdown[all]`) or a multi-select of individual
   extras (`pptx docx xlsx xls pdf outlook az-doc-intel az-content-understanding
   audio-transcription youtube-transcription`).
