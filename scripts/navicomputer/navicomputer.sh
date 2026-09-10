@@ -162,7 +162,10 @@ nav_edit() {
     user=$(gum input --header "User:" --value "$(jq -r .user <<<"$cur")") || return
     port=$(gum input --header "Port:" --value "$(jq -r .port <<<"$cur")") || return
     key=$(gum input --header "Key path:" --value "$(jq -r .key <<<"$cur")") || return
-    additional=$(gum write --value "$(jq -r '.additional // empty' <<<"$cur")") || additional=""
+    # Esc in the editor must keep what the profile already has: `|| additional=""`
+    # turned a cancelled edit into --additional "" and wiped the options.
+    local cur_additional; cur_additional=$(jq -r '.additional // empty' <<<"$cur")
+    additional=$(gum write --value "$cur_additional") || additional="$cur_additional"
     engine edit --name "$name" --hostname "$hostname" --user "$user" --port "$port" \
         --key "$key" --additional "$additional" && success "Updated '$name'."
 }
@@ -182,7 +185,10 @@ nav_remove() {
     [[ -n "$name" ]] || return
     gum confirm "Remove profile '$name'?" || return
     local del=(); gum confirm "Also delete its key files?" && del=(--delete-keys)
-    engine remove --name "$name" "${del[@]}"
+    # ${arr[@]+"${arr[@]}"} — an empty array expanded as "${arr[@]}" is an
+    # unbound-variable error under set -u before bash 4.4 (the header only
+    # requires 4+).
+    engine remove --name "$name" ${del[@]+"${del[@]}"}
 }
 
 nav_use() {
@@ -202,7 +208,7 @@ nav_use() {
         local gn ge; gn=$(gum input --header "Git user name:") || true; ge=$(gum input --header "Git email:") || true
         [[ -n "$gn" ]] && extra+=(--git-name "$gn"); [[ -n "$ge" ]] && extra+=(--git-email "$ge")
     fi
-    engine use --name "$name" --repo "$repo" "${extra[@]}"
+    engine use --name "$name" --repo "$repo" ${extra[@]+"${extra[@]}"}
 }
 
 nav_test() {

@@ -95,7 +95,9 @@ main() {
         || { info "Cancelled — nothing changed."; exit 0; }
     local push_args=()
     gum confirm "Also force-push the rewritten branches now?" && push_args=(--push)
-    engine --repo "$repo" --pattern "$pattern" --apply "${push_args[@]}"
+    # ${arr[@]+"${arr[@]}"}: an empty array expanded as "${arr[@]}" is an
+    # unbound-variable error under set -u before bash 4.4 (header says 4+).
+    engine --repo "$repo" --pattern "$pattern" --apply ${push_args[@]+"${push_args[@]}"}
 }
 
 main "$@"
