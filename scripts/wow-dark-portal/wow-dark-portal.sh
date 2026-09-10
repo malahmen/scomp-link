@@ -146,6 +146,10 @@ action_configure() {
     local src
     src=$(gum input --value "$(eget CLIENT_SOURCE_DIR)" --placeholder "/path/to/vanilla client" \
         --header "Path to a pristine vanilla client install (contains WoW.exe):") || return 0
+    # gum input does no shell expansion, and the engine only tilde-expands
+    # CONFIG_DIR — a typed "~/games/wow" would be stored literally and make
+    # `configure` fail on a path that does not exist.
+    src="${src/#\~/$HOME}"
     [[ -n "$src" ]] && engine set CLIENT_SOURCE_DIR "$src"
 
     local mode
@@ -199,7 +203,10 @@ action_add_instance() {
 
     local res realm cur_addr
     cur_addr="$(eget DEFAULT_REALM_ADDRESS)"; cur_addr="${cur_addr:-<default>}"
-    res=$(gum input --value "$(eget DEFAULT_RESOLUTION)" --header "Resolution (blank = use default):") || true
+    # Placeholder, not --value: pre-filling the default made every instance
+    # store its own RESOLUTION copy, so a later change to DEFAULT_RESOLUTION
+    # never reached it. Blank keeps the instance following the default.
+    res=$(gum input --placeholder "$(eget DEFAULT_RESOLUTION)" --header "Resolution (blank = follow DEFAULT_RESOLUTION):") || true
     realm=$(gum input --placeholder "$cur_addr" --header "Realm address override (blank = use default):") || true
 
     local -a args=(add-instance --name "$name")
