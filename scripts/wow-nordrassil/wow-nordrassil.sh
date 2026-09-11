@@ -68,8 +68,14 @@ resolve_engine() {
 }
 
 # Engine drivers. GLOBAL_FLAGS carries the kube target (--context/--kind) chosen
-# for a deploy action; it precedes the subcommand. engine_foreground runs
-# long-lived/streaming work (builds, deploys) so Ctrl-C stops just the child.
+# for a deploy action; it precedes the subcommand.
+#
+# engine: only for calls whose stdout is captured and whose exit status the
+# caller inspects itself (`list-custom`). Every action a menu runs goes through
+# engine_foreground instead: under `set -e` a bare `engine` that exits non-zero
+# (a rejected setting, a failed deploy, an unreachable DB) or a Ctrl-C (our INT
+# trap is `exit 0`) would end the whole TUI, while an error or an interrupt has
+# to leave the operator back in the menu.
 GLOBAL_FLAGS=()
 engine()     { bash "$ENGINE" "${GLOBAL_FLAGS[@]}" "$@"; }
 eget()       { bash "$ENGINE" get "$1" 2>/dev/null || true; }
@@ -125,61 +131,61 @@ _prompt_server_settings() {
     local v
 
     v=$(gum input --value "$(eget REALM_NAME)" --header "Realm name (shown in the realm list):") || true
-    [[ -n "$v" ]] && engine set REALM_NAME "$v"
+    [[ -n "$v" ]] && engine_foreground set REALM_NAME "$v"
 
     v=$(_pick_value_label "Realm zone (character-name alphabet / client compatibility)" "$(eget REALM_ZONE)" "Development" \
         "1|Development (any language)" "2|United States" "3|Oceanic" "4|Latin America" \
         "6|Korea" "8|English" "9|German" "10|French" "11|Spanish" "12|Russian" \
         "14|Taiwan" "16|China" "26|Test Server" "28|QA Server")
-    engine set REALM_ZONE "$v"
+    engine_foreground set REALM_ZONE "$v"
 
     v=$(_pick_value_label "Realm style" "$(eget GAME_TYPE)" "Normal" \
         "0|Normal" "1|PvP" "6|RP" "8|RP-PvP" "16|FFA PvP (custom — arena rules everywhere)")
-    engine set GAME_TYPE "$v"
+    engine_foreground set GAME_TYPE "$v"
 
     v=$(gum input --value "$(eget PLAYER_LIMIT)" \
         --header "Player limit (0 = infinite, -1 = mods/GMs/admins only, -2 = GMs/admins only, -3 = admins only):") || true
-    [[ -n "$v" ]] && engine set PLAYER_LIMIT "$v"
+    [[ -n "$v" ]] && engine_foreground set PLAYER_LIMIT "$v"
 
     v=$(_pick_value_label "Progression content patch (quest/NPC/dungeon/raid data — independent of the compiled client build)" "$(eget WOW_PATCH)" "1.12" \
         "0|1.2" "1|1.3" "2|1.4" "3|1.5" "4|1.6" "5|1.7" "6|1.8" "7|1.9" "8|1.10" "9|1.11" "10|1.12")
-    engine set WOW_PATCH "$v"
+    engine_foreground set WOW_PATCH "$v"
 
     # MOTD — strip literal quotes so it can't break the conf file's own quoting.
     v=$(gum input --value "$(eget MOTD)" --header "Message of the day (shown at login):") || true
-    [[ -n "$v" ]] && engine set MOTD "${v//\"/}"
+    [[ -n "$v" ]] && engine_foreground set MOTD "${v//\"/}"
 
     v=$(gum input --value "$(eget XP_RATE)" --header "XP rate multiplier (1 = normal, 2 = double, 0.5 = half):") || true
-    [[ -n "$v" ]] && engine set XP_RATE "$v"
+    [[ -n "$v" ]] && engine_foreground set XP_RATE "$v"
 
     v=$(gum input --value "$(eget DROP_RATE)" --header "Loot/gold drop rate multiplier (1 = normal, 2 = double, 0.5 = half):") || true
-    [[ -n "$v" ]] && engine set DROP_RATE "$v"
+    [[ -n "$v" ]] && engine_foreground set DROP_RATE "$v"
 
     # realmd.conf — login/security behavior.
     v=$(gum input --value "$(eget WRONG_PASS_MAX_COUNT)" \
         --header "Wrong-password attempts before a ban (0 = disabled):") || true
-    [[ -n "$v" ]] && engine set WRONG_PASS_MAX_COUNT "$v"
+    [[ -n "$v" ]] && engine_foreground set WRONG_PASS_MAX_COUNT "$v"
 
     if [[ "$(eget WRONG_PASS_MAX_COUNT)" != "0" ]]; then
         v=$(gum input --value "$(eget WRONG_PASS_BAN_TIME)" --header "Ban duration in seconds:") || true
-        [[ -n "$v" ]] && engine set WRONG_PASS_BAN_TIME "$v"
+        [[ -n "$v" ]] && engine_foreground set WRONG_PASS_BAN_TIME "$v"
 
         v=$(_pick_value_label "Ban target" "$(eget WRONG_PASS_BAN_TYPE)" "Ban IP" "0|Ban IP" "1|Ban Account")
-        engine set WRONG_PASS_BAN_TYPE "$v"
+        engine_foreground set WRONG_PASS_BAN_TYPE "$v"
     fi
 
     v=$(_pick_value_label "Require email verification before login" "$(eget REQ_EMAIL_VERIFICATION)" "No" "0|No" "1|Yes")
-    engine set REQ_EMAIL_VERIFICATION "$v"
+    engine_foreground set REQ_EMAIL_VERIFICATION "$v"
 
     v=$(_pick_value_label "Reject modified/mismatched game clients (strict version check)" "$(eget STRICT_VERSION_CHECK)" "Yes" "1|Yes" "0|No")
-    engine set STRICT_VERSION_CHECK "$v"
+    engine_foreground set STRICT_VERSION_CHECK "$v"
 
     v=$(_pick_value_label "Warden anti-cheat (client-side scans; irrelevant on a private/trusted LAN server)" "$(eget WARDEN_ENABLED)" "Enabled" "1|Enabled" "0|Disabled")
-    engine set WARDEN_ENABLED "$v"
+    engine_foreground set WARDEN_ENABLED "$v"
 
     v=$(_pick_value_label "Strict player names (character-set + profanity/reserved-name checks on every login)" "$(eget STRICT_PLAYER_NAMES)" "Disabled" \
         "0|Disabled" "1|Basic Latin only" "2|Realm zone specific" "3|Basic Latin + server timezone")
-    engine set STRICT_PLAYER_NAMES "$v"
+    engine_foreground set STRICT_PLAYER_NAMES "$v"
 }
 
 # Kube target for the deploy actions → sets GLOBAL_FLAGS (--kind/--context/none).
@@ -241,12 +247,12 @@ action_configure() {
     header "nordrassil — Configure"
     local src
     src=$(gum input --value "$(eget SOURCE_DIR)" --header "Path to the repack (contains mangosd.conf, sql/, data/):") || return 0
-    [[ -n "$src" ]] && engine set SOURCE_DIR "$src"
+    [[ -n "$src" ]] && engine_foreground set SOURCE_DIR "$src"
 
     local addr
     addr=$(gum input --value "$(eget REALM_ADDRESS)" \
         --header "LAN-reachable address for this realm (what WoW clients connect to after login):") || return 0
-    [[ -n "$addr" ]] && engine set REALM_ADDRESS "$addr"
+    [[ -n "$addr" ]] && engine_foreground set REALM_ADDRESS "$addr"
 
     _prompt_server_settings
 
@@ -254,6 +260,8 @@ action_configure() {
     # the operator pick; the engine skips any already applied on a re-run.
     local custom=""
     local -a avail=()
+    # Bare `engine`: stdout is the data here and the `|| true` is the caller's own
+    # handling of a non-zero exit (no custom SQL / no repack yet) — an empty list.
     while IFS= read -r line; do [[ -n "$line" ]] && avail+=("$line"); done < <(engine list-custom 2>/dev/null | grep -vE '^\[' || true)
     if [[ ${#avail[@]} -gt 0 ]]; then
         local -a picked=()
@@ -275,8 +283,8 @@ action_edit() {
     file=$(gum choose "mangosd (server settings, rates, MOTD, ...)" "realmd (login/security settings)" "cancel" \
         --header "Which conf file to edit?") || return 0
     case "$file" in
-        mangosd*) engine edit --file mangosd ;;
-        realmd*)  engine edit --file realmd ;;
+        mangosd*) engine_foreground edit --file mangosd ;;
+        realmd*)  engine_foreground edit --file realmd ;;
         *) info "Cancelled." ;;
     esac
 }
@@ -304,17 +312,17 @@ action_run_k8s() {
     st=$(_pick_value_label "Storage backend for game data + DB" "$(eget K8S_STORAGE_TYPE)" "hostPath" \
         "hostpath|hostPath (single-node / home-lab — path on the node)" \
         "storageclass|StorageClass (dynamic provisioning)")
-    engine set K8S_STORAGE_TYPE "$st"
+    engine_foreground set K8S_STORAGE_TYPE "$st"
     if [[ "$st" == "hostpath" ]]; then
         local dp bp
         dp=$(gum input --value "$(eget K8S_DATA_HOSTPATH)" --header "hostPath for game data (on the k8s node):") || return 0
-        [[ -n "$dp" ]] && engine set K8S_DATA_HOSTPATH "$dp"
+        [[ -n "$dp" ]] && engine_foreground set K8S_DATA_HOSTPATH "$dp"
         bp=$(gum input --value "$(eget K8S_DB_HOSTPATH)" --header "hostPath for MariaDB data (on the k8s node):") || return 0
-        [[ -n "$bp" ]] && engine set K8S_DB_HOSTPATH "$bp"
+        [[ -n "$bp" ]] && engine_foreground set K8S_DB_HOSTPATH "$bp"
     else
         local sc
         sc=$(gum input --value "$(eget K8S_STORAGECLASS)" --placeholder "leave empty for cluster default" --header "StorageClass name:") || true
-        engine set K8S_STORAGECLASS "$sc"
+        engine_foreground set K8S_STORAGECLASS "$sc"
     fi
 
     local -a args=(run-k8s)
@@ -337,37 +345,37 @@ action_create_account() {
     pass=$(gum input --password --placeholder "password" --header "New account password:") || return 0
     [[ -n "$pass" ]] || { info "Cancelled."; return 0; }
     level=$(_pick_gm_level "Account access level" "0")
-    engine create-account --name "$name" --pass "$pass" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    engine_foreground create-account --name "$name" --pass "$pass" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 
 action_list_accounts() {
     header "nordrassil — List accounts"
     _prompt_where || { info "Cancelled."; return 0; }
-    engine list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    engine_foreground list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 
 action_delete_account() {
     header "nordrassil — Delete account"
     _prompt_where || { info "Cancelled."; return 0; }
-    engine list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"} || true
+    engine_foreground list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
     echo ""
     local name
     name=$(gum input --placeholder "username" --header "Account to delete:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
     gum confirm "Delete account '${name}'? This also removes its characters." || { info "Cancelled."; return 0; }
-    engine delete-account --name "$name" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    engine_foreground delete-account --name "$name" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 
 action_set_account_level() {
     header "nordrassil — Set account level"
     _prompt_where || { info "Cancelled."; return 0; }
-    engine list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"} || true
+    engine_foreground list-accounts ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
     echo ""
     local name level
     name=$(gum input --placeholder "username" --header "Account to change:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
     level=$(_pick_gm_level "New access level" "0")
-    engine set-account-level --name "$name" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    engine_foreground set-account-level --name "$name" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 
 action_rename_character() {
@@ -377,7 +385,7 @@ action_rename_character() {
     [[ -n "$from" ]] || { info "Cancelled."; return 0; }
     to=$(gum input --placeholder "new name" --header "New name for '${from}' (up to 12 characters, bypasses normal naming rules):") || return 0
     [[ -n "$to" ]] || { info "Cancelled."; return 0; }
-    engine rename-character --from "$from" --to "$to"
+    engine_foreground rename-character --from "$from" --to "$to"
 }
 
 action_search() {
@@ -393,7 +401,7 @@ action_search() {
     esac
     term=$(gum input --placeholder "name (partial match)" --header "Search term:") || return 0
     [[ -n "$term" ]] || { info "Cancelled."; return 0; }
-    engine search --kind "$kind" --term "$term"
+    engine_foreground search --kind "$kind" --term "$term"
 }
 
 # -----------------------------------------------------------------------------
@@ -447,7 +455,7 @@ main() {
             Accounts)   _submenu "Accounts"   create-account list-accounts delete-account set-account-level ;;
             Characters) _submenu "Characters" rename-character ;;
             Search)     action_search || true ;;
-            Status)     engine status || true ;;
+            Status)     engine_foreground status ;;
         esac
     done
 }
