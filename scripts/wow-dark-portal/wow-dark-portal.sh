@@ -66,9 +66,14 @@ resolve_engine() {
     ENGINE="${DARK_PORTAL_CACHE}/dark-portal.sh"; success "dark-portal cloned to ${DARK_PORTAL_CACHE}"
 }
 
-# Engine drivers. eget reads an effective config value for pre-filling prompts;
-# engine_foreground runs long-lived work (installs, copies, launches) so Ctrl-C
-# stops just the child and returns to the menu.
+# Engine drivers. eget reads an effective config value for pre-filling prompts.
+#
+# engine: only for calls whose stdout is captured and whose exit status the
+# caller inspects itself (the instance/runner/realm listings). Every action a
+# menu runs goes through engine_foreground instead: under `set -e` a bare
+# `engine` that exits non-zero (a rejected setting, a failed launch, a missing
+# runner) or a Ctrl-C (our INT trap is `exit 0`) would end the whole TUI, while
+# an error or an interrupt has to leave the operator back in the menu.
 engine()     { bash "$ENGINE" "$@"; }
 eget()       { bash "$ENGINE" get "$1" 2>/dev/null || true; }
 engine_foreground() {
@@ -108,6 +113,8 @@ _pick_value_label() {
 # engine's machine-readable listing), empty/non-zero on cancel or none.
 _pick_instance() {
     local hdr="$1" names
+    # Bare `engine`: stdout is the data and the `|| true` is the caller's own
+    # handling of a non-zero exit (nothing configured yet) — an empty list.
     names="$(engine list-instances --names 2>/dev/null || true)"
     [[ -n "$names" ]] || { warn "No instances configured yet — add one first."; return 1; }
     printf '%s\n' "$names" | gum choose --header "$hdr"
@@ -120,6 +127,7 @@ _pick_instance() {
 # one name per line; empty/non-zero on cancel or none configured.
 _pick_instances() {
     local hdr="$1" names
+    # Bare `engine`: same captured-listing case as _pick_instance.
     names="$(engine list-instances --names 2>/dev/null || true)"
     [[ -n "$names" ]] || { warn "No instances configured yet — add one first."; return 1; }
     printf '%s\n' "$names" | gum choose --no-limit --header "$hdr"
@@ -128,11 +136,13 @@ _pick_instances() {
 # Scan the LAN via the engine and persist the picked realm as the default.
 _discover_and_set() {
     local candidates chosen
+    # Bare `engine`: the scan's stdout is the candidate list and the `|| true`
+    # is the caller's own handling of a failed/empty scan.
     candidates="$(engine discover-realm 2>/dev/null || true)"
     [[ -n "$candidates" ]] || { warn "No realm candidates found on the LAN."; return 1; }
     chosen=$(printf '%s\n' "$candidates" | gum choose --header "Candidate realm(s) (port open — not protocol-verified):") || true
     [[ -n "$chosen" ]] || return 1
-    engine set DEFAULT_REALM_ADDRESS "$chosen"
+    engine_foreground set DEFAULT_REALM_ADDRESS "$chosen"
     success "Default realm address set to ${chosen}."
 }
 
@@ -150,32 +160,33 @@ action_configure() {
     # CONFIG_DIR — a typed "~/games/wow" would be stored literally and make
     # `configure` fail on a path that does not exist.
     src="${src/#\~/$HOME}"
-    [[ -n "$src" ]] && engine set CLIENT_SOURCE_DIR "$src"
+    [[ -n "$src" ]] && engine_foreground set CLIENT_SOURCE_DIR "$src"
 
     local mode
     mode=$(_pick_value_label "Client file isolation mode" "$(eget CLIENT_ISOLATION_MODE)" "full" \
         "full|full (complete copy per instance — best at high instance counts)" \
         "shared|shared (symlinked install, private WTF/Cache only — lowest disk use)")
-    engine set CLIENT_ISOLATION_MODE "$mode"
+    engine_foreground set CLIENT_ISOLATION_MODE "$mode"
 
     local arch
     arch=$(_pick_value_label "Bottle architecture" "$(eget WINE_ARCH)" "win32" \
         "win32|win32 (matches this 32-bit-era client)" "win64|win64")
-    engine set WINE_ARCH "$arch"
+    engine_foreground set WINE_ARCH "$arch"
 
     local runners runner cur_runner
+    # Bare `engine`: captured listing, `|| true` handled by the branch below.
     runners="$(engine list-runners 2>/dev/null || true)"
     cur_runner="$(eget BOTTLES_RUNNER)"; cur_runner="${cur_runner:-<none>}"
     if [[ -n "$runners" ]]; then
         runner=$(printf '%s\n' "$runners" | gum choose --header "Wine runner (current: ${cur_runner}):") || true
-        [[ -n "$runner" ]] && engine set BOTTLES_RUNNER "$runner"
+        [[ -n "$runner" ]] && engine_foreground set BOTTLES_RUNNER "$runner"
     else
         warn "No Bottles Wine runner available yet — run 'Install dependencies', then launch Bottles once from your app menu so it downloads a runner."
     fi
 
     local res
     res=$(gum input --value "$(eget DEFAULT_RESOLUTION)" --header "Default window resolution (WxH):") || return 0
-    [[ -n "$res" ]] && engine set DEFAULT_RESOLUTION "$res"
+    [[ -n "$res" ]] && engine_foreground set DEFAULT_RESOLUTION "$res"
 
     local realm_choice
     realm_choice=$(gum choose "Enter manually" "Discover on LAN" \
@@ -185,9 +196,9 @@ action_configure() {
         "Enter manually")
             local addr port
             addr=$(gum input --value "$(eget DEFAULT_REALM_ADDRESS)" --placeholder "192.168.1.50" --header "Realm address:") || true
-            [[ -n "$addr" ]] && engine set DEFAULT_REALM_ADDRESS "$addr"
+            [[ -n "$addr" ]] && engine_foreground set DEFAULT_REALM_ADDRESS "$addr"
             port=$(gum input --value "$(eget DEFAULT_REALM_PORT)" --header "Realm port:") || true
-            [[ -n "$port" ]] && engine set DEFAULT_REALM_PORT "$port"
+            [[ -n "$port" ]] && engine_foreground set DEFAULT_REALM_PORT "$port"
             ;;
     esac
 
@@ -241,7 +252,7 @@ action_edit_instance() {
         info "Nothing to change."
         return 0
     fi
-    engine "${args[@]}"
+    engine_foreground "${args[@]}"
 }
 
 action_remove_instance() {
@@ -295,7 +306,7 @@ _submenu() {
             discover-realm)  _discover_and_set || true ;;
             winecfg)         action_winecfg || true ;;
             add-instance)    action_add_instance || true ;;
-            list-instances)  engine list-instances || true ;;
+            list-instances)  engine_foreground list-instances ;;
             edit-instance)   action_edit_instance || true ;;
             remove-instance) action_remove_instance || true ;;
             launch)          action_launch || true ;;
@@ -319,7 +330,7 @@ main() {
             Setup)     _submenu "Setup"     install-deps configure discover-realm winecfg ;;
             Instances) _submenu "Instances" add-instance list-instances edit-instance remove-instance ;;
             Launch)    _submenu "Launch"    launch stop stop-all ;;
-            Status)    engine status || true ;;
+            Status)    engine_foreground status ;;
         esac
     done
 }
