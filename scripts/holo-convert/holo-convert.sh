@@ -322,12 +322,17 @@ gather_pdf_options() {
 interactive_link_check() {
     [[ "$SRC_FMT" == md ]] || return 0
     command -v python3 &>/dev/null || return 0
-    local check="$(cd "$(dirname "$ENGINE")" && pwd)/.fcc/docx/check_links.py"
+    # Split declaration from assignment so the subshell's status is visible
+    # (SC2155): under `set -e` a `local check=$(...)` would mask a failed cd and
+    # leave a bogus path, which the -f guard below then silently rejected.
+    local engine_dir check
+    engine_dir=$(cd "$(dirname "$ENGINE")" && pwd) || return 0
+    check="${engine_dir}/.fcc/docx/check_links.py"
     [[ -f "$check" ]] || return 0
 
     gum confirm "Check internal links for broken anchors before converting?" || return 0
 
-    local f line anchor sug conf heading total=0 fixed=0
+    local f anchor sug conf heading total=0 fixed=0
     for f in "${FILES[@]}"; do
         # TSV: anchor <tab> suggestion <tab> confident(1/0) <tab> heading
         local tsv
