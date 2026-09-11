@@ -17,10 +17,20 @@
 #                    or sddm). The greeter runs as its own user with its own
 #                    kwinoutputconfig.json, so a refresh-rate fix saved in your
 #                    session never reaches the login screen — this syncs it.
+#   lofree-edge-fix  — installs keyd and a per-device remap (templates/
+#                    lofree-edge.conf) so a Lofree Edge Bluetooth keyboard
+#                    types plain US punctuation while the rest of the system
+#                    stays on a different XKB layout (KWin/Wayland only
+#                    supports one global layout for every keyboard at once).
+#                    See the template file's header comment for the (very
+#                    non-obvious) reasoning: macro(<ascii char>) doesn't
+#                    bypass the active layout, this specific board has its
+#                    grave/apostrophe keys hardware-swapped, and keyd v2.6.0
+#                    segfaults on macro(102nd)/macro(S-102nd).
 #
 # Sourced helpers (scripts/_common/):
 #   ui.sh   — header/info/success/warn/error_exit
-#   deps.sh — _ensure_pkg (dnf/apt/rpm-ostree aware)
+#   deps.sh — _ensure_pkg, _pkg_manager, _require_sudo_or_instruct (dnf/apt/rpm-ostree aware)
 #
 # Config: ~/.config/bazzite-utils/bazzite-utils.conf (XDG-style, key=value)
 # -----------------------------------------------------------------------------
@@ -33,6 +43,7 @@ if [[ -d "${SCRIPT_DIR}/../_common" ]]; then
 else
     COMMON_DIR="${SCRIPT_DIR}"              # exported standalone: deps sit alongside
 fi
+TEMPLATES_DIR="${SCRIPT_DIR}/templates"
 
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
@@ -290,6 +301,101 @@ cmd_kwin_greeter_fix() {
 }
 
 # -----------------------------------------------------------------------------
+# lofree-edge-fix — per-device keyd remap for a Lofree Edge keyboard
+# -----------------------------------------------------------------------------
+# See templates/lofree-edge.conf's header comment for the full story. Short
+# version: KWin/Wayland only supports one global XKB layout for every
+# keyboard at once, so a second keyboard that needs different punctuation
+# can't be fixed via System Settings. keyd (github.com/rvaiya/keyd) is a
+# udev-matched, per-device input remapper that runs below KWin and can give
+# just this one device its own behavior.
+
+LOFREE_EDGE_CONF="/etc/keyd/lofree-edge.conf"
+
+_ensure_keyd() {
+    command -v keyd &>/dev/null && { info "keyd found: $(command -v keyd)"; return 0; }
+
+    local pm; pm="$(_pkg_manager)"
+    [[ -z "$pm" ]] && error_exit "No supported package manager found (need dnf, apt, or rpm-ostree) to install keyd."
+
+    info "keyd not found. It ships via COPR (alternateved/keyd) on Fedora-based systems."
+    gum confirm "Install keyd now? (requires sudo)" || error_exit "keyd is required for this fix."
+
+    case "$pm" in
+        rpm-ostree)
+            # Bazzite/Fedora Atomic: dnf5 is the copr-capable frontend even
+            # though the image itself is managed via rpm-ostree.
+            _require_sudo_or_instruct "Enabling the keyd COPR repo" "sudo dnf5 copr enable -y alternateved/keyd"
+            if [[ ! -f /etc/yum.repos.d/_copr_alternateved-keyd.repo ]]; then
+                sudo dnf5 copr enable -y alternateved/keyd \
+                    || error_exit "Failed to enable the alternateved/keyd COPR repo."
+            fi
+            _require_sudo_or_instruct "Layering keyd via rpm-ostree" "sudo rpm-ostree install keyd"
+            sudo rpm-ostree install keyd || error_exit "rpm-ostree install failed for keyd."
+            warn "keyd layered via rpm-ostree — a REBOOT is required before it's available."
+            if gum confirm "Reboot now?"; then
+                systemctl reboot
+            fi
+            return 1
+            ;;
+        dnf)
+            # Plain (mutable) Fedora — use dnf's own copr plugin, not dnf5,
+            # since older Fedora releases may not have dnf5 at all.
+            _require_sudo_or_instruct "Enabling the keyd COPR repo" "sudo dnf copr enable -y alternateved/keyd"
+            if [[ ! -f /etc/yum.repos.d/_copr_alternateved-keyd.repo ]]; then
+                sudo dnf copr enable -y alternateved/keyd \
+                    || error_exit "Failed to enable the alternateved/keyd COPR repo."
+            fi
+            _require_sudo_or_instruct "Installing keyd" "sudo dnf install -y keyd"
+            sudo dnf install -y keyd || error_exit "dnf install failed for keyd."
+            ;;
+        apt)
+            _require_sudo_or_instruct "Installing keyd" "sudo apt-get update -qq && sudo apt-get install -y keyd"
+            sudo apt-get update -qq && sudo apt-get install -y keyd \
+                || error_exit "apt install failed for keyd. It may need a third-party repo on non-Fedora distros — see https://github.com/rvaiya/keyd#installation"
+            ;;
+    esac
+    command -v keyd &>/dev/null || error_exit "keyd installation appears to have failed."
+    success "keyd installed."
+}
+
+cmd_lofree_edge_fix() {
+    header "Bazzite Utils — Lofree Edge Keyboard Fix"
+
+    _ensure_keyd || return 0   # rpm-ostree path returns 1 pending reboot
+
+    local template="${TEMPLATES_DIR}/lofree-edge.conf"
+    [[ -f "$template" ]] || error_exit "Template not found: ${template}"
+
+    gum confirm "Write ${LOFREE_EDGE_CONF} and (re)start the keyd service? (requires sudo)" \
+        || { info "Cancelled."; return; }
+
+    sudo mkdir -p "$(dirname "$LOFREE_EDGE_CONF")" \
+        || error_exit "Failed to create $(dirname "$LOFREE_EDGE_CONF")."
+    sudo cp "$template" "$LOFREE_EDGE_CONF" \
+        || error_exit "Failed to write ${LOFREE_EDGE_CONF}."
+    success "Wrote ${LOFREE_EDGE_CONF}."
+
+    sudo systemctl enable --now keyd \
+        || error_exit "Failed to enable/start the keyd service."
+
+    if sudo keyd reload 2>/dev/null; then
+        success "keyd reloaded — changes are live, no reboot needed."
+    else
+        warn "keyd reload failed (daemon may have just started) — check status."
+    fi
+
+    if systemctl is-active --quiet keyd; then
+        success "keyd is running."
+    else
+        error_exit "keyd is not active after setup. Check: sudo journalctl -eu keyd"
+    fi
+
+    info "Test every remapped key on the Edge now (especially \` ~ [ ] { } @ < > ' \" \\ |)."
+    warn "If a key is wrong, don't guess — re-derive it against /usr/share/X11/xkb/symbols/pt and re-edit ${template}, then re-run this command (or just edit ${LOFREE_EDGE_CONF} and \`sudo keyd reload\` directly for fast iteration)."
+}
+
+# -----------------------------------------------------------------------------
 # Main dispatch
 # -----------------------------------------------------------------------------
 
@@ -299,7 +405,8 @@ main() {
             ea-fix)           cmd_ea_fix ;;
             ubisoft-rws)      cmd_ubisoft_rws ;;
             kwin-greeter-fix) cmd_kwin_greeter_fix ;;
-            *) error_exit "Unknown command: $1 (expected: ea-fix|ubisoft-rws|kwin-greeter-fix)" ;;
+            lofree-edge-fix)  cmd_lofree_edge_fix ;;
+            *) error_exit "Unknown command: $1 (expected: ea-fix|ubisoft-rws|kwin-greeter-fix|lofree-edge-fix)" ;;
         esac
         exit 0
     fi
@@ -311,6 +418,7 @@ main() {
             "ea-fix           — apply EA App's staged self-update" \
             "ubisoft-rws      — fix invisible/offscreen Ubisoft Connect windows" \
             "kwin-greeter-fix — sync monitor refresh rate/layout to the KDE login screen" \
+            "lofree-edge-fix  — fix punctuation on a Lofree Edge Bluetooth keyboard" \
             "quit" \
             --header "Choose a utility:") || true
 
@@ -320,6 +428,7 @@ main() {
             ea-fix*)           cmd_ea_fix ;;
             ubisoft-rws*)      cmd_ubisoft_rws ;;
             kwin-greeter-fix*) cmd_kwin_greeter_fix ;;
+            lofree-edge-fix*)  cmd_lofree_edge_fix ;;
         esac
 
         echo ""
