@@ -79,7 +79,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 
 | Script                                                               | Targets      | Description                                                              |
 | -------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------ |
-| [`bazzite-utils/bazzite-utils.sh`](docs/scripts/bazzite-utils.md)    | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix |
+| [`bazzite-utils/bazzite-utils.sh`](docs/scripts/bazzite-utils.md)    | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix + per-device keyd keyboard remap |
 | [`comfyengine/comfyengine.sh`](docs/scripts/comfyengine.md)          | -            | Build & install the ComfyEngine memory scanner from source               |
 | [`gameconqueror/gameconqueror.sh`](docs/scripts/gameconqueror.md)    | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
 | [`wow-nordrassil/wow-nordrassil.sh`](docs/scripts/wow-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
@@ -154,6 +154,7 @@ The setup script will:
 | go, make, ko                | karpenter local from-source build (go required; make/ko offered) |
 | lsof or ss                  | kind port-conflict check, lgtm/dozzle port checks     |
 | xbindkeys, xdotool, wmctrl  | clone-army, bazzite-utils (auto-installed via dnf/apt/rpm-ostree) |
+| keyd                        | bazzite-utils `lofree-edge-fix` only (COPR-layered on Fedora Atomic, `dnf`/`apt` elsewhere; requires a reboot on rpm-ostree hosts) |
 | uv, python3                 | bmad                                                  |
 | flatpak, Xvfb, systemd      | lmstudio (Linux only)                                 |
 
@@ -386,7 +387,9 @@ scomp-link/
     │
     ├── # Gaming
     ├── bazzite-utils/
-    │   └── bazzite-utils.sh          # EA App / Ubisoft Connect / KDE greeter fixes
+    │   ├── bazzite-utils.sh          # EA App / Ubisoft Connect / KDE greeter / Lofree Edge keyd fixes
+    │   └── templates/
+    │       └── lofree-edge.conf      # keyd remap for lofree-edge-fix
     ├── comfyengine/
     │   └── comfyengine.sh            # ComfyEngine memory scanner (build from source)
     ├── gameconqueror/
