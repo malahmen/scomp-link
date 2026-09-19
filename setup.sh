@@ -248,6 +248,38 @@ ensure_gum_width() {
     ok "Added GUM_INPUT_WIDTH=${width} to ${profile_file}."
     info "Restart your terminal or run: source ${profile_file}"
 }
+# git — required by many engine front-ends, each of which clones its own
+# standalone repo (nordrassil, dark-portal, holo-convert, etc.)
+ensure_git() {
+    info "Looking for git..."
+
+    if command_exists git; then
+        ok "git found: $(command -v git)"
+        return
+    fi
+
+    info "git not found. Attempting to install..."
+
+    case "$OS" in
+        macos)
+            brew install git
+            ;;
+        linux)
+            if ! sudo -n true 2>/dev/null; then
+                fatal "git is not installed and your account does not have passwordless sudo access to install it.
+Please ask your administrator to install git."
+            fi
+            case "$PKG_MANAGER" in
+                apt) sudo apt-get update -qq && sudo apt-get install -y git ;;
+                dnf) sudo dnf install -y git ;;
+            esac
+            ;;
+    esac
+
+    command_exists git || fatal "git installation failed. Please install git manually and re-run."
+    ok "git installed: $(command -v git)"
+}
+
 # vim — required by starlight_astro.sh for editing content files
 ensure_vim() {
     info "Looking for vim..."
@@ -396,6 +428,7 @@ detect_os
 info "Detected OS: $OS, package manager: $PKG_MANAGER"
 
 ensure_curl
+ensure_git
 ensure_mise
 ensure_mise_activation
 ensure_bash
