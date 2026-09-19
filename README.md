@@ -124,6 +124,7 @@ The setup script will:
 
 - [mise](https://mise.jdx.dev/) - Version manager for development tools
 - [gum](https://github.com/charmbracelet/gum) - TUI library
+- git - Version control (needed by most engine front-ends, each of which clones its own repo)
 - vim - Text editor
 - tree - Directory visualization
 
@@ -147,7 +148,7 @@ The setup script will:
 | openssl                     | younglings-key certificate generation                 |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
 | jq                          | navicomputer (SSH profile manager)                    |
-| git, curl                   | Akinn, Argo (curl), karpenter (git), and every engine front-end (clones its engine) |
+| curl                        | Akinn, Argo                                           |
 | nc (netcat)                 | K8s port-forward/connect readiness checks (DB, observability, platform scripts; not auto-checked) |
 | docker-compose (v1 binary)  | lgtm and dozzle Docker targets (not auto-checked)     |
 | psql, mysql/mariadb, mongosh | DB connect on the K8s target (prompted at runtime)   |
