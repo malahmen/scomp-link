@@ -32,6 +32,7 @@ Scomp-Link comes with several ready-to-use scripts organized by category. Each l
 | --------------------------------------------- | --------------------------------------------------------------------------- |
 | [`kind.sh`](docs/scripts/kind.md)             | Create and manage Kind Kubernetes clusters                                  |
 | [`karpenter.sh`](docs/scripts/karpenter.md)   | Local dev/test Karpenter install (from source, KWOK provider) on any K8s cluster |
+| [`ansible.sh`](docs/scripts/ansible.md)       | Install and manage Ansible (core + collections) via mise, user-local        |
 | [`argo.sh`](docs/scripts/argo.md)             | Install and manage Argo Workflows, Argo CD & Argo Events                    |
 | [`akinn_tui.sh`](docs/scripts/akinn.md)       | Provision an Ubuntu/Raspberry Pi node as a Kubernetes master/worker (Akinn) |
 | [`docker.sh`](docs/scripts/docker.md)         | Install, uninstall, start/stop, and check the status of Docker itself (Linux) |

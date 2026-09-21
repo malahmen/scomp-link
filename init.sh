@@ -11,6 +11,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="${SCRIPT_DIR}/scripts"
 
 # ── gum check ─────────────────────────────────────────────────────────────────
+# gum is installed via mise, into mise's shims dir. A shell that was already
+# open when setup.sh ran won't have that on PATH yet (setup.sh's own export
+# dies with its process, and .bashrc only applies to new shells), so add it
+# here before giving up — otherwise running ./init.sh straight after setup.sh
+# fails with "gum is not installed" even though it demonstrably is.
+[ -d "$HOME/.local/share/mise/shims" ] && export PATH="$HOME/.local/share/mise/shims:$PATH"
+
 if ! command -v gum > /dev/null 2>&1; then
     echo "Error: gum is not installed. Run setup.sh first."
     exit 1

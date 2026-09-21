@@ -81,20 +81,25 @@ ensure_curl() {
 
     # curl install requires sudo on Linux
     if ! sudo -n true 2>/dev/null; then
-        fatal "curl is not installed and your account does not have passwordless sudo access to install it.
-Please ask your administrator to install curl."
+        fatal "curl is missing, and 'sudo -n true' failed — so this script cannot install it without prompting.
+That check cannot tell 'no sudo rights' apart from 'sudo works but wants a password', so it may well be the latter.
+Install curl with your package manager, then re-run this script."
     fi
 
+    # Deliberately not fatal here: if the install fails (unreachable mirror,
+    # package not found, ...) apt/dnf has already printed the real reason, and
+    # the check below summarises it rather than set -e killing the script with
+    # no explanation at all.
     case "$PKG_MANAGER" in
         apt)
-            sudo apt-get update -qq && sudo apt-get install -y curl
+            sudo apt-get update -qq && sudo apt-get install -y curl || true
             ;;
         dnf)
-            sudo dnf install -y curl
+            sudo dnf install -y curl || true
             ;;
     esac
 
-    command_exists curl || fatal "curl installation failed. Please install curl manually and re-run."
+    command_exists curl || fatal "curl is still missing after the install attempt — see the package manager error above for the actual cause."
     ok "curl installed."
 }
 
@@ -160,6 +165,20 @@ ensure_mise_activation() {
         *)      profile_file="$HOME/.profile" ;;
     esac
 
+    # mise itself installs to ~/.local/bin, which is NOT on PATH by default in
+    # every distro's stock profile — confirmed missing on a minimal Debian
+    # netinst install (no desktop-oriented skeleton .bashrc). Without this,
+    # the "mise activate" line below fails with "mise: command not found" even
+    # after the profile is sourced. Checked independently of the activation
+    # line itself, since a profile written by an older version of this
+    # function may have the activation line without this.
+    if grep -qF '$HOME/.local/bin:$PATH' "$profile_file" 2>/dev/null; then
+        ok "~/.local/bin already on PATH in ${profile_file}."
+    else
+        printf '\n# mise lives here (added by scomp-link setup.sh)\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile_file"
+        ok "Added ~/.local/bin to PATH in ${profile_file}."
+    fi
+
     if grep -qF "mise activate" "$profile_file" 2>/dev/null || grep -qF "mise/shims" "$profile_file" 2>/dev/null; then
         ok "mise activation already configured in ${profile_file}."
     else
@@ -174,7 +193,7 @@ ensure_mise_activation() {
     fi
 
     # Keep this script's own PATH correct for the remainder of this run too.
-    export PATH="$HOME/.local/share/mise/shims:$PATH"
+    export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$PATH"
 }
 
 # gum via mise
@@ -266,17 +285,20 @@ ensure_git() {
             ;;
         linux)
             if ! sudo -n true 2>/dev/null; then
-                fatal "git is not installed and your account does not have passwordless sudo access to install it.
-Please ask your administrator to install git."
+                fatal "git is missing, and 'sudo -n true' failed — so this script cannot install it without prompting.
+That check cannot tell 'no sudo rights' apart from 'sudo works but wants a password', so it may well be the latter.
+Install git with your package manager, then re-run this script."
             fi
+            # See the note in ensure_curl: let the package manager's own error
+            # stand, and report on it below instead of dying via set -e.
             case "$PKG_MANAGER" in
-                apt) sudo apt-get update -qq && sudo apt-get install -y git ;;
-                dnf) sudo dnf install -y git ;;
+                apt) sudo apt-get update -qq && sudo apt-get install -y git || true ;;
+                dnf) sudo dnf install -y git || true ;;
             esac
             ;;
     esac
 
-    command_exists git || fatal "git installation failed. Please install git manually and re-run."
+    command_exists git || fatal "git is still missing after the install attempt — see the package manager error above for the actual cause."
     ok "git installed: $(command -v git)"
 }
 
@@ -297,17 +319,20 @@ ensure_vim() {
             ;;
         linux)
             if ! sudo -n true 2>/dev/null; then
-                fatal "vim is not installed and your account does not have passwordless sudo access to install it.
-Please ask your administrator to install vim."
+                fatal "vim is missing, and 'sudo -n true' failed — so this script cannot install it without prompting.
+That check cannot tell 'no sudo rights' apart from 'sudo works but wants a password', so it may well be the latter.
+Install vim with your package manager, then re-run this script."
             fi
+            # See the note in ensure_curl: let the package manager's own error
+            # stand, and report on it below instead of dying via set -e.
             case "$PKG_MANAGER" in
-                apt) sudo apt-get update -qq && sudo apt-get install -y vim ;;
-                dnf) sudo dnf install -y vim ;;
+                apt) sudo apt-get update -qq && sudo apt-get install -y vim || true ;;
+                dnf) sudo dnf install -y vim || true ;;
             esac
             ;;
     esac
 
-    command_exists vim || fatal "vim installation failed. Please install vim manually and re-run."
+    command_exists vim || fatal "vim is still missing after the install attempt — see the package manager error above for the actual cause."
     ok "vim installed: $(command -v vim)"
 }
 
@@ -328,19 +353,22 @@ ensure_tree() {
             ;;
         linux)
             if ! sudo -n true 2>/dev/null; then
-                warn "tree is not installed and sudo access is unavailable."
-                warn "Ask your administrator to install tree, or: sudo apt install tree / sudo dnf install tree"
+                warn "tree is missing, and 'sudo -n true' failed — so this script cannot install it without prompting."
+                warn "That check cannot tell 'no sudo rights' apart from 'sudo works but wants a password'."
+                warn "To install it yourself: sudo apt install tree / sudo dnf install tree"
                 return
             fi
+            # See the note in ensure_curl: let the package manager's own error
+            # stand, and report on it below instead of dying via set -e.
             case "$PKG_MANAGER" in
-                apt) sudo apt-get update -qq && sudo apt-get install -y tree ;;
-                dnf) sudo dnf install -y tree ;;
+                apt) sudo apt-get update -qq && sudo apt-get install -y tree || true ;;
+                dnf) sudo dnf install -y tree || true ;;
             esac
             ;;
     esac
 
     if ! command_exists tree; then
-        warn "tree installation failed. You can ask your administrator to install it, or install manually."
+        warn "tree is still missing after the install attempt — see the package manager error above for the actual cause."
         warn "Site structure view will be unavailable until tree is installed."
         return
     fi
