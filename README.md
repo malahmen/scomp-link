@@ -98,6 +98,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`navicomputer/navicomputer.sh`](docs/scripts/navicomputer.md) | Manage SSH profiles in `~/.ssh/config` — front-end for the standalone [navicomputer](https://github.com/malahmen/navicomputer) engine |
 | [`mind-trick/mind-trick.sh`](docs/scripts/mind-trick.md) | Scrub commit-message trailers (e.g. AI co-author) from git history — front-end for the standalone [mind-trick](https://github.com/malahmen/mind-trick) engine |
 | [`clone-army/clone-army.sh`](docs/scripts/clone-army.md) | Broadcast one keystroke to a group of X11/XWayland windows in unison (xbindkeys + xdotool) — generic parallel-input / multiboxing helper |
+| [`holonet-sync/holonet-sync.sh`](docs/scripts/holonet-sync.md) | Reconcile repos both ways between Gitea and GitHub — branches, tags, auto-merge, never a force-push — front-end for the standalone [holonet-sync](https://github.com/malahmen/holonet-sync) engine, which also runs unattended from cron |
 
 ---
 
@@ -148,8 +149,9 @@ The setup script will:
 | TeX Live (xelatex/lualatex) | holo-convert PDF output                               |
 | openssl                     | younglings-key certificate generation                 |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
-| jq                          | navicomputer (SSH profile manager)                    |
+| jq                          | navicomputer (SSH profile manager), holonet-sync engine |
 | curl                        | Akinn, Argo                                           |
+| flock, git (>= 2.38)        | holonet-sync engine (offered via dnf/apt/rpm-ostree from its menu) |
 | nc (netcat)                 | K8s port-forward/connect readiness checks (DB, observability, platform scripts; not auto-checked) |
 | docker-compose (v1 binary)  | lgtm and dozzle Docker targets (not auto-checked)     |
 | psql, mysql/mariadb, mongosh | DB connect on the K8s target (prompted at runtime)   |
@@ -416,6 +418,8 @@ scomp-link/
     │   └── protocol-droid.sh         # front-end for the protocol-droid doc-conversion engine (marker + markitdown backends; its own repo)
     ├── clone-army/
     │   └── clone-army.sh             # broadcast one keystroke to a group of X11/XWayland windows (xbindkeys + xdotool)
+    ├── holonet-sync/
+    │   └── holonet-sync.sh           # front-end for the holonet-sync Gitea <-> GitHub reconciler engine (its own repo)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
