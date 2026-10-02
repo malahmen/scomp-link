@@ -53,14 +53,18 @@ to write the example one and stops there.
 | --- | --- |
 | status | Last recorded result per repo (no network) |
 | dry-run | Picks a repo (or all), then plans everything and pushes nothing |
-| run | Same, for real |
+| run | Same, for real, after a final confirm naming the scope |
 | check | Validates tools, git version, tokens, repo access and Gitea push mirrors |
 | edit config | Opens the config or the repo list in `$EDITOR` |
 | reset state | Forgets the sync base for one repo (next run re-seeds; deletes nothing) |
 | install deps | Ensures `git`, `curl`, `jq`, `flock`, coreutils (dnf/apt/rpm-ostree) |
 
 `run` and `check` run in the foreground with Ctrl-C returning to the menu rather
-than killing the TUI. Both offer verbose logging before they start.
+than killing the TUI. `dry-run` and `run` offer verbose logging, then an
+optional "Advanced options" step for the engine's override flags:
+`--allow-deletions` (bypasses `MAX_DELETIONS` and the empty-side guard, the only
+way past those refusals from the menu) and `--no-api` (skips twin lookup and
+creation). Esc at any prompt returns to the menu without running anything.
 
 **Dependency installation lives here, not in the engine.** An engine that layers
 OS packages behind your back is not something you put in a timer, so it only

@@ -178,9 +178,24 @@ action_run() {
         2) info "Cancelled."; return 0 ;;
     esac
 
+    # The engine's override flags, behind one question so the common path stays
+    # short. --allow-deletions is the only way past a deletion-cap or
+    # empty-side refusal without leaving the TUI.
+    local guards_off=0
+    rc=0; _ask --default=false "Advanced options (--allow-deletions, --no-api)?" || rc=$?
+    case "$rc" in
+        2) info "Cancelled."; return 0 ;;
+        0)
+            rc=0; _ask --default=false "Bypass MAX_DELETIONS and the empty-side guard (--allow-deletions)?" || rc=$?
+            case "$rc" in 0) args+=(--allow-deletions); guards_off=1 ;; 2) info "Cancelled."; return 0 ;; esac
+            rc=0; _ask --default=false "Skip API lookups and twin creation (--no-api; both repos must exist)?" || rc=$?
+            case "$rc" in 0) args+=(--no-api) ;; 2) info "Cancelled."; return 0 ;; esac
+            ;;
+    esac
+
     # A real run pushes and deletes on both remotes: make the scope explicit.
     if [[ "$mode" == wet ]]; then
-        _ask "Run for real on ${repo:-every repo in the list}? This pushes (and may delete) on both sides." \
+        _ask "Run for real on ${repo:-every repo in the list}$( (( guards_off )) && echo ", with the deletion guards OFF")? This pushes (and may delete) on both sides." \
             || { info "Cancelled."; return 0; }
     fi
 
