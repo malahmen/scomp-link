@@ -180,7 +180,8 @@ action_edit() {
     local target
     target=$(gum choose "$CONFIG_PATH" "$REPOS_PATH" --header "Which file?") || true
     [[ -z "$target" ]] && { info "Cancelled."; return 0; }
-    [[ -e "$target" ]] || error_exit "${target} does not exist yet — run 'init' first."
+    # warn, not error_exit: inside an action, exiting would close the whole TUI.
+    [[ -e "$target" ]] || { warn "${target} does not exist yet — run 'init' first."; return 1; }
 
     "${EDITOR:-vi}" "$target"
 }
@@ -204,13 +205,20 @@ action_reset() {
 action_deps() {
     header "Holonet Sync — Dependencies"
 
-    _ensure_pkg git     git             git
-    _ensure_pkg curl    curl            curl
-    _ensure_pkg jq      jq              jq
-    _ensure_pkg flock   util-linux-core util-linux
-    _ensure_pkg base64  coreutils       coreutils
-    _ensure_pkg sha1sum coreutils       coreutils
+    # Each in its own subshell: _ensure_pkg calls error_exit on an install
+    # failure (which would close the TUI) and returns 1 after an rpm-ostree
+    # layer (which would skip the rest). Keep going and report at the end.
+    local spec bin pkg_dnf pkg_apt missing=()
+    for spec in "git git git" "curl curl curl" "jq jq jq" "flock util-linux-core util-linux" \
+                "base64 coreutils coreutils" "sha1sum coreutils coreutils"; do
+        read -r bin pkg_dnf pkg_apt <<< "$spec"
+        ( _ensure_pkg "$bin" "$pkg_dnf" "$pkg_apt" ) || missing+=("$bin")
+    done
 
+    if (( ${#missing[@]} )); then
+        warn "Not available yet: ${missing[*]} (after an rpm-ostree layer, reboot first)."
+        return 1
+    fi
     success "Dependencies checked. Run 'check' to validate tokens and repo access."
 }
 
