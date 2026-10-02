@@ -126,16 +126,31 @@ _engine_paths() {
     [[ -n "$CONFIG_PATH" ]] || error_exit "The engine did not report its paths — is ${ENGINE} runnable?"
 }
 
-# Echoes the chosen "owner/name", or "" for every repo / on cancel. The list
-# comes from the engine, so it matches exactly what a run would iterate.
+# Echoes the chosen "owner/name", or "" for every repo. Returns 1 when the
+# picker is cancelled (Esc / Ctrl-C): "" means every repo, so a cancel must
+# never be reported as an empty choice. The list comes from the engine, so it
+# matches exactly what a run would iterate.
 _pick_repo() {
     local repos choice
     repos=$(engine repos 2>/dev/null | cut -f1) || true
     [[ -z "$repos" ]] && { printf ''; return 0; }
 
-    choice=$(printf 'every repo\n%s\n' "$repos" | gum choose --header "Which repo?") || true
-    [[ -z "$choice" || "$choice" == "every repo" ]] && { printf ''; return 0; }
+    choice=$(printf 'every repo\n%s\n' "$repos" | gum choose --header "Which repo?") || return 1
+    [[ -n "$choice" ]] || return 1
+    [[ "$choice" == "every repo" ]] && { printf ''; return 0; }
     printf '%s' "$choice"
+}
+
+# _ask <prompt> — 0 yes, 1 no, 2 cancelled. gum confirm exits 130 on Esc /
+# Ctrl-C, which a plain `gum confirm … && …` would read as "no" and carry on.
+_ask() {
+    local rc=0
+    gum confirm "$@" || rc=$?
+    case "$rc" in
+        0)   return 0 ;;
+        130) return 2 ;;
+        *)   return 1 ;;
+    esac
 }
 
 # -----------------------------------------------------------------------------
@@ -150,13 +165,24 @@ action_status() {
 
 # action_run <dry|wet>
 action_run() {
-    local mode="$1" repo args=(run)
+    local mode="$1" repo args=(run) rc
     header "Holonet Sync — $( [[ "$mode" == dry ]] && echo "Dry run" || echo "Run" )"
 
-    repo="$(_pick_repo)"
+    repo="$(_pick_repo)" || { info "Cancelled."; return 0; }
     [[ -n "$repo" ]] && args+=(--repo "$repo")
     [[ "$mode" == dry ]] && args+=(--dry-run)
-    gum confirm "Verbose (debug) logging?" && args+=(--verbose)
+
+    rc=0; _ask "Verbose (debug) logging?" || rc=$?
+    case "$rc" in
+        0) args+=(--verbose) ;;
+        2) info "Cancelled."; return 0 ;;
+    esac
+
+    # A real run pushes and deletes on both remotes: make the scope explicit.
+    if [[ "$mode" == wet ]]; then
+        _ask "Run for real on ${repo:-every repo in the list}? This pushes (and may delete) on both sides." \
+            || { info "Cancelled."; return 0; }
+    fi
 
     engine_foreground "${args[@]}"
 }
@@ -188,7 +214,7 @@ action_edit() {
 action_reset() {
     header "Holonet Sync — Reset sync state"
 
-    local repo; repo="$(_pick_repo)"
+    local repo; repo="$(_pick_repo)" || { info "Cancelled."; return 0; }
     if [[ -z "$repo" ]]; then
         warn "Reset works on one repo at a time — pick a single repo."
         return 0
