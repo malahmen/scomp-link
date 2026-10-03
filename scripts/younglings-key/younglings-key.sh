@@ -139,6 +139,21 @@ prompt_domain() {
 
 pick_numbits() { gum choose "2048" "3072" "4096" --header "RSA key size:" || echo "2048"; }
 
+# Output directory, asked every time rather than defaulted silently.
+#
+# These runs produce PRIVATE KEYS. Writing them to wherever the terminal happened
+# to be is how a key ends up in a repository, or in a directory the person never
+# thinks to protect or delete. Appends -o and echoes the directory.
+prompt_output_dir() {
+    local d
+    d=$(_clean_input "$(gum input --header "Where should the files be written?" \
+        --value "$(pwd)/certificates" || true)")
+    [[ -z "$d" ]] && { warn "An output directory is required."; return 1; }
+    [[ "$d" == "~"* ]] && d="${d/#\~/$HOME}"
+    FLAGS+=(-o "$d")
+    printf '%s' "$d"
+}
+
 # Subject source shared by self-signed + CSR: a subject string or a config file.
 # Appends the matching flag(s) to FLAGS. Returns non-zero on cancel.
 gather_subject_source() {  # $1 domain
@@ -168,6 +183,8 @@ mode_self_signed() {
     local duration; duration=$(_clean_input "$(gum input --value "3650" --header "Validity in days (1-3650):" || true)")
     duration="${duration:-3650}"
     FLAGS=(-d "$domain" -s 1 -n "$numbits" -t "$duration")
+    # Asked, not defaulted: these runs write a private key.
+    prompt_output_dir >/dev/null || { info "Cancelled."; return; }
     gather_subject_source "$domain" || { info "Cancelled."; return; }
     local ca
     ca=$(_clean_input "$(gum input --header "CA subject (blank = engine default):" \
@@ -180,6 +197,8 @@ mode_csr() {
     local domain; domain=$(prompt_domain) || return
     local numbits; numbits=$(pick_numbits)
     FLAGS=(-d "$domain" -s 0 -n "$numbits")
+    # Asked, not defaulted: these runs write a private key.
+    prompt_output_dir >/dev/null || { info "Cancelled."; return; }
     gather_subject_source "$domain" || { info "Cancelled."; return; }
     run_engine
 }
@@ -188,12 +207,16 @@ mode_template() {
     local domain; domain=$(prompt_domain) || return
     local numbits; numbits=$(pick_numbits)
     FLAGS=(-d "$domain" -g 1 -n "$numbits")
+    # Asked, not defaulted: these runs write a private key.
+    prompt_output_dir >/dev/null || { info "Cancelled."; return; }
     run_engine
 }
 
 mode_convert() {
     local domain; domain=$(prompt_domain) || return
     FLAGS=(-d "$domain")
+    # Asked, not defaulted: these runs write a private key.
+    prompt_output_dir >/dev/null || { info "Cancelled."; return; }
     local crt
     crt=$(_clean_input "$(gum input --header "Path to the .crt (or a name under ./certificates):" \
         --placeholder "./certificates/${domain}.crt" || true)")
@@ -208,6 +231,42 @@ mode_convert() {
     run_engine
 }
 
+# Install an existing certificate into THIS machine's trust store.
+#
+# The path is asked, never guessed: if the certificate is not on this machine it
+# cannot be installed, which is the honest answer. Nothing is searched for.
+mode_install() {
+    local f
+    f=$(prompt_path "Certificate to install (usually your ca.crt):" "$(pwd)/certificates/ca.crt")
+    [[ -n "$f" ]] || { info "Cancelled."; return; }
+
+    local name
+    name=$(_clean_input "$(gum input --header "Install as (blank = the file's own name):" \
+        --placeholder "$(basename "$f")" || true)")
+
+    FLAGS=(-I "$f")
+    [[ -n "$name" ]] && FLAGS+=(-N "$name")
+
+    # The engine refuses to elevate and prints the commands instead, so the
+    # choice is made here, visibly, rather than by a tool reaching for root.
+    if gum confirm "Install into the system trust store? This needs sudo."; then
+        ensure_openssl || { warn "openssl unavailable."; return; }
+        local preview; printf -v preview ' %q' ignite.sh "${FLAGS[@]}"
+        info "Running: sudo${preview}"
+        if sudo bash "$ENGINE" "${FLAGS[@]}"; then
+            success "Installed. Browsers started before now may need restarting."
+            warn "Firefox keeps its own trust store and ignores the system one;"
+            warn "import the certificate there separately if you use it."
+        else
+            warn "ignite.sh reported an error (see the output above)."
+        fi
+    else
+        # Dry view: the engine prints the subject and the exact commands.
+        bash "$ENGINE" "${FLAGS[@]}" || true
+        info "Nothing was installed."
+    fi
+}
+
 # -----------------------------------------------------------------------------
 # Run the engine with the gathered flags.
 # -----------------------------------------------------------------------------
@@ -217,10 +276,21 @@ run_engine() {
     # or slashes don't bleed across flags if reused.
     local preview; printf -v preview ' %q' ignite.sh "${FLAGS[@]}"
     info "Running:${preview}"
-    info "Output goes to ./certificates/ under: $(pwd)"
+    # Read the directory back out of FLAGS rather than assuming: saying
+    # ./certificates while -o points elsewhere is how someone loses a key.
+    local outdir="./certificates (engine default)" i
+    for ((i = 0; i < ${#FLAGS[@]}; i++)); do
+        [[ "${FLAGS[i]}" == "-o" ]] && outdir="${FLAGS[i+1]}"
+    done
+    info "Output goes to: ${outdir}"
     if bash "$ENGINE" "${FLAGS[@]}"; then
         success "Done."
-        [[ -d ./certificates ]] && open_path ./certificates
+        local i od=""
+        for ((i = 0; i < ${#FLAGS[@]}; i++)); do
+            [[ "${FLAGS[i]}" == "-o" ]] && od="${FLAGS[i+1]}"
+        done
+        [[ -z "$od" ]] && od="./certificates"
+        [[ -d "$od" ]] && open_path "$od"
     else
         warn "ignite.sh reported an error (see the output above)."
     fi
@@ -240,6 +310,7 @@ main() {
             "Self-signed certificate" \
             "Convert .crt → .cert/.pem" \
             "Certificate request (CSR)" \
+            "Install a certificate (trust store)" \
             "Quit" \
             --header "Certificate task (listed in a typical order):") || exit 0
         case "$action" in
@@ -247,6 +318,7 @@ main() {
             "Self-signed certificate")   mode_self_signed ;;
             "Convert .crt → .cert/.pem") mode_convert ;;
             "Certificate request (CSR)") mode_csr ;;
+            "Install a certificate (trust store)") mode_install ;;
             "Quit"|"")                   exit 0 ;;
         esac
     done
