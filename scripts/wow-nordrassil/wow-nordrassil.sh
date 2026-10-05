@@ -333,8 +333,17 @@ action_run_k8s() {
 
     local ns addr
     ns=$(gum input --value "$(eget K8S_NAMESPACE)" --header "Kubernetes namespace:") || return 0
+    # Persisted HERE, not left to the engine's --namespace/--address.
+    #
+    # The engine does save both, but only after its "image not built" check —
+    # so answering these prompts and then hitting that check discarded both
+    # answers silently. The operator types an address, sees an error about an
+    # image, and the setting never changed. Both prompts are pre-filled from
+    # the current value, which makes them look like settings; now they are.
+    [[ -n "$ns" ]] && engine_foreground set K8S_NAMESPACE "$ns"
     addr=$(gum input --value "$(eget REALM_ADDRESS)" \
         --header "LAN-reachable address for this realm (the k8s NODE's IP, since the pod uses hostNetwork):") || return 0
+    [[ -n "$addr" ]] && engine_foreground set REALM_ADDRESS "$addr"
 
     # Storage backend → persisted config the engine reads on run-k8s.
     local st
