@@ -658,13 +658,24 @@ action_apply_sql() {
 action_dump() {
     header "nordrassil — Dump"
     local what
-    what=$(gum choose "All four databases" "mangos (world)" "characters" "realmd (accounts)" "logs" \
+    what=$(gum choose \
+             "accounts only (to move between servers)" \
+             "All four databases" "mangos (world)" "characters" \
+             "realmd (whole — includes this realm's address)" "logs" \
            --header "Dump what from ${PROFILE_LABEL}?") || return 0
     case "$what" in
+        # The realm pointer lives in realmd.realmlist, so a WHOLE realmd dump
+        # restored onto another server takes this server's address with it and
+        # sends that server's clients here. Moving accounts is the common
+        # reason to dump realmd at all, so it gets its own entry and the whole
+        # database one is labelled with what it drags along.
+        "accounts only"*)
+            engine_foreground dump --db realmd \
+                --tables "account account_access account_banned realmcharacters" ;;
         "All four databases") engine_foreground dump --all ;;
         "mangos (world)")     engine_foreground dump --db mangos ;;
         characters)           engine_foreground dump --db characters ;;
-        "realmd (accounts)")  engine_foreground dump --db realmd ;;
+        "realmd (whole"*)     engine_foreground dump --db realmd ;;
         logs)                 engine_foreground dump --db logs ;;
         *) info "Cancelled." ;;
     esac
@@ -695,11 +706,27 @@ action_restore() {
     fi
     [[ -n "$file" ]] || { info "Cancelled."; return 0; }
 
+    # A table-level dump carries no CREATE DATABASE, so the engine cannot know
+    # where it goes and refuses without --db. Detected rather than asked every
+    # time, using the same signal the engine itself looks for.
+    local -a dbflag=()
+    local headtxt
+    if [[ "$file" == *.gz ]]; then headtxt="$(gzip -dc "$file" 2>/dev/null | head -200 || true)"
+    else                           headtxt="$(head -200 "$file" 2>/dev/null || true)"; fi
+    if ! grep -qiE '^(CREATE DATABASE|USE )' <<<"$headtxt"; then
+        local intodb
+        intodb=$(gum choose mangos characters realmd logs \
+                 --header "This dump names no database (a table subset) — restore into which?") || return 0
+        [[ -n "$intodb" ]] || { info "Cancelled."; return 0; }
+        dbflag=(--db "$intodb")
+        warn "Only the tables in the dump are replaced; the rest of '${intodb}' is left alone."
+    fi
+
     warn "RESTORE REPLACES DATA on ${PROFILE_LABEL}. It cannot be undone."
     warn "The engine prints which databases the dump will overwrite before it starts."
     gum confirm --default=false "Restore $(basename "$file") onto ${PROFILE_LABEL}?" \
         || { info "Cancelled."; return 0; }
-    engine_foreground restore --file "$file" --yes
+    engine_foreground restore --file "$file" "${dbflag[@]}" --yes
 }
 
 action_restart() {
