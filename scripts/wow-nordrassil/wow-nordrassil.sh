@@ -77,12 +77,41 @@ resolve_engine() {
 # trap is `exit 0`) would end the whole TUI, while an error or an interrupt has
 # to leave the operator back in the menu.
 GLOBAL_FLAGS=()
-engine()     { bash "$ENGINE" "${GLOBAL_FLAGS[@]}" "$@"; }
-eget()       { bash "$ENGINE" get "$1" 2>/dev/null || true; }
+
+# PROFILE_FLAGS is separate from GLOBAL_FLAGS on purpose: _submenu clears
+# GLOBAL_FLAGS before every action (it only ever holds a kube target for one
+# deploy call), and the chosen server has to survive that.
+PROFILE=""
+PROFILE_FLAGS=()
+PROFILE_LABEL="base config"
+
+_set_profile() {
+    PROFILE="$1"
+    if [[ -n "$PROFILE" ]]; then
+        PROFILE_FLAGS=(--profile "$PROFILE")
+        PROFILE_LABEL="$PROFILE"
+    else
+        PROFILE_FLAGS=()
+        PROFILE_LABEL="base config"
+    fi
+}
+
+engine()     { bash "$ENGINE" "${PROFILE_FLAGS[@]}" "${GLOBAL_FLAGS[@]}" "$@"; }
+# eget MUST carry the profile too. Without it every prompt below would
+# pre-fill from the base config while the action it then runs uses the
+# profile — the settings wizard would quietly show one server's values and
+# write them onto another.
+eget()       { bash "$ENGINE" "${PROFILE_FLAGS[@]}" get "$1" 2>/dev/null || true; }
 engine_foreground() {
     trap ':' INT
-    bash "$ENGINE" "${GLOBAL_FLAGS[@]}" "$@" || true
+    bash "$ENGINE" "${PROFILE_FLAGS[@]}" "${GLOBAL_FLAGS[@]}" "$@" || true
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
+}
+
+# _engine_profiles — profile names, one per line. The engine prints these on
+# stdout and every diagnostic on stderr, so this needs no filtering.
+_engine_profiles() {
+    bash "$ENGINE" profiles 2>/dev/null | sed -E 's/^[*[:space:]]+//' | grep -v '^$' || true
 }
 
 # -----------------------------------------------------------------------------
@@ -405,6 +434,263 @@ action_search() {
 }
 
 # -----------------------------------------------------------------------------
+# Profiles — which server everything else acts on.
+#
+# This is the first thing to get right in a front-end that can now restore a
+# database and restart a server: every destructive action below names the
+# profile in its confirmation, and the category menu shows it, because the
+# only thing worse than a mistaken restore is a mistaken restore onto the
+# wrong machine.
+# -----------------------------------------------------------------------------
+
+# Asks for the settings that say WHERE a server is. Only the questions that
+# matter for the chosen transport get asked.
+_prompt_transport_settings() {
+    local v h
+
+    v=$(_pick_value_label "Where this profile's DATABASE is reached" "$(eget DB_TRANSPORT)" "auto" \
+        "auto|auto — probe this machine (local servers only)" \
+        "docker|docker exec into a container" \
+        "podman|podman exec into a container" \
+        "kubectl|kubectl exec into a pod" \
+        "tcp|connect straight to a MariaDB port")
+    engine_foreground set DB_TRANSPORT "$v"
+
+    # Empty is a meaningful answer for the ssh hosts (it means "this
+    # machine"), so these use `if gum input` rather than the
+    # `[[ -n "$v" ]] && set` pattern used for settings that cannot be blank:
+    # that pattern cannot clear a value, and an inherited DB_SSH_HOST which
+    # cannot be cleared would send every query to the wrong host.
+    if [[ "$v" != auto && "$v" != tcp ]]; then
+        if h=$(gum input --value "$(eget DB_SSH_HOST)" \
+                 --header "ssh host the database's engine runs on (empty = this machine):"); then
+            engine_foreground set DB_SSH_HOST "$h"
+        fi
+    fi
+
+    case "$v" in
+        docker|podman)
+            if h=$(gum input --value "$(eget DB_CONTAINER_NAME)" --header "MariaDB container name:"); then
+                [[ -n "$h" ]] && engine_foreground set DB_CONTAINER_NAME "$h"
+            fi
+            ;;
+        kubectl)
+            if h=$(gum input --value "$(eget DB_POD_SELECTOR)" --header "Label selector for the MariaDB pod:"); then
+                [[ -n "$h" ]] && engine_foreground set DB_POD_SELECTOR "$h"
+            fi
+            ;;
+        tcp)
+            if h=$(gum input --value "$(eget DB_HOST)" --header "MariaDB host:"); then
+                [[ -n "$h" ]] && engine_foreground set DB_HOST "$h"
+            fi
+            if h=$(gum input --value "$(eget DB_PORT)" --header "MariaDB port:"); then
+                [[ -n "$h" ]] && engine_foreground set DB_PORT "$h"
+            fi
+            ;;
+    esac
+
+    if h=$(gum input --value "$(eget DB_USER)" --header "MariaDB user:"); then
+        [[ -n "$h" ]] && engine_foreground set DB_USER "$h"
+    fi
+    v=$(_pick_value_label "MariaDB password" "$(eget DB_PASS)" "stored" \
+        "ask|Ask once per session (never written to disk)" \
+        "root|Store it in the profile")
+    if [[ "$v" == "root" ]]; then
+        # Typed with --password so it is not echoed; it does land in the
+        # profile file, which is why 'ask' is offered first.
+        if h=$(gum input --password --header "MariaDB password (stored in the profile file):"); then
+            [[ -n "$h" ]] && engine_foreground set DB_PASS "$h"
+        fi
+    else
+        engine_foreground set DB_PASS ask
+    fi
+
+    v=$(_pick_value_label "Where this profile's SERVER (mangosd) is reached" "$(eget SERVER_TRANSPORT)" "auto" \
+        "auto|auto — probe this machine (local servers only)" \
+        "local|started by this script, natively" \
+        "docker|docker exec into a container" \
+        "podman|podman exec into a container" \
+        "kubectl|kubectl exec into a pod")
+    engine_foreground set SERVER_TRANSPORT "$v"
+
+    if [[ "$v" != auto && "$v" != local ]]; then
+        if h=$(gum input --value "$(eget SERVER_SSH_HOST)" \
+                 --header "ssh host the server's orchestrator runs on (empty = this machine):"); then
+            engine_foreground set SERVER_SSH_HOST "$h"
+        fi
+        if h=$(gum input --value "$(eget SERVER_FIFO)" \
+                 --header "mangosd's console FIFO path INSIDE the container:"); then
+            [[ -n "$h" ]] && engine_foreground set SERVER_FIFO "$h"
+        fi
+    fi
+    case "$v" in
+        docker|podman)
+            if h=$(gum input --value "$(eget SERVER_CONTAINER_NAME)" --header "Server container name:"); then
+                [[ -n "$h" ]] && engine_foreground set SERVER_CONTAINER_NAME "$h"
+            fi
+            ;;
+        kubectl)
+            if h=$(gum input --value "$(eget K8S_NAMESPACE)" --header "Kubernetes namespace:"); then
+                [[ -n "$h" ]] && engine_foreground set K8S_NAMESPACE "$h"
+            fi
+            if h=$(gum input --value "$(eget SERVER_POD_SELECTOR)" --header "Label selector for the server pod:"); then
+                [[ -n "$h" ]] && engine_foreground set SERVER_POD_SELECTOR "$h"
+            fi
+            if h=$(gum input --value "$(eget SERVER_K8S_CONTAINER)" \
+                     --header "Container in that pod (empty = let kubectl choose):"); then
+                engine_foreground set SERVER_K8S_CONTAINER "$h"
+            fi
+            ;;
+    esac
+
+    success "Transports saved for ${PROFILE_LABEL}."
+}
+
+action_profile() {
+    header "nordrassil — Choose a server"
+    local -a names=()
+    local n
+    while IFS= read -r n; do [[ -n "$n" ]] && names+=("$n"); done < <(_engine_profiles)
+
+    local pick
+    pick=$(printf '%s\n' "${names[@]}" "base config (no profile)" "new profile..." \
+           | gum choose --header "Act on which server? (current: ${PROFILE_LABEL})") || return 0
+    [[ -n "$pick" ]] || { info "Cancelled."; return 0; }
+
+    case "$pick" in
+        "base config (no profile)")
+            _set_profile ""
+            success "Now acting on the base config."
+            ;;
+        "new profile...")
+            local name
+            name=$(gum input --placeholder "meksha" --header "Name for the new profile:") || return 0
+            [[ -n "$name" ]] || { info "Cancelled."; return 0; }
+            # Validated here as well as in the engine: the engine rejects a
+            # bad name, but doing it before the wizard means the operator is
+            # told immediately rather than after a dozen prompts.
+            [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] \
+                || { warn "Invalid name '${name}' (letters, digits, then . _ -)."; return 0; }
+            _set_profile "$name"
+            info "A profile only carries what differs from the base config."
+            _prompt_transport_settings
+            ;;
+        *)
+            _set_profile "$pick"
+            success "Now acting on '${PROFILE}'."
+            ;;
+    esac
+}
+
+action_profile_transports() {
+    header "nordrassil — Transports"
+    info "Editing transports for ${PROFILE_LABEL}."
+    _prompt_transport_settings
+}
+
+action_profile_show() {
+    header "nordrassil — Settings"
+    engine_foreground config
+}
+
+action_forget() {
+    header "nordrassil — Forget password"
+    engine_foreground forget
+}
+
+# -----------------------------------------------------------------------------
+# Administration — the destructive half. Every one of these confirms, because
+# the engine deliberately does not prompt (it has to stay scriptable), so the
+# confirmation is this front-end's job.
+# -----------------------------------------------------------------------------
+
+action_apply_sql() {
+    header "nordrassil — Apply SQL"
+    local file db
+    file=$(gum input --placeholder "/path/to/change.sql" --header "SQL file to apply:") || return 0
+    [[ -n "$file" ]] || { info "Cancelled."; return 0; }
+    db=$(gum choose mangos characters realmd logs --header "Apply it to which database?") || return 0
+    [[ -n "$db" ]] || { info "Cancelled."; return 0; }
+    warn "This modifies the '${db}' database on ${PROFILE_LABEL}."
+    gum confirm --default=false "Apply $(basename "$file") to ${db} on ${PROFILE_LABEL}?" \
+        || { info "Cancelled."; return 0; }
+    engine_foreground apply-sql --file "$file" --db "$db"
+}
+
+action_dump() {
+    header "nordrassil — Dump"
+    local what
+    what=$(gum choose "All four databases" "mangos (world)" "characters" "realmd (accounts)" "logs" \
+           --header "Dump what from ${PROFILE_LABEL}?") || return 0
+    case "$what" in
+        "All four databases") engine_foreground dump --all ;;
+        "mangos (world)")     engine_foreground dump --db mangos ;;
+        characters)           engine_foreground dump --db characters ;;
+        "realmd (accounts)")  engine_foreground dump --db realmd ;;
+        logs)                 engine_foreground dump --db logs ;;
+        *) info "Cancelled." ;;
+    esac
+}
+
+action_restore() {
+    header "nordrassil — Restore"
+    # Offers what's in the engine's dump directory, newest first, because
+    # that is where 'dump' puts things; any other file can still be typed.
+    local dir="${XDG_CONFIG_HOME:-$HOME/.config}/nordrassil/dumps"
+    local -a files=()
+    local f
+    if [[ -d "$dir" ]]; then
+        while IFS= read -r f; do [[ -n "$f" ]] && files+=("$f"); done \
+            < <(ls -1t "$dir" 2>/dev/null | grep -vE '\.partial$' || true)
+    fi
+
+    local pick
+    pick=$(printf '%s\n' "${files[@]}" "another path..." \
+           | gum choose --header "Dump to restore onto ${PROFILE_LABEL} (newest first):") || return 0
+    [[ -n "$pick" ]] || { info "Cancelled."; return 0; }
+
+    local file
+    if [[ "$pick" == "another path..." ]]; then
+        file=$(gum input --placeholder "/path/to/dump.sql.gz" --header "Path to the dump:") || return 0
+    else
+        file="${dir}/${pick}"
+    fi
+    [[ -n "$file" ]] || { info "Cancelled."; return 0; }
+
+    warn "RESTORE REPLACES DATA on ${PROFILE_LABEL}. It cannot be undone."
+    warn "The engine prints which databases the dump will overwrite before it starts."
+    gum confirm --default=false "Restore $(basename "$file") onto ${PROFILE_LABEL}?" \
+        || { info "Cancelled."; return 0; }
+    engine_foreground restore --file "$file" --yes
+}
+
+action_restart() {
+    header "nordrassil — Restart"
+    local how
+    how=$(gum choose "Now (at the orchestrator)" "Graceful (warn players first)" \
+          --header "Restart ${PROFILE_LABEL} how?") || return 0
+    case "$how" in
+        "Now (at the orchestrator)")
+            warn "Players are disconnected immediately."
+            gum confirm --default=false "Restart ${PROFILE_LABEL} now?" || { info "Cancelled."; return 0; }
+            engine_foreground restart
+            ;;
+        "Graceful (warn players first)")
+            local secs
+            secs=$(gum input --value "60" \
+                   --header "Seconds before mangosd stops (players are warned and the world is saved):") || return 0
+            [[ "$secs" =~ ^[0-9]+$ ]] || { warn "'${secs}' is not a number of seconds."; return 0; }
+            info "That is how long mangosd waits, not how long the restart takes:"
+            info "it comes back when its supervisor notices it stopped."
+            gum confirm --default=false "Tell ${PROFILE_LABEL} to restart in ${secs}s?" \
+                || { info "Cancelled."; return 0; }
+            engine_foreground restart --graceful "$secs"
+            ;;
+        *) info "Cancelled." ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
 # Menus — mirror the original category layout.
 # -----------------------------------------------------------------------------
 
@@ -412,7 +698,7 @@ _submenu() {
     local title="$1"; shift
     local -a opts=("$@")
     while true; do
-        header "Vanilla WoW — ${title}"
+        header "Vanilla WoW — ${title}  [${PROFILE_LABEL}]"
         local action
         action=$(printf '%s\n' "${opts[@]}" "back" | gum choose --header "Choose an action:") || true
         [[ -z "$action" || "$action" == "back" ]] && return
@@ -433,6 +719,14 @@ _submenu() {
             delete-account)    action_delete_account || true ;;
             set-account-level) action_set_account_level || true ;;
             rename-character)  action_rename_character || true ;;
+            apply-sql)         action_apply_sql || true ;;
+            restart)           action_restart || true ;;
+            dump)              action_dump || true ;;
+            restore)           action_restore || true ;;
+            choose-server)     action_profile || true ;;
+            transports)        action_profile_transports || true ;;
+            settings)          action_profile_show || true ;;
+            forget-password)   action_forget || true ;;
         esac
         echo ""
     done
@@ -443,17 +737,27 @@ main() {
     gum style --foreground "$CYAN" --border-foreground "$CYAN" --border double \
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "nordrassil" "vanilla WoW (VMaNGOS) server — the World Tree"
+    # If any profile exists, ask up front which server this session acts on.
+    # Everything below can restore a database and restart a server, and the
+    # only thing worse than a mistaken restore is one onto the wrong machine.
+    # Declining is one keystroke; with no profiles at all, nothing is asked.
+    if [[ -n "$(_engine_profiles)" ]]; then
+        action_profile || true
+    fi
+
     while true; do
         local category
-        category=$(gum choose "Setup" "Local" "Deploy" "Accounts" "Characters" "Search" "Status" "Quit" \
-            --header "Choose a category:") || true
+        category=$(gum choose "Server" "Setup" "Local" "Deploy" "Accounts" "Characters" "Search" "Administration" "Status" "Quit" \
+            --header "Choose a category:  [acting on: ${PROFILE_LABEL}]") || true
         [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
         case "$category" in
+            Server)     _submenu "Server"     choose-server transports settings forget-password ;;
             Setup)      _submenu "Setup"      install-deps configure edit ;;
             Local)      _submenu "Local"      start stop ;;
             Deploy)     _submenu "Deploy"     build-image run-docker stop-docker run-k8s stop-k8s ;;
             Accounts)   _submenu "Accounts"   create-account list-accounts delete-account set-account-level ;;
             Characters) _submenu "Characters" rename-character ;;
+            Administration) _submenu "Administration" apply-sql restart dump restore ;;
             Search)     action_search || true ;;
             Status)     engine_foreground status ;;
         esac

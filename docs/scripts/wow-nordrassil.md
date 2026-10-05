@@ -99,11 +99,55 @@ engine itself never prompts.
 
 ## Menu
 
-Categories mirror the workflow: **Setup** (install-deps, configure, edit) ·
+Categories mirror the workflow: **Server** (choose-server, transports,
+settings, forget-password) · **Setup** (install-deps, configure, edit) ·
 **Local** (start, stop) · **Deploy** (build-image, run-docker, stop-docker,
 run-k8s, stop-k8s) · **Accounts** · **Characters** (rename) · **Search** ·
-**Status**. For a K8s action the front-end first asks for the target (current
-context / a kind cluster / a named context).
+**Administration** (apply-sql, restart, dump, restore) · **Status**. For a K8s
+action the front-end first asks for the target (current context / a kind
+cluster / a named context).
+
+## Which server (profiles)
+
+The engine can administer more than one server — a local Docker one, a remote
+k8s one — each described by a *profile*. The front-end asks which at startup
+whenever at least one profile exists, shows it in every menu header
+(`[acting on: meksha]`), and names it in every confirmation. Declining the
+startup question acts on the base config, which is what happens anyway if no
+profile exists.
+
+**Server → choose-server** switches server, or creates one. Creating runs a
+short wizard for the two things that say *where* a server is — how to reach
+its database and how to reach mangosd — asking only the questions the chosen
+transports need: an ssh host and container name for `podman`, a namespace and
+label selector for `kubectl`, a host and port for `tcp`. Nothing else has to
+be re-entered: a profile layers over the base config and carries only what
+differs.
+
+The password can be stored in the profile or set to **ask once per session**,
+which keeps it off disk entirely (**Server → forget-password** clears it).
+
+## Administration
+
+**apply-sql** runs a `.sql` file against one database — the way to apply a
+customization to a server that is already running. The engine records it by
+content hash, so re-running an unchanged file does nothing.
+
+**dump** writes gzipped SQL to `~/.config/nordrassil/dumps`; **restore** lists
+what is in there, newest first. A dump is self-describing, so restore knows
+which databases it replaces and prints them before starting. Because the
+transport comes from the profile, a dump taken from one server restores onto
+another by switching server first — which is how you move a world between
+them.
+
+**restart** either restarts at the orchestrator (immediate) or asks mangosd to
+stop after a countdown, warning players and saving the world. The countdown is
+how long mangosd waits, *not* how long the restart takes: it comes back when
+its supervisor notices it stopped.
+
+Every one of these four confirms first, defaulting to *no*, and names the
+server it is about to act on. The engine deliberately does not prompt — it has
+to stay scriptable — so confirming is this front-end's job.
 
 ## Driving the engine directly
 
@@ -115,6 +159,14 @@ nordrassil.sh configure
 nordrassil.sh build-image && nordrassil.sh run-docker --force
 nordrassil.sh --kind homelab run-k8s --namespace wow --address 192.168.1.50
 nordrassil.sh create-account --name admin --pass secret --level 6
+
+# a second server, and acting on it
+nordrassil.sh --profile meksha set DB_TRANSPORT podman
+nordrassil.sh --profile meksha set DB_SSH_HOST meksha
+nordrassil.sh --profile meksha dump --all
+nordrassil.sh --profile meksha apply-sql --file ./change.sql --db mangos
+nordrassil.sh --profile meksha restart
+
 nordrassil.sh --help
 ```
 
