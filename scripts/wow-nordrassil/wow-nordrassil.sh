@@ -84,6 +84,7 @@ GLOBAL_FLAGS=()
 PROFILE=""
 PROFILE_FLAGS=()
 PROFILE_LABEL="base config"
+MANAGED=0
 
 _set_profile() {
     PROFILE="$1"
@@ -94,6 +95,12 @@ _set_profile() {
         PROFILE_FLAGS=()
         PROFILE_LABEL="base config"
     fi
+    # Read only after PROFILE_FLAGS is set, or eget answers from the wrong
+    # layer and the menu would offer provisioning actions the engine then
+    # refuses — or worse, hide them for a profile that does own its server.
+    MANAGED="$(eget MANAGED_EXTERNALLY)"
+    [[ "$MANAGED" == "1" ]] || MANAGED=0
+    [[ "$MANAGED" == "1" ]] && PROFILE_LABEL+=" · managed elsewhere"
 }
 
 engine()     { bash "$ENGINE" "${PROFILE_FLAGS[@]}" "${GLOBAL_FLAGS[@]}" "$@"; }
@@ -457,6 +464,13 @@ action_search() {
 _prompt_transport_settings() {
     local v h
 
+    # Asked first because it frames everything after it: a server something
+    # else provisions is one this tool only administers.
+    v=$(_pick_value_label "Who provisions this server" "$(eget MANAGED_EXTERNALLY)" "this tool" \
+        "0|this tool — configure, run-docker, run-k8s" \
+        "1|something else — Ansible, GitOps, CI (administration only)")
+    engine_foreground set MANAGED_EXTERNALLY "$v"
+
     v=$(_pick_value_label "Where this profile's DATABASE is reached" "$(eget DB_TRANSPORT)" "auto" \
         "auto|auto — probe this machine (local servers only)" \
         "docker|docker exec into a container" \
@@ -589,6 +603,21 @@ action_profile() {
             success "Now acting on '${PROFILE}'."
             ;;
     esac
+}
+
+# Who provisions the server this profile points at. Offered on its own as
+# well as inside the wizard, because it is the one setting whose answer
+# changes which menus exist.
+action_profile_managed() {
+    header "nordrassil — Ownership"
+    local v
+    v=$(_pick_value_label "Who provisions ${PROFILE_LABEL}" "$(eget MANAGED_EXTERNALLY)" "this tool" \
+        "0|this tool — configure, run-docker, run-k8s" \
+        "1|something else — Ansible, GitOps, CI (administration only)")
+    engine_foreground set MANAGED_EXTERNALLY "$v"
+    # Re-read so the category list changes now rather than next launch.
+    _set_profile "$PROFILE"
+    success "Saved. Acting on: ${PROFILE_LABEL}."
 }
 
 action_profile_transports() {
@@ -733,6 +762,7 @@ _submenu() {
             dump)              action_dump || true ;;
             restore)           action_restore || true ;;
             choose-server)     action_profile || true ;;
+            ownership)         action_profile_managed || true ;;
             transports)        action_profile_transports || true ;;
             settings)          action_profile_show || true ;;
             forget-password)   action_forget || true ;;
@@ -756,11 +786,18 @@ main() {
 
     while true; do
         local category
-        category=$(gum choose "Server" "Setup" "Local" "Deploy" "Accounts" "Characters" "Search" "Administration" "Status" "Quit" \
-            --header "Choose a category:  [acting on: ${PROFILE_LABEL}]") || true
+        local -a cats=(Server Setup Local Deploy Accounts Characters Search Administration Status Quit)
+        # A profile marked MANAGED_EXTERNALLY describes a server something else
+        # provisions, so the categories that provision one are not offered.
+        # The engine refuses those commands anyway; not listing them is so the
+        # operator is never led to them — in particular 'configure', which
+        # re-runs the world import over live data.
+        [[ "$MANAGED" == "1" ]] && cats=(Server Accounts Characters Search Administration Status Quit)
+        category=$(printf '%s\n' "${cats[@]}" \
+            | gum choose --header "Choose a category:  [acting on: ${PROFILE_LABEL}]") || true
         [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
         case "$category" in
-            Server)     _submenu "Server"     choose-server transports settings forget-password ;;
+            Server)     _submenu "Server"     choose-server ownership transports settings forget-password ;;
             Setup)      _submenu "Setup"      install-deps configure edit ;;
             Local)      _submenu "Local"      start stop ;;
             Deploy)     _submenu "Deploy"     build-image run-docker stop-docker run-k8s stop-k8s ;;
