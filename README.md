@@ -99,6 +99,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`mind-trick/mind-trick.sh`](docs/scripts/mind-trick.md) | Scrub commit-message trailers (e.g. AI co-author) from git history — front-end for the standalone [mind-trick](https://github.com/malahmen/mind-trick) engine |
 | [`clone-army/clone-army.sh`](docs/scripts/clone-army.md) | Broadcast one keystroke to a group of X11/XWayland windows in unison (xbindkeys + xdotool) — generic parallel-input / multiboxing helper |
 | [`holonet-sync/holonet-sync.sh`](docs/scripts/holonet-sync.md) | Reconcile repos both ways between Gitea and GitHub — branches, tags, auto-merge, never a force-push — front-end for the standalone [holonet-sync](https://github.com/malahmen/holonet-sync) engine, which also runs unattended from cron |
+| [`astromech/astromech.sh`](docs/scripts/astromech.md) | Keep every git repo under your folders on a fresh main/master — commits feature-branch work, stashes changes on main, `pull --rebase`, never pushes — front-end for the standalone [astromech](https://github.com/malahmen/astromech) engine, which also runs from cron |
 
 ---
 
@@ -420,6 +421,8 @@ scomp-link/
     │   └── clone-army.sh             # broadcast one keystroke to a group of X11/XWayland windows (xbindkeys + xdotool)
     ├── holonet-sync/
     │   └── holonet-sync.sh           # front-end for the holonet-sync Gitea <-> GitHub reconciler engine (its own repo)
+    ├── astromech/
+    │   └── astromech.sh              # front-end for the astromech repo-maintenance engine (its own repo)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
