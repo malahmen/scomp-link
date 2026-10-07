@@ -32,6 +32,8 @@ EXCLUDED_DIRS="cluster _common _templates"
 # Special picker entry: export a script as a standalone, scomp-link-free folder.
 # (holo-convert is a normal script under scripts/ and is auto-discovered.)
 EXPORT_ENTRY="Export a script → standalone folder"
+# Special picker entry: delete script folders (trash-compactor.sh).
+TRASH_ENTRY="Trash compactor → delete scripts"
 
 _dir_excluded() {
     local dir="$1"
@@ -71,12 +73,14 @@ MENU_SEP=" — "   # separates the path/action from its description in the picke
 # so descriptions line up. A script with no description shows just its path.
 build_menu() {
     local rels="$1" r d w=${#EXPORT_ENTRY}
+    [ "${#TRASH_ENTRY}" -gt "$w" ] && w=${#TRASH_ENTRY}
     while IFS= read -r r; do
         [ -n "$r" ] && [ "${#r}" -gt "$w" ] && w=${#r}
     done <<EOF
 $rels
 EOF
     printf '%-*s%s%s\n' "$w" "$EXPORT_ENTRY" "$MENU_SEP" "Bundle any script into a standalone folder"
+    printf '%-*s%s%s\n' "$w" "$TRASH_ENTRY" "$MENU_SEP" "Delete script folders from scripts/"
     while IFS= read -r r; do
         [ -z "$r" ] && continue
         d="$(_describe "$SCRIPTS_DIR/$r")"
@@ -140,6 +144,14 @@ while true; do
     if [ "$choice" = "$EXPORT_ENTRY" ]; then
         "$BASH_BIN" "$SCRIPT_DIR/export.sh" \
             || gum style --foreground 196 "Export exited with errors (code $?)"
+        gum confirm "Run another script?" || { gum style --faint "Bye."; exit 0; }
+        continue
+    fi
+
+    # Trash action → hand off to trash-compactor.sh (interactive), then loop.
+    if [ "$choice" = "$TRASH_ENTRY" ]; then
+        "$BASH_BIN" "$SCRIPT_DIR/trash-compactor.sh" \
+            || gum style --foreground 196 "Trash compactor exited with errors (code $?)"
         gum confirm "Run another script?" || { gum style --faint "Bye."; exit 0; }
         continue
     fi
