@@ -21,6 +21,7 @@ Scomp-Link is a **framework for organizing and launching shell scripts** via an 
 - **Cross-Platform** - Supports macOS, Linux, and Windows (via WSL)
 - **Bash 4+ Handling** - Automatically finds modern bash on macOS (which ships with bash 3.2)
 - **Standalone Export** - Bundle any script into a self-contained, scomp-link-free folder (`export.sh`)
+- **Trash Compactor** - Multi-select scripts and delete their folders, confirming each one (`trash-compactor.sh`)
 
 ## Included Scripts
 
@@ -229,6 +230,24 @@ from `../_common` when run inside this repo, and falls back to helpers sitting
 by each script's [export manifest](#export-manifest). See
 [docs on exporting](docs/export.md) for the full mechanics.
 
+## Removing Scripts — trash-compactor
+
+`trash-compactor.sh` deletes scripts from `scripts/`. Each script's **whole
+folder** goes: the `.sh`, its subfolders and all its files.
+
+```bash
+./trash-compactor.sh                  # multi-select: Tab to mark, Enter to continue
+./trash-compactor.sh postgres redis   # or name the folders directly
+```
+
+Before deleting each folder, it lists the files inside and asks for
+confirmation (the default answer is *No*). The shared folders (`_common`,
+`_templates`) are never offered. You can also start it from the launcher:
+pick **“Trash compactor → delete scripts”** at the top of the `init.sh` menu.
+
+Only `scripts/` is touched. Remove the matching `docs/scripts/<name>.md` and the
+README rows by hand. Deleted tracked files can be restored with `git restore scripts/<name>`.
+
 ## Adding Your Own Scripts
 
 Create a folder under `scripts/` and drop your `.sh` file inside it:
@@ -316,6 +335,7 @@ scomp-link/
 ├── setup.sh                          # Bootstrap installer
 ├── init.sh                           # Main TUI launcher
 ├── export.sh                         # Export a script as a standalone folder
+├── trash-compactor.sh                # Delete script folders (multi-select, per-folder confirm)
 ├── wsl-setup.ps1                     # Windows WSL bootstrap
 │
 └── scripts/                          # All runnable scripts live here
