@@ -65,7 +65,7 @@ engine itself never prompts.
   in-sandbox PID in `_NET_WM_PID` — a PID-namespace artifact, not the host PID
   — and a `WM_CLASS` shared by every instance) and re-asserts its title to the instance name for
   as long as the game runs — a stable, unique handle to target (e.g. from
-  [clone-army](clone-army.md)). Requires `xdotool`.
+  [clonecast](https://github.com/malahmen/clonecast)). Requires `xdotool`.
 - **LAN realm discovery**: `discover-realm` scans the local `/24` for hosts with
   the realm port (3724 by default) open — via `nmap` if installed, a parallel
   pure-bash `/dev/tcp` sweep otherwise — and lets you pick one to prefill the
