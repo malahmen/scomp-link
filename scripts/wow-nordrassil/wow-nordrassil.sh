@@ -43,6 +43,19 @@ NORDRASSIL_REPO="${NORDRASSIL_REPO:-https://github.com/malahmen/nordrassil.git}"
 NORDRASSIL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/nordrassil"
 ENGINE=""
 
+# $NORDRASSIL_PROFILE is read by the ENGINE at its own startup, so an exported
+# one silently applied to every call made here — including the ones made after
+# picking "base config (no profile)", which passes no --profile and so left the
+# engine falling back to the environment. The menu then said "base config"
+# while the actions ran against a server.
+#
+# Taken once as this session's starting point and then cleared, so PROFILE_FLAGS
+# is the only thing that decides. Done by clearing the variable rather than by
+# passing the engine's --no-profile: the engine may be an older cached clone
+# (see resolve_engine), and a flag it does not know would break every action.
+INITIAL_PROFILE="${NORDRASSIL_PROFILE:-}"
+unset NORDRASSIL_PROFILE
+
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
 resolve_engine() {
@@ -800,6 +813,17 @@ _submenu() {
 
 main() {
     resolve_engine
+    # An exported profile is honoured as the starting server, but only if it
+    # exists — the engine refuses a profile whose file is missing, and adopting
+    # one here would label the session with a server every action then rejects.
+    if [[ -n "$INITIAL_PROFILE" ]]; then
+        if printf '%s\n' "$(_engine_profiles)" | grep -qxF "$INITIAL_PROFILE"; then
+            _set_profile "$INITIAL_PROFILE"
+            info "\$NORDRASSIL_PROFILE: starting on '${INITIAL_PROFILE}'."
+        else
+            warn "\$NORDRASSIL_PROFILE='${INITIAL_PROFILE}' is not an existing profile — starting on the base config."
+        fi
+    fi
     gum style --foreground "$CYAN" --border-foreground "$CYAN" --border double \
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "nordrassil" "vanilla WoW (VMaNGOS) server — the World Tree"
