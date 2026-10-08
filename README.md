@@ -98,7 +98,6 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`younglings-key/younglings-key.sh`](docs/scripts/younglings-key.md) | Generate certificates (self-signed/CSR/template/convert) — front-end for the standalone [younglings-key](https://github.com/malahmen/younglings-key) engine |
 | [`navicomputer/navicomputer.sh`](docs/scripts/navicomputer.md) | Manage SSH profiles in `~/.ssh/config` — front-end for the standalone [navicomputer](https://github.com/malahmen/navicomputer) engine |
 | [`mind-trick/mind-trick.sh`](docs/scripts/mind-trick.md) | Scrub commit-message trailers (e.g. AI co-author) from git history — front-end for the standalone [mind-trick](https://github.com/malahmen/mind-trick) engine |
-| [`clone-army/clone-army.sh`](docs/scripts/clone-army.md) | Broadcast one keystroke to a group of X11/XWayland windows in unison (xbindkeys + xdotool) — generic parallel-input / multiboxing helper |
 | [`holonet-sync/holonet-sync.sh`](docs/scripts/holonet-sync.md) | Reconcile repos both ways between Gitea and GitHub — branches, tags, auto-merge, never a force-push — front-end for the standalone [holonet-sync](https://github.com/malahmen/holonet-sync) engine, which also runs unattended from cron |
 | [`astromech/astromech.sh`](docs/scripts/astromech.md) | Keep every git repo under your folders on a fresh main/master — commits feature-branch work, stashes changes on main, `pull --rebase`, never pushes — front-end for the standalone [astromech](https://github.com/malahmen/astromech) engine, which also runs from cron |
 
@@ -159,7 +158,7 @@ The setup script will:
 | psql, mysql/mariadb, mongosh | DB connect on the K8s target (prompted at runtime)   |
 | go, make, ko                | karpenter local from-source build (go required; make/ko offered) |
 | lsof or ss                  | kind port-conflict check, lgtm/dozzle port checks     |
-| xbindkeys, xdotool, wmctrl  | clone-army, bazzite-utils (auto-installed via dnf/apt/rpm-ostree) |
+| xdotool, wmctrl             | bazzite-utils (auto-installed via dnf/apt/rpm-ostree)  |
 | keyd                        | bazzite-utils `lofree-edge-fix` only (COPR-layered on Fedora Atomic, `dnf`/`apt` elsewhere; requires a reboot on rpm-ostree hosts) |
 | uv, python3                 | bmad                                                  |
 | flatpak, Xvfb, systemd      | lmstudio (Linux only)                                 |
@@ -437,8 +436,6 @@ scomp-link/
     │   └── mind-trick.sh             # front-end for the mind-trick git-history-scrub engine (its own repo)
     ├── protocol-droid/
     │   └── protocol-droid.sh         # front-end for the protocol-droid doc-conversion engine (marker + markitdown backends; its own repo)
-    ├── clone-army/
-    │   └── clone-army.sh             # broadcast one keystroke to a group of X11/XWayland windows (xbindkeys + xdotool)
     ├── holonet-sync/
     │   └── holonet-sync.sh           # front-end for the holonet-sync Gitea <-> GitHub reconciler engine (its own repo)
     ├── astromech/
