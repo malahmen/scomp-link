@@ -531,15 +531,28 @@ _prompt_transport_settings() {
     v=$(_pick_value_label "MariaDB password" "$(eget DB_PASS)" "stored" \
         "ask|Ask once per session (never written to disk)" \
         "root|Store it in the profile")
-    if [[ "$v" == "root" ]]; then
-        # Typed with --password so it is not echoed; it does land in the
-        # profile file, which is why 'ask' is offered first.
-        if h=$(gum input --password --header "MariaDB password (stored in the profile file):"); then
-            [[ -n "$h" ]] && engine_foreground set DB_PASS "$h"
-        fi
-    else
-        engine_foreground set DB_PASS ask
-    fi
+    # Matched against the offered values rather than tested for "not root".
+    # _pick_value_label echoes the CURRENT value when the chooser is cancelled,
+    # so for a profile with a stored password that came back as the password
+    # itself — which is not "root", so the else branch replaced it with 'ask'.
+    # Escaping the password prompt therefore deleted the stored password.
+    case "$v" in
+        root)
+            # Typed with --password so it is not echoed; it does land in the
+            # profile file, which is why 'ask' is offered first.
+            if h=$(gum input --password --header "MariaDB password (stored in the profile file):"); then
+                [[ -n "$h" ]] && engine_foreground set DB_PASS "$h"
+            fi
+            ;;
+        ask)
+            engine_foreground set DB_PASS ask
+            ;;
+        *)
+            # Cancelled. Anything that is not one of the two offered values is
+            # the current setting coming back, so there is nothing to write.
+            info "Password setting unchanged."
+            ;;
+    esac
 
     v=$(_pick_value_label "Where this profile's SERVER (mangosd) is reached" "$(eget SERVER_TRANSPORT)" "auto" \
         "auto|auto — probe this machine (local servers only)" \
