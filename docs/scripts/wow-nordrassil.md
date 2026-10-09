@@ -124,8 +124,46 @@ label selector for `kubectl`, a host and port for `tcp`. Nothing else has to
 be re-entered: a profile layers over the base config and carries only what
 differs.
 
-The password can be stored in the profile or set to **ask once per session**,
-which keeps it off disk entirely (**Server → forget-password** clears it).
+The password can be stored in the profile or set to **ask once per session**.
+The answer is cached in `$XDG_RUNTIME_DIR` — tmpfs, mode `0600`, gone on logout
+— so it never reaches persistent storage (**Server → forget-password** clears
+it). It is also **verified against the database before being cached**, so a
+typo is rejected at the prompt rather than remembered and failing every command
+after it. A server that does not answer is a third case: the password is used
+for that run but not cached, since "no reply" is not evidence the password is
+wrong.
+
+## When a command refuses
+
+Two guards in the engine will stop a menu action, and both report why. They are
+worth knowing here because neither is a bug in the front-end.
+
+**Provisioning is local-only.** The nine commands that create or destroy a
+server — the whole *Provision* half of the menu — act on **this** machine: the
+local docker socket, the ambient kube context, conf files here. So if the
+selected profile describes a server somewhere else (an ssh host set, `tcp` to
+another host, or `kubectl` with no cluster named), running one of them would
+not deploy remotely — it would build a *second*, local server out of a remote
+server's settings. The engine refuses and names which setting made it remote.
+Administration is unaffected: it honours the transports and is meant to reach
+a remote server.
+
+**`MANAGED_EXTERNALLY=1`** marks a profile as describing a server that
+something else provisions — Ansible, a GitOps controller, a CI pipeline. The
+same nine commands are refused, by declaration this time rather than by
+inference. The dangerous one is not a deploy command: `configure` re-runs the
+world import, and against a database this tool did not bootstrap the import
+bookkeeping finds no state and lets every import run again, over live data.
+
+Before `apply-sql`, `dump` or `restore` touches anything, the engine prints
+what it is about to act on:
+
+```
+target:   meksha — podman container 'mariadb' on meksha (ssh), as root
+```
+
+Which is the answer to "am I about to do this to the right server" — and the
+reason the front-end shows the active profile in every header as well.
 
 ## Administration
 
