@@ -34,7 +34,7 @@ With no prompts, the engine can also run from cron.
 | Edit repository paths | Add paths (each followed by its ignore picker) or remove paths (multi-select; their ignores go too; nothing on disk is touched) |
 | Edit ignored folders | Pick a path (if you have several), then the multi-select, with the current ignores already ticked |
 | Fetch pruning (fetch.prune) | Show whether git prunes stale `origin/*` refs on fetch, what it does and does not prune, any repo overriding it — and toggle it |
-| Status | A tree per path: repos (relative path, `[branch]`, `*` = uncommitted changes) and ignored folders |
+| Status | A tree per path: repos (relative path, `[branch]`, `*` = uncommitted changes), the branches **Tidy merged branches** would delete, and ignored folders |
 | Quit | |
 
 The last two items only appear if the resolved engine actually has those
@@ -71,6 +71,11 @@ confirmation, and only then the deletion.
 - Branches that are the trunk, checked out, or held by another worktree are
   never listed. Repos mid-rebase, detached, or with no trunk are reported and
   left alone.
+
+**Status** lists the same branches under each repo, with a count at the end, so
+you can see what has piled up without being asked to delete anything. It comes
+from the same function tidy plans with — not a second similar-looking query —
+so the two can never disagree.
 
 *Run maintenance, then tidy* does the pull first, so a branch merged since your
 last fetch counts. Tidy on its own never touches the network, which can only
