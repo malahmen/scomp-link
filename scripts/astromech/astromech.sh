@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# description: Keep every git repo under your folders on a fresh main/master (commit/stash + pull --rebase)
+# description: Keep every git repo under your folders fresh (commit/stash + pull --rebase) and tidy merged local branches
 # Standalone export (export.sh): no extra setup deps — the engine needs only git.
 # -----------------------------------------------------------------------------
 # astromech.sh — gum front-end for the astromech engine.
@@ -15,6 +15,19 @@
 # The engine owns the config (~/.config/astromech/astromech.conf); this file
 # never reads or writes it directly, it asks the engine (`config`, `roots`,
 # `children`) so the menus always match what a run would actually do.
+#
+# Two of the engine's commands need care here:
+#
+#   tidy   deletes local branches the trunk already holds, and asks on
+#          /dev/tty before it does. That is right for cron and wrong inside
+#          gum, so this front-end uses the flags the engine has for exactly
+#          this: --dry-run to get the plan, gum to ask, then --yes.
+#   prune  toggles git's global fetch.prune. Its explanation is left to stream
+#          from the engine rather than restated here — one copy, one place to
+#          keep right.
+#
+# The engine can also be OLDER than this front-end (a stale cached clone), so
+# the menu is built from the commands the engine actually reports.
 #
 # Engine resolution order:
 #   1. $ASTROMECH_DIR/astromech.sh             (explicit override)
@@ -96,6 +109,24 @@ engine_foreground() {
 # Engine-reported state / small gum helpers
 # -----------------------------------------------------------------------------
 
+# The resolved engine can be an older clone than this front-end — the cache is
+# only updated when you say yes to the pull. Offering a menu item for a command
+# it does not have would fail with "unknown command" after the user picked it,
+# so the menu is built from what the engine reports in its own help.
+ENGINE_CMDS=""
+_engine_commands() {
+    ENGINE_CMDS=" $(engine --help 2>&1 | sed -n '/^COMMANDS/,/^FLAGS/p' \
+        | sed -nE 's/^  ([a-z-]+).*/\1/p' | tr '\n' ' ')"
+}
+_engine_has() { [[ "$ENGINE_CMDS" == *" $1 "* ]]; }
+
+# Engine logs captured to a file carry a UTC timestamp — the engine adds one
+# when its stderr is not a terminal. Strip it and surface only the lines that
+# need a person: a repository it had to skip, or a deletion git refused.
+_engine_notes() {
+    sed -nE 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z //; /\[(warn|error)\]/p' "$1"
+}
+
 _engine_state() {
     local key val
     CONFIG_PATH=""; ONBOARDED=0; N_ROOTS=0
@@ -129,6 +160,20 @@ _pick_root() {
     (( ${#roots[@]} == 1 )) && { printf '%s' "${roots[0]}"; return 0; }
     local choice
     choice=$(printf '%s\n' "${roots[@]}" | gum choose --header "$header") || return 1
+    [[ -n "$choice" ]] || return 1
+    printf '%s' "$choice"
+}
+
+# Echoes the chosen repository; returns 1 on cancel. _pick_root's sibling, over
+# `repos` (root<TAB>repo) instead of `roots`. A single repo is picked silently.
+_pick_repo() {
+    local hdr="$1" repos=() root repo choice
+    while IFS=$'\t' read -r root repo; do
+        [[ -n "$repo" ]] && repos+=("$repo")
+    done < <(engine repos 2>/dev/null)
+    (( ${#repos[@]} )) || { warn "No repositories found under the configured paths."; return 1; }
+    (( ${#repos[@]} == 1 )) && { printf '%s' "${repos[0]}"; return 0; }
+    choice=$(printf '%s\n' "${repos[@]}" | gum choose --header "$hdr") || return 1
     [[ -n "$choice" ]] || return 1
     printf '%s' "$choice"
 }
@@ -225,11 +270,25 @@ action_maintain() {
     local n; n=$(engine repos 2>/dev/null | wc -l | tr -d ' ')
     (( n )) || { warn "No repositories found under the configured paths."; return 0; }
 
+    local items=("Run maintenance")
+    _engine_has tidy && items+=("Run maintenance, then tidy merged branches")
+    items+=("Dry run (show what would happen)" "← back")
+
     local choice
-    choice=$(gum choose "Run maintenance" "Dry run (show what would happen)" "← back" \
-        --header "${n} repositories found:") || return 0
+    choice=$(gum choose "${items[@]}" --header "${n} repositories found:") || return 0
     case "$choice" in
         "Dry run"*) engine_foreground maintain --dry-run ;;
+        "Run maintenance, then tidy"*)
+            gum style --faint \
+                "Maintenance as below, and then — in each repo whose pull succeeded — every" \
+                "local branch the trunk on origin already holds is deleted with git branch -d." \
+                "The pull comes first, so a branch merged since your last fetch counts."
+            _ask "Maintain ${n} repositories and delete their merged local branches?" \
+                || { info "Cancelled."; return 0; }
+            # --yes because gum has already asked: without it the engine would
+            # put its own question on /dev/tty, which it can open from here.
+            engine_foreground maintain --tidy --yes
+            ;;
         "Run maintenance")
             gum style --faint \
                 "Feature branches: all changes committed (wip), then switched to main/master." \
@@ -238,6 +297,78 @@ action_maintain() {
             engine_foreground maintain
             ;;
         *) return 0 ;;
+    esac
+}
+
+# The engine's own confirmation is a /dev/tty prompt — right for cron, wrong
+# inside gum. So this does what the engine's flags exist for: --dry-run for the
+# plan, gum for the answer, --yes to act. The plan is shown VERBATIM: it is the
+# engine's, and re-rendering it here is how the two drift apart.
+action_tidy() {
+    header "Astromech — Tidy merged branches"
+    _engine_state
+    (( N_ROOTS )) || { warn "No repository paths configured yet."; return 0; }
+
+    local scope=() repo
+    case "$(gum choose "Every repository" "One repository" "← back" \
+            --header "Delete local branches the trunk already holds:" || true)" in
+        "One repository")
+            repo="$(_pick_repo "Tidy which repository?")" || return 0
+            scope=(--repo "$repo") ;;
+        "Every repository") ;;
+        *) return 0 ;;
+    esac
+
+    local tmp plan notes
+    tmp="$(mktemp)" || { warn "Could not create a temporary file."; return 0; }
+    plan="$(engine tidy --dry-run "${scope[@]}" 2>"$tmp")" || true
+    notes="$(_engine_notes "$tmp")"; rm -f "$tmp"
+    [[ -n "$notes" ]] && printf '%s\n' "$notes"
+    if [[ -z "$plan" ]]; then
+        info "Nothing to tidy — no local branch is already contained in its trunk."
+        return 0
+    fi
+    printf '%s\n' "$plan"
+    gum style --faint \
+        "\"Merged\" means contained in the trunk ON ORIGIN, as of the last fetch — not the" \
+        "local one, which can be behind or hold a merge nobody else has." \
+        "Deletion is git branch -d, never -D: one git calls unmerged is reported, not forced."
+    _ask "Delete the branch(es) listed above?" || { info "Cancelled — nothing deleted."; return 0; }
+    # The plan was just shown. The engine prints it again on stdout before
+    # deleting, so only its log (stderr) is new here — hence the redirect, not
+    # a second copy of a list the user has already read.
+    engine_foreground tidy --yes "${scope[@]}" >/dev/null
+}
+
+# fetch.prune is the setting people mean when they ask whether git can do
+# tidy's job. The engine's explanation streams straight to the terminal rather
+# than being captured and restated here: one copy, one place to keep right.
+action_prune() {
+    header "Astromech — Fetch pruning"
+    local out val="unset" k v orepo okey oval
+    out="$(engine prune)" || true
+    while IFS='=' read -r k v; do
+        case "$k" in
+            fetch.prune) val="$v" ;;
+            override)
+                IFS=$'\t' read -r orepo okey oval <<<"$v"
+                gum style --foreground "$YELLOW" "  ${orepo/#$HOME/\~} overrides it: ${okey}=${oval}" ;;
+        esac
+    done <<<"$out"
+
+    local on=0 choice
+    case "${val,,}" in true|yes|on|1) on=1 ;; esac
+    if (( on )); then
+        choice=$(gum choose "Turn pruning off" "← back" --header "fetch.prune is on (${val})." || true)
+    else
+        choice=$(gum choose "Turn pruning on" "← back" --header "fetch.prune is ${val} — nothing is pruned." || true)
+    fi
+    # stdout is the key=value report, which the show pass above has already
+    # rendered; what is new is the engine's transition line and the way back,
+    # and those are on stderr.
+    case "$choice" in
+        "Turn pruning on")  engine prune on  >/dev/null || warn "Could not change fetch.prune." ;;
+        "Turn pruning off") engine prune off >/dev/null || warn "Could not change fetch.prune." ;;
     esac
 }
 
@@ -270,19 +401,26 @@ first_run() {
 # -----------------------------------------------------------------------------
 main() {
     resolve_engine
+    _engine_commands
     gum style --foreground "$CYAN" --border-foreground "$CYAN" --border double \
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "Astromech" "Routine maintenance for your git repos"
     first_run
     while true; do
         _engine_state
-        case "$(gum choose "Trigger maintenance" "Edit repository paths" "Edit ignored folders" \
-                "Status" "Quit" --header "What would you like to do?" || true)" in
-            "Trigger maintenance")   action_maintain ;;
-            "Edit repository paths") action_edit_paths ;;
-            "Edit ignored folders")  action_edit_ignores ;;
-            "Status")                action_status ;;
-            "Quit"|"")               gum style --faint "Bye."; exit 0 ;;
+        local items=("Trigger maintenance")
+        _engine_has tidy  && items+=("Tidy merged branches")
+        items+=("Edit repository paths" "Edit ignored folders")
+        _engine_has prune && items+=("Fetch pruning (fetch.prune)")
+        items+=("Status" "Quit")
+        case "$(gum choose "${items[@]}" --header "What would you like to do?" || true)" in
+            "Trigger maintenance")      action_maintain ;;
+            "Tidy merged branches")     action_tidy ;;
+            "Edit repository paths")    action_edit_paths ;;
+            "Edit ignored folders")     action_edit_ignores ;;
+            "Fetch pruning"*)           action_prune ;;
+            "Status")                   action_status ;;
+            "Quit"|"")                  gum style --faint "Bye."; exit 0 ;;
         esac
         echo ""
     done
