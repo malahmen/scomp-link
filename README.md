@@ -99,7 +99,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`navicomputer/navicomputer.sh`](docs/scripts/navicomputer.md) | Manage SSH profiles in `~/.ssh/config` — front-end for the standalone [navicomputer](https://github.com/malahmen/navicomputer) engine |
 | [`mind-trick/mind-trick.sh`](docs/scripts/mind-trick.md) | Scrub commit-message trailers (e.g. AI co-author) from git history — front-end for the standalone [mind-trick](https://github.com/malahmen/mind-trick) engine |
 | [`holonet-sync/holonet-sync.sh`](docs/scripts/holonet-sync.md) | Reconcile repos both ways between Gitea and GitHub — branches, tags, auto-merge, never a force-push — front-end for the standalone [holonet-sync](https://github.com/malahmen/holonet-sync) engine, which also runs unattended from cron |
-| [`astromech/astromech.sh`](docs/scripts/astromech.md) | Keep every git repo under your folders on a fresh main/master — commits feature-branch work, stashes changes on main, `pull --rebase`, never pushes — front-end for the standalone [astromech](https://github.com/malahmen/astromech) engine, which also runs from cron |
+| [`astromech/astromech.sh`](docs/scripts/astromech.md) | Keep every git repo under your folders on a fresh main/master — commits feature-branch work, stashes changes on main, `pull --rebase`, never pushes — plus tidying local branches the trunk already holds (`git branch -d`, after showing you the list) and a toggle for git's `fetch.prune`; front-end for the standalone [astromech](https://github.com/malahmen/astromech) engine, which also runs from cron |
 
 ---
 
@@ -337,6 +337,11 @@ scomp-link/
 ├── trash-compactor.sh                # Delete script folders (multi-select, per-folder confirm)
 ├── wsl-setup.ps1                     # Windows WSL bootstrap
 │
+├── tests/                            # Front-end tests, driven through a gum stub
+│   ├── run-all.sh                    # runs every tests/test-*.sh
+│   ├── stubs/gum                     # scripted answers instead of a terminal
+│   └── test-astromech.sh             # the astromech front-end
+│
 └── scripts/                          # All runnable scripts live here
     │
     ├── _common/                       # [Shared] Sourced by app scripts, not run directly
@@ -561,10 +566,30 @@ Scomp-Link is evolving into a comprehensive shell scripting framework:
 
 - Use `set -euo pipefail` at the start of scripts
 - Follow existing patterns for error handling and user interaction
+- A front-end whose behaviour is worth protecting gets a `tests/test-<name>.sh` (see below)
 - Use gum for all user prompts and selections
 - Add new scripts under `scripts/<folder>/` (auto-discovered by `init.sh`)
 - Source `scripts/_common/cluster.sh` for deployment target selection (`select_target`)
 - Source `scripts/_common/ui.sh` for consistent gum-based display helpers
+
+### Tests
+
+```bash
+tests/run-all.sh
+```
+
+A front-end is driven through `tests/stubs/gum`, which answers `choose`,
+`confirm` and `input` from a scripted list instead of a terminal, and echoes
+the options and headers it was given — so a test can assert on which items a
+menu actually offers. No network and no terminal: `file://` remotes only.
+
+What these tests are mostly for is the seam between a front-end and its
+engine. The astromech one, for example, asks with gum and then tells the engine
+the answer with `--yes`; if that pairing breaks, the engine falls back to its
+own `/dev/tty` prompt — which it *can* open from inside the TUI — and you get
+asked twice, or `--yes` is sent with nobody having been asked at all. The test
+asserts on the flags the engine was actually invoked with, via a recording
+wrapper, rather than on what appeared on screen.
 
 ### Contributing Scripts
 

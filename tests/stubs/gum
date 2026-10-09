@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# A gum stub for the front-end tests: scripted answers instead of a terminal.
+#
+# Answers come from $GUM_ANSWERS, one per line, popped in order by a counter in
+# $GUM_STATE. `choose` and `input` print the next answer; `confirm` reads it as
+# yes/no/esc. Everything that only draws is echoed to stderr, so a transcript
+# shows what the user would have seen.
+set -uo pipefail
+
+_pop() {
+    local i line
+    i="$(cat "$GUM_STATE" 2>/dev/null || echo 0)"
+    line="$(sed -n "$((i + 1))p" "$GUM_ANSWERS" 2>/dev/null)"
+    echo $((i + 1)) > "$GUM_STATE"
+    printf '%s' "$line"
+}
+
+cmd="${1:-}"; shift 2>/dev/null || true
+case "$cmd" in
+    choose)
+        # Deliberately does NOT read stdin. Real gum reads a list from stdin
+        # only when given no list arguments, and a blind drain here consumes
+        # the test harness's own stdin and hangs the run — the same trap as a
+        # `docker exec -i` in a stub. A piped writer simply gets EPIPE.
+        #
+        # The offered items and the header ARE echoed, because real gum puts
+        # them on the screen and a test about which items a menu offers has
+        # nothing to assert on otherwise. Without this, "an item is NOT
+        # offered" passed for every item, offered or not.
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --header|--selected|--limit|--height)
+                    [[ "$1" == --header ]] && printf '<header> %s\n' "${2:-}" >&2
+                    shift 2 || shift ;;
+                --*) shift ;;
+                *)   printf '<option> %s\n' "$1" >&2; shift ;;
+            esac
+        done
+        a="$(_pop)"; printf '<choose> %s\n' "$a" >&2; printf '%s\n' "$a" ;;
+    confirm)
+        a="$(_pop)"; printf '<confirm> %s -> %s\n' "$*" "$a" >&2
+        case "$a" in
+            yes) exit 0 ;;
+            esc) exit 130 ;;   # what gum returns on Esc/Ctrl-C, which _ask reads as "cancelled"
+            *)   exit 1 ;;
+        esac ;;
+    input)
+        a="$(_pop)"; printf '<input> %s\n' "$a" >&2; printf '%s\n' "$a" ;;
+    style)
+        # Drop flags and the values of the ones that take a value, so the
+        # transcript carries the text and not the palette.
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --foreground|--background|--border|--border-foreground|--align|--width|--height|--margin|--padding)
+                    shift 2 || shift ;;
+                --*) shift ;;
+                *)   printf '    %s\n' "$1" >&2; shift ;;
+            esac
+        done ;;
+    log)  printf '[info] %s\n' "${*: -1}" >&2 ;;
+    spin) while [[ $# -gt 0 && "$1" != "--" ]]; do shift; done; shift 2>/dev/null || true; "$@" ;;
+    *)    : ;;
+esac
+exit 0
