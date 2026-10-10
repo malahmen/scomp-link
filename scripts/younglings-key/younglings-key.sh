@@ -177,12 +177,33 @@ gather_subject_source() {  # $1 domain
 # -----------------------------------------------------------------------------
 # Modes
 # -----------------------------------------------------------------------------
+# The CA key passphrase, for -E. Asked as a path, never as a value: the engine
+# has no flag that takes a passphrase, because argv is readable by every
+# process on the machine for as long as openssl runs. Appends -p, or returns
+# non-zero when the user gave nothing.
+prompt_ca_passphrase_file() {
+    local f
+    f=$(_clean_input "$(gum input --header "File holding the CA key passphrase:" \
+        --placeholder "$HOME/.config/younglings-key/ca.pass" || true)")
+    [[ -z "$f" ]] && return 1
+    [[ "$f" == "~"* ]] && f="${f/#\~/$HOME}"
+    FLAGS+=(-p "$f")
+    printf '%s' "$f"
+}
+
 mode_self_signed() {
     local domain; domain=$(prompt_domain) || return
     local numbits; numbits=$(pick_numbits)
-    local duration; duration=$(_clean_input "$(gum input --value "3650" --header "Validity in days (1-3650):" || true)")
-    duration="${duration:-3650}"
-    FLAGS=(-d "$domain" -s 1 -n "$numbits" -t "$duration")
+    # 398, matching the engine. The TUI used to offer 3650 here, which was the
+    # engine's default for both certificates at the time; now -t is the LEAF
+    # only, and Apple platforms refuse any leaf issued after 2019-07-01 with a
+    # lifetime over 825 days whatever root signed it. Offering 3650 would have
+    # quietly kept producing certificates macOS and iOS will not accept.
+    local duration; duration=$(_clean_input "$(gum input --value "398" --header "LEAF validity in days (1-3650; over 825 is refused by Apple platforms):" || true)")
+    duration="${duration:-398}"
+    local ca_duration; ca_duration=$(_clean_input "$(gum input --value "3650" --header "CA validity in days (1-7300; a root is long-lived on purpose):" || true)")
+    ca_duration="${ca_duration:-3650}"
+    FLAGS=(-d "$domain" -s 1 -n "$numbits" -t "$duration" -c "$ca_duration")
     # Asked, not defaulted: these runs write a private key.
     prompt_output_dir >/dev/null || { info "Cancelled."; return; }
     gather_subject_source "$domain" || { info "Cancelled."; return; }
@@ -190,6 +211,37 @@ mode_self_signed() {
     ca=$(_clean_input "$(gum input --header "CA subject (blank = engine default):" \
         --placeholder "/C=PT/O=Acme/CN=Acme Root CA" || true)")
     [[ -n "$ca" ]] && FLAGS+=(-a "$ca")
+    # -E only affects a CA being CREATED, so the question is asked here and not
+    # as a separate menu entry. The engine refuses -E with no passphrase source
+    # rather than falling back to an unencrypted key, so a cancelled prompt
+    # means dropping -E, not running something that half-applies it.
+    if gum confirm "Encrypt the CA private key (AES-256)?" --default=false; then
+        if prompt_ca_passphrase_file >/dev/null; then
+            FLAGS+=(-E)
+            info "The passphrase is only worth having if that file lives somewhere the CA key does not."
+        else
+            warn "No passphrase file given — leaving the CA key unencrypted."
+        fi
+    fi
+    run_engine
+}
+
+# -R: move an existing CA key into the engine's 0700 ca-private/ directory.
+#
+# Its own menu entry because it touches a CA that already exists and issues
+# nothing: the engine deliberately will not move somebody's CA key as a side
+# effect of a certificate run, since a CA that regenerated itself because the
+# key "went missing" would invalidate everything already trusted.
+mode_protect_ca() {
+    local d
+    d=$(_clean_input "$(gum input --header "Directory holding the CA (ca.crt + ca.key):" \
+        --value "$HOME/.local/share/kuat-pki" || true)")
+    [[ -z "$d" ]] && { info "Cancelled."; return; }
+    [[ "$d" == "~"* ]] && d="${d/#\~/$HOME}"
+    info "This MOVES ca.key into ${d}/ca-private/ (mode 0700). ca.crt stays where it is,"
+    info "so anything reading it by path — kuat's lan_tls role, for one — keeps working."
+    gum confirm "Move the CA key?" || { info "Cancelled."; return; }
+    FLAGS=(-R -o "$d")
     run_engine
 }
 
@@ -311,6 +363,7 @@ main() {
             "Convert .crt → .cert/.pem" \
             "Certificate request (CSR)" \
             "Install a certificate (trust store)" \
+            "Protect an existing CA key (move to 0700)" \
             "Quit" \
             --header "Certificate task (listed in a typical order):") || exit 0
         case "$action" in
@@ -319,6 +372,7 @@ main() {
             "Convert .crt → .cert/.pem") mode_convert ;;
             "Certificate request (CSR)") mode_csr ;;
             "Install a certificate (trust store)") mode_install ;;
+            "Protect an existing CA key (move to 0700)") mode_protect_ca ;;
             "Quit"|"")                   exit 0 ;;
         esac
     done

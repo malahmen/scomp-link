@@ -69,7 +69,7 @@ The top level has three entries:
   | Upgrade | Upgrade | `setup --upgrade` |
   | Status | Status | Version, CLI-on-`PATH`, backend specifics (marker: torch device, OCR backend, caches; markitdown: ffmpeg, Doc Intelligence, plugins) |
   | Launch GUI / API server | — | marker's `marker_gui` / `marker_server` |
-  | Clear model cache | — | Deletes `~/.cache/datalab` |
+  | Clear model cache | — | Deletes surya's model cache (the resolved path, which `MODEL_CACHE_DIR`/`XDG_CACHE_HOME` can move) |
   | — | Install a plugin | `pipx inject` a `#markitdown-plugin` package |
   | Uninstall | Uninstall | Remove that backend's pipx env |
 
@@ -247,6 +247,14 @@ plus the `surya-2` GGUFs for the llama.cpp OCR backend) into
   shows the mode the next conversion will use.
 - **Air-gapped**: pre-populate `~/.cache/huggingface` (and `~/.cache/datalab`) on
   a connected machine, copy them over, and marker runs fully offline.
+- **`HF_HUB_OFFLINE` does not cover everything.** Surya's OCR models come from
+  `models.datalab.to` over plain HTTP, not from the Hub, into
+  `MODEL_CACHE_DIR` (default `<platform cache>/datalab/models`). So that is a
+  second cache to copy, and a second path to point somewhere durable —
+  `XDG_CACHE_HOME` moves it, `MODEL_CACHE_DIR` overrides it outright. The
+  engine's **Status** prints both resolved paths, including when they do not
+  exist yet, and **Clear model cache** names the directory it is about to
+  delete.
 
 ## The markitdown backend
 
@@ -264,7 +272,15 @@ enough" Markdown fast. For heavy PDF/OCR work, use the marker backend.
 - **Audio (mp3)** transcription also needs **ffmpeg** on your system — install it
   separately (`brew`/`apt`/`dnf install ffmpeg`). Status reports whether it's found.
 - **Output** — one `<stem>.md` per input file (markitdown has no native batch
-  mode, so folders are converted by looping; same-named files are de-duplicated).
+  mode, so folders are converted by looping), plus a
+  `<stem>.md.provenance.json` sidecar beside each. The sidecar is named after
+  its output because every input of a run lands in the *same* folder: a single
+  `provenance.json` there would be overwritten by the next document, leaving
+  one sidecar for the whole batch.
+- **Re-running overwrites.** It used to write `doc_2.md` beside `doc.md`, so an
+  ingestion pipeline indexed the same document twice with nothing to say which
+  copy was current. The front-end therefore asks about *keeping* the old output
+  (`--no-clobber`), not about replacing it, and defaults to no.
 - **Options** — **Use plugins** (`--use-plugins`, enable installed third-party
   `#markitdown-plugin` packages) and **Azure Document Intelligence** (`-d`, with
   the endpoint from `MARKITDOWN_DOCINTEL_ENDPOINT` or prompted `-e`).
@@ -274,6 +290,29 @@ enough" Markdown fast. For heavy PDF/OCR work, use the marker backend.
 > LLM-generated **image descriptions** are only in markitdown's *Python API*, not
 > its CLI, so the TUI doesn't offer them for this backend — use the marker
 > backend's `--use_llm` for LLM-assisted conversion.
+
+## What a conversion reports
+
+**Convert** now prints a verdict line from the engine's exit code, because the
+engine distinguishes four outcomes and the TUI used to show all four the same
+way — whatever scrolled past:
+
+| Code | Verdict shown |
+| ---: | --- |
+| `0` | Everything converted. |
+| `1` | Something failed — nothing was retried. |
+| `2` | A path you named does not exist; nothing was attempted for it. |
+| `3` | Nothing to convert: no file here is one this backend handles. |
+
+`2` and `3` used to be `0`, so a typo in a path and an empty folder both looked
+like a successful run.
+
+Every conversion also writes a **provenance sidecar** next to its output —
+source path and sha256, timings, the versions that ran, the options used, with
+credentials redacted. marker gets one `provenance.json` per document folder;
+markitdown gets one per `.md` (see above). `PROTOCOL_DROID_NO_PROVENANCE=1`
+turns it off. The point is re-conversion: knowing which documents a marker bump
+actually invalidates, instead of re-running the corpus.
 
 ## Driving the engine directly
 
@@ -288,6 +327,7 @@ protocol-droid.sh local convert ./docs --workers 4 -- --force_ocr
 # markitdown
 protocol-droid.sh local setup   --backend markitdown --extras pdf,docx,audio-transcription
 protocol-droid.sh local convert --backend markitdown talk.mp3
+protocol-droid.sh local convert --backend markitdown --no-clobber ./docs
 protocol-droid.sh local convert --backend markitdown scan.pdf -- -d -e "$ENDPOINT"
 
 # auto-route a mixed folder, and the service
@@ -302,6 +342,8 @@ flag reference.
 ## Notes
 
 - Default output directory is `./converted`.
+- An interrupt or an error returns to the menu; the verdict line above is
+  printed either way.
 - (marker) Set `TORCH_DEVICE` (e.g. `cuda`, `mps`, `cpu`) to override the detected
   device. Model caches live under `~/.cache/datalab` (and `~/.cache/huggingface`);
   **Status** reports their sizes and **Clear model cache** clears the datalab cache.
