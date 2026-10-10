@@ -150,6 +150,7 @@ _apply_component_flags() {
 # -----------------------------------------------------------------------------
 
 _apply_custom_config() {
+    # shellcheck disable=SC2178  # -n declares a nameref; shellcheck reads it as a plain string assignment
     local -n _arr="$1"
 
     if ! gum confirm "Use a custom prometheus.yml config file?"; then

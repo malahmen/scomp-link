@@ -715,6 +715,9 @@ action_restore() {
     local -a files=()
     local f
     if [[ -d "$dir" ]]; then
+        # shellcheck disable=SC2010
+        # -1t orders by mtime, which no glob can do, and newest-first is the
+        # point of the list. These are this tool's own timestamped dump names.
         while IFS= read -r f; do [[ -n "$f" ]] && files+=("$f"); done \
             < <(ls -1t "$dir" 2>/dev/null | grep -vE '\.partial$' || true)
     fi

@@ -499,7 +499,7 @@ create_build_config() {
     local safe_desc="${SITE_DESCRIPTION//\'/\\\'}"
 
     # Build optional mermaid blocks
-    local mermaid_import="" mermaid_remark="" mermaid_head="" mermaid_markdown=""
+    local mermaid_remark="" mermaid_head="" mermaid_markdown=""
 
     if [[ "$ENABLE_MERMAID" == "true" ]]; then
         mermaid_remark='

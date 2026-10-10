@@ -10,6 +10,9 @@
 # in hex, so it's converted here to keep every caller's ids comparable.
 _list_open_windows() {
     local id desktop host title class
+    # shellcheck disable=SC2034
+    # desktop and host are read only to consume their columns in `wmctrl -l`
+    # output; dropping them would shift the rest of the line into $title.
     while read -r id desktop host title; do
         [[ -z "$id" ]] && continue
         class="$(xdotool getwindowclassname "$id" 2>/dev/null)" || class=""

@@ -173,6 +173,9 @@ ensure_mise_activation() {
     # line itself, since a profile written by an older version of this
     # function may have the activation line without this.
     if grep -qF '$HOME/.local/bin:$PATH' "$profile_file" 2>/dev/null; then
+        # shellcheck disable=SC2088
+        # A message for a person to read, not a path this script uses. The line
+        # actually written below is "$HOME/.local/bin", unexpanded on purpose.
         ok "~/.local/bin already on PATH in ${profile_file}."
     else
         printf '\n# mise lives here (added by scomp-link setup.sh)\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$profile_file"

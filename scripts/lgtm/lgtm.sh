@@ -230,14 +230,25 @@ declare -A MINIMAL_REPLICAS=([grafana]=1 [loki]=1 [tempo]=1 [mimir]=1 [otelcol]=
 declare -A MINIMAL_PVC=([grafana]="1Gi" [loki]="5Gi" [tempo]="5Gi" [mimir]="10Gi" [otelcol]="1Gi")
 declare -A MINIMAL_RETENTION=([loki]="24h" [tempo]="24h" [mimir]="24h")
 
-# Standard (real k8s cluster)
-declare -A STANDARD_CPU_REQ=([grafana]="100m"  [loki]="100m"  [tempo]="100m"  [mimir]="250m"  [otelcol]="100m")
-declare -A STANDARD_CPU_LIM=([grafana]="500m"  [loki]="500m"  [tempo]="500m"  [mimir]="2000m" [otelcol]="500m")
-declare -A STANDARD_MEM_REQ=([grafana]="128Mi" [loki]="128Mi" [tempo]="128Mi" [mimir]="512Mi" [otelcol]="128Mi")
-declare -A STANDARD_MEM_LIM=([grafana]="512Mi" [loki]="512Mi" [tempo]="512Mi" [mimir]="4Gi"   [otelcol]="512Mi")
-declare -A STANDARD_REPLICAS=([grafana]=1 [loki]=1 [tempo]=1 [mimir]=2 [otelcol]=1)
-declare -A STANDARD_PVC=([grafana]="5Gi" [loki]="20Gi" [tempo]="20Gi" [mimir]="50Gi" [otelcol]="2Gi")
-declare -A STANDARD_RETENTION=([loki]="168h" [tempo]="168h" [mimir]="168h")
+# Standard (real k8s cluster).
+#
+# shellcheck disable=SC2034
+# Read indirectly: _apply_profile builds the name from $src
+# (eval "PROF_CPU_REQ[$c]=\${${src}_CPU_REQ[$c]}"), so no literal STANDARD_*
+# reference exists for shellcheck to find. The MINIMAL_ set escapes the same
+# warning only because "MINIMAL" happens to appear as src's initial value.
+#
+# One `declare -A` rather than seven, because a disable covers only the next
+# COMMAND: as separate statements it would silence the first array and leave
+# the other six reported.
+declare -A \
+    STANDARD_CPU_REQ=([grafana]="100m"  [loki]="100m"  [tempo]="100m"  [mimir]="250m"  [otelcol]="100m") \
+    STANDARD_CPU_LIM=([grafana]="500m"  [loki]="500m"  [tempo]="500m"  [mimir]="2000m" [otelcol]="500m") \
+    STANDARD_MEM_REQ=([grafana]="128Mi" [loki]="128Mi" [tempo]="128Mi" [mimir]="512Mi" [otelcol]="128Mi") \
+    STANDARD_MEM_LIM=([grafana]="512Mi" [loki]="512Mi" [tempo]="512Mi" [mimir]="4Gi"   [otelcol]="512Mi") \
+    STANDARD_REPLICAS=([grafana]=1 [loki]=1 [tempo]=1 [mimir]=2 [otelcol]=1) \
+    STANDARD_PVC=([grafana]="5Gi" [loki]="20Gi" [tempo]="20Gi" [mimir]="50Gi" [otelcol]="2Gi") \
+    STANDARD_RETENTION=([loki]="168h" [tempo]="168h" [mimir]="168h")
 
 # Active profile values (populated by _apply_profile or _custom_profile)
 declare -A PROF_CPU_REQ PROF_CPU_LIM PROF_MEM_REQ PROF_MEM_LIM

@@ -100,10 +100,10 @@ load_akinn_defs() {
     # These come from another repo's files; under `set -u` the first reference to
     # any renamed/removed one would abort with a cryptic "unbound variable", so
     # fail early with a clear message if akinn's layout has drifted.
-    : "${K_RELEASES:?akinn's constants.sh no longer defines K_RELEASES — update this front-end to match akinn}"
-    : "${CRDS_RELEASES:?akinn's constants.sh no longer defines CRDS_RELEASES — update this front-end to match akinn}"
-    : "${re_kver:?akinn's regex.sh no longer defines re_kver — update this front-end to match akinn}"
-    : "${re_crds_ver:?akinn's regex.sh no longer defines re_crds_ver — update this front-end to match akinn}"
+    : "${K_RELEASES:?akinn no longer defines K_RELEASES in constants.sh — update this front-end to match it}"
+    : "${CRDS_RELEASES:?akinn no longer defines CRDS_RELEASES in constants.sh — update this front-end to match it}"
+    : "${re_kver:?akinn no longer defines re_kver in regex.sh — update this front-end to match it}"
+    : "${re_crds_ver:?akinn no longer defines re_crds_ver in regex.sh — update this front-end to match it}"
 }
 
 # -----------------------------------------------------------------------------

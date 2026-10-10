@@ -319,6 +319,8 @@ action_delete() {
 action_list() {
     header "Managed BMAD projects"
     local any=0 path name created updated ex tag
+    # shellcheck disable=SC2034
+    # created is read to consume its column; only updated is displayed.
     while IFS=$'\t' read -r path name created updated ex; do
         [[ -z "$path" ]] && continue
         any=1
