@@ -603,7 +603,7 @@ Have a useful script? Contributions are welcome! Good candidates:
 
 ## License
 
-[Add your license here]
+[MIT](LICENSE) © 2026 malahmen.
 
 ## Acknowledgments
 
