@@ -38,7 +38,7 @@ picked up unchanged.
 | Action | What it does |
 | ------ | ------------ |
 | **add** | Create a profile; generate a new key (ed25519/rsa) or point at an existing one; optional extra options; shows the public key + offers to copy/test |
-| **import** | Adopt hosts you added to `~/.ssh/config` by hand (optionally remove the originals) |
+| **import** | Adopt hosts you added to `~/.ssh/config` by hand (optionally remove the originals) — see below |
 | **list** | Show all managed profiles |
 | **view** | Show one profile and its public key |
 | **edit** | Change a profile's HostName/User/Port/Key/options |
@@ -48,6 +48,25 @@ picked up unchanged.
 
 The **profile name is the Host alias** — the thing you type after `ssh`. To
 rename, remove and re-add.
+
+### What import carries, and what removing an original deletes
+
+`HostName`, `User` and `Port` come from `ssh -G`, so defaults from a `Host *`
+block are folded in. The **first `IdentityFile`** is read from the host's own
+block instead, and a host whose block sets none is imported **with no key** —
+`ssh -G` cannot answer that question, since asked about a host with no
+`IdentityFile` it replies with the whole built-in default list headed by
+`~/.ssh/id_rsa`. Everything else is reported in a warning and left behind.
+
+Both lookups resolve against the file navicomputer manages, so `SSH_DIR` is
+honoured.
+
+With **remove the original**, the block deleted runs from its `Host` line to
+the next `Host`, `Match` or `Include` — all three, since `ssh_config` lets any
+of them end a block. The alias is matched against *every* name on the `Host`
+line, so `Host prod web` goes whether you import `prod` or `web`. If anything
+would be lost the whole import is refused before the file is touched, and the
+TUI offers the forced variant separately.
 
 ## Driving the engine directly
 

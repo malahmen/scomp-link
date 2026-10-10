@@ -81,6 +81,28 @@ engine_foreground() {
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 }
 
+# engine_convert — engine_foreground, plus a verdict line from the exit code.
+#
+# The engine distinguishes four outcomes now (0 converted, 1 failed, 2 a named
+# input is missing, 3 nothing to convert) and engine_foreground throws the
+# status away by design, so the TUI reported all four the same way: whatever
+# scrolled past. The status still must not reach `set -e`, which is why this
+# captures it rather than letting it propagate.
+engine_convert() {
+    local rc=0
+    trap ':' INT
+    bash "$ENGINE" "$@" || rc=$?
+    trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
+    case "$rc" in
+        0) success "Everything converted." ;;
+        1) warn "Something failed — see the lines above. Nothing was retried." ;;
+        2) warn "A path you named does not exist; nothing was attempted for it." ;;
+        3) info "Nothing to convert: no file here is one this backend handles." ;;
+        *) warn "The engine exited ${rc}." ;;
+    esac
+    return 0
+}
+
 # -----------------------------------------------------------------------------
 # Source selection (shared by every backend). Fills PICKED_PATHS[].
 # Scans with markitdown's (superset) extension list so 'auto' sees everything.
@@ -172,6 +194,9 @@ build_llm_args() {
 }
 
 EXTRA_ARGS=(); OUTPUT_FORMAT=""; OUTPUT_DIR=""
+# Declared here and not only inside select_markitdown_options: marker's path
+# never sets it, and under `set -u` an unset array expansion is an error.
+CLOBBER_ARGS=()
 select_marker_options() {
     EXTRA_ARGS=()
     local fmt; fmt=$(gum choose "markdown" "json" "html" "chunks" --header "Output format:") || return 1
@@ -190,6 +215,16 @@ select_markitdown_options() {
     EXTRA_ARGS=()
     OUTPUT_DIR=$(gum input --value "$DEFAULT_OUTPUT_DIR" --header "Output directory:") || return 1
     OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_OUTPUT_DIR}"
+    # --no-clobber is a FRONT-END flag, so it goes in CLOBBER_ARGS rather than
+    # EXTRA_ARGS: everything in EXTRA_ARGS is forwarded past `--` to markitdown
+    # itself, which does not know this option.
+    CLOBBER_ARGS=()
+    # Overwriting is the engine default now. The old behaviour wrote doc_2.md
+    # beside doc.md, and an ingestion pipeline then indexed the same document
+    # twice with nothing to say which was current — so keeping the old output
+    # is the thing worth asking about, not replacing it.
+    gum confirm "Keep existing .md files and write doc_2.md instead? (--no-clobber)" --default=false \
+        && CLOBBER_ARGS+=(--no-clobber)
     gum confirm "Use installed markitdown plugins? (--use-plugins)" && EXTRA_ARGS+=(--use-plugins)
     if gum confirm "Use Azure Document Intelligence for richer extraction? (-d)"; then
         EXTRA_ARGS+=(-d)
@@ -235,18 +270,19 @@ action_convert() {
                 [[ "$w" =~ ^[0-9]+$ ]] && pos+=(--workers "$w") || warn "Invalid worker count — letting the engine decide."
             fi
             header "Converting"
-            engine_foreground local convert --backend marker --output-format "$OUTPUT_FORMAT" --output-dir "$OUTPUT_DIR" \
+            engine_convert local convert --backend marker --output-format "$OUTPUT_FORMAT" --output-dir "$OUTPUT_DIR" \
                 "${pos[@]}" "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
         markitdown)
             select_markitdown_options || { info "Cancelled."; return 0; }
             header "Converting"
-            engine_foreground local convert --backend markitdown --output-dir "$OUTPUT_DIR" \
+            engine_convert local convert --backend markitdown --output-dir "$OUTPUT_DIR" \
+                "${CLOBBER_ARGS[@]+${CLOBBER_ARGS[@]}}" \
                 "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
         auto)
             OUTPUT_DIR=$(gum input --value "$DEFAULT_OUTPUT_DIR" --header "Output directory:") || return 0
             OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_OUTPUT_DIR}"
             header "Converting"
-            engine_foreground local convert --backend auto --output-dir "$OUTPUT_DIR" "${PICKED_PATHS[@]}" ;;
+            engine_convert local convert --backend auto --output-dir "$OUTPUT_DIR" "${PICKED_PATHS[@]}" ;;
     esac
 }
 
