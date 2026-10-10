@@ -591,6 +591,38 @@ asked twice, or `--yes` is sent with nobody having been asked at all. The test
 asserts on the flags the engine was actually invoked with, via a recording
 wrapper, rather than on what appeared on screen.
 
+### CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
+`main`, every pull request, and on demand:
+
+- **`shellcheck -S warning -x`** over every shell file, **found with `find`
+  rather than globbed**. `scripts/*/*.sh` misses the four scripts at the
+  repository root, `scripts/_templates/`, and
+  `scripts/starlight/converter/convert.sh` — six files a one-level glob
+  quietly stops covering. `tests/stubs/gum` is added by name, being bash with
+  no `.sh` extension. `-x` follows the `source ../_common/ui.sh` chain, without
+  which every front-end looks like a file of undefined helpers. The severity
+  floor is pinned because SC2002 is off by default in shellcheck 0.11+ and on
+  in older releases.
+- **`tests/run-all.sh`**, which needs no gum: the suite prepends
+  `tests/stubs` to `PATH`, so the stub is found whether or not the real thing
+  is installed.
+
+Getting to a clean baseline cleared 18 findings across 9 files. Most were the
+tool being unable to see what the code does — namerefs (`local -n`), array
+names built at runtime and read through `eval`, and `read` columns consumed
+only to advance the field split — and those carry a directive naming the
+reason. Three were worth changing: a `local` that was never read, a message
+with a `~` in it, and an apostrophe inside a `"${VAR:?akinn's …}"` guard.
+
+"18" is also the reason to distrust a first count. An apostrophe shellcheck
+cannot parse **truncates analysis of the rest of that file**, so two of the
+findings were hiding others in the same file, and they only appeared once the
+parse completed. The total was never wrong about whether the tree was clean —
+it exits non-zero either way, which is what makes this a gate rather than a
+report — but it was wrong about how much was left.
+
 ### Contributing Scripts
 
 Have a useful script? Contributions are welcome! Good candidates:

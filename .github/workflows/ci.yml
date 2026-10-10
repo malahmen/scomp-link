@@ -1,0 +1,49 @@
+name: ci
+
+# Every push and pull request. The suite needs no network, no tokens, no
+# terminal and no gum: tests/test-astromech.sh prepends tests/stubs to PATH, so
+# a scripted stub answers every prompt and the engine under test is a recording
+# wrapper. That is what makes a TUI repository testable on a runner at all.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versions
+        # Printed because a suite that behaves differently on the runner than
+        # on a workstation is the thing hardest to debug from a log alone.
+        run: |
+          bash --version | head -1
+          git --version
+          shellcheck --version | sed -n 2p
+
+      - name: shellcheck
+        # Found, not globbed. `scripts/*/*.sh` misses the four scripts at the
+        # repository root, scripts/_templates, and scripts/starlight/converter —
+        # six files that a named list or a one-level glob quietly stops covering.
+        # tests/stubs/gum is added by name: it is bash with no .sh extension.
+        #
+        # -x so the `source ../_common/ui.sh` chain is followed; without it every
+        # front-end reports a file of apparently undefined helpers.
+        #
+        # -S warning explicitly: SC2002 is off by default in shellcheck 0.11+ and
+        # on in older releases, so the floor has to be pinned or the runner and
+        # the workstation disagree about what passes.
+        run: |
+          mapfile -t files < <(find . -name '*.sh' -not -path './.git/*' | sort)
+          files+=(tests/stubs/gum)
+          printf 'linting %d files\n' "${#files[@]}"
+          shellcheck -S warning -x "${files[@]}"
+
+      - name: tests
+        run: tests/run-all.sh

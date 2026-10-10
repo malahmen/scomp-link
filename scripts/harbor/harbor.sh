@@ -204,6 +204,7 @@ EOF
 # Appends StorageClass helm args to the named array.
 _storage_apply_storageclass() {
     local class="$1"
+    # shellcheck disable=SC2178  # -n declares a nameref; shellcheck reads it as a plain string assignment
     local -n _arr="$2"
 
     if [[ -n "$class" ]]; then
@@ -223,6 +224,7 @@ _storage_apply_storageclass() {
 }
 
 _prompt_storage() {
+    # shellcheck disable=SC2178  # -n declares a nameref; shellcheck reads it as a plain string assignment
     local -n _arr="$1"
 
     local storage_type
