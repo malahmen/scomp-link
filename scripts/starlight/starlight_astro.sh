@@ -52,6 +52,7 @@ HAS_TREE=0
 # Globals set during create flow
 PROJECT_NAME=""
 PROJECT_SLUG=""
+PROJECT_PARENT=""          # directory the new project is created in
 SITE_DESCRIPTION=""
 SIDEBAR_ENTRIES=()
 EXTERNAL_LINKS=()
@@ -255,6 +256,62 @@ open_project_by_path() {
     manage_menu
 }
 
+# git_repo_containing <dir> — top-level of the git work tree <dir> (or its
+# nearest existing ancestor) belongs to; empty when it is in none.
+git_repo_containing() {
+    local d="$1"
+    while [[ ! -d "$d" && "$d" != "/" && -n "$d" ]]; do d="$(dirname "$d")"; done
+    git -C "$d" rev-parse --show-toplevel 2>/dev/null || true
+}
+
+# choose_project_location <slug> [source_dir] — ask where a new project goes;
+# echoes its absolute path (<parent>/<slug>), or nothing when cancelled/refused.
+# A location inside <source_dir> is refused; one inside any git repository is
+# allowed only after a warning, since its files would be committed with that
+# repository's own code.
+choose_project_location() {
+    local slug="$1" src="${2:-}" where parent
+    local home_opt="${STARLIGHT_HOME}/${slug}" here_opt="${ORIGIN_DIR}/${slug}"
+    where=$(gum choose --header "Where should the project files live?" \
+        "Another folder…" \
+        "${home_opt}  (scomp-link's sites folder)" \
+        "${here_opt}  (here)") || true
+    [[ -z "$where" ]] && { warn "Cancelled."; return 0; }
+
+    if [[ "$where" == "Another folder…" ]]; then
+        local raw
+        raw=$(gum input --width 70 \
+            --placeholder "Folder to create '${slug}' in (absolute or ~/...)" \
+            --char-limit 512) || true
+        [[ -z "$raw" ]] && { warn "Cancelled."; return 0; }
+        [[ "$raw" == "~"* ]] && raw="${HOME}${raw:1}"
+        [[ "$raw" == /* ]] || raw="${ORIGIN_DIR}/${raw}"
+        if [[ ! -d "$raw" ]]; then
+            gum confirm "${raw} does not exist. Create it?" || { warn "Cancelled."; return 0; }
+            mkdir -p "$raw" || { warn "Cannot create ${raw}."; return 0; }
+        fi
+        parent=$(real_path "$raw")
+    else
+        parent=$(dirname "${where%%  (*}")
+        mkdir -p "$parent" 2>/dev/null || { warn "Cannot create ${parent}."; return 0; }
+        parent=$(real_path "$parent")
+    fi
+    [[ -z "$parent" ]] && { warn "Cannot use that folder."; return 0; }
+    local proj="${parent}/${slug}"
+
+    if [[ -n "$src" && ( "$proj/" == "$src/"* || "$src/" == "$proj/"* ) ]]; then
+        warn "${proj} overlaps the source folder ${src} — pick a location outside it."
+        return 0
+    fi
+    local repo; repo=$(git_repo_containing "$parent")
+    if [[ -n "$repo" ]]; then
+        warn "${proj} is inside the git repository ${repo}:"
+        warn "its files (node_modules aside) would show up in that repository and could be committed with it."
+        gum confirm --default=false "Create it there anyway?" || { warn "Cancelled."; return 0; }
+    fi
+    printf '%s' "$proj"
+}
+
 # =============================================================================
 # CREATE FLOW
 # =============================================================================
@@ -270,8 +327,13 @@ create_collect_project_info() {
     PROJECT_SLUG=$(slugify "$PROJECT_NAME")
     [[ -z "$PROJECT_SLUG" ]] && { warn "Project name produced an empty slug."; return 1; }
 
-    if [[ -d "${ORIGIN_DIR}/${PROJECT_SLUG}" ]]; then
-        warn "Directory '${PROJECT_SLUG}' already exists."
+    local proj
+    proj=$(choose_project_location "$PROJECT_SLUG")
+    [[ -z "$proj" ]] && return 1
+    PROJECT_PARENT="$(dirname "$proj")"
+
+    if [[ -d "$proj" ]]; then
+        warn "Directory '${proj}' already exists."
         if ! gum confirm "Continue anyway? (existing files may conflict)"; then
             warn "Cancelled."
             return 1
@@ -290,7 +352,7 @@ create_collect_project_info() {
         ENABLE_MERMAID=false
     fi
 
-    success "Project: ${PROJECT_NAME} → ./${PROJECT_SLUG}"
+    success "Project: ${PROJECT_NAME} → ${PROJECT_PARENT}/${PROJECT_SLUG}"
 }
 
 create_scaffold() {
@@ -298,13 +360,14 @@ create_scaffold() {
 
     info "Running: npm create astro@latest ${PROJECT_SLUG} -- --template starlight --yes --no-install"
 
-    gum spin --spinner dot --title "Creating Starlight project in ./${PROJECT_SLUG} ..." -- \
-        npm create astro@latest "$PROJECT_SLUG" -- --template starlight --yes --no-install
+    local proj="${PROJECT_PARENT}/${PROJECT_SLUG}"
+    (cd "$PROJECT_PARENT" && gum spin --spinner dot --title "Creating Starlight project in ${proj} ..." -- \
+        npm create astro@latest "$PROJECT_SLUG" -- --template starlight --yes --no-install)
 
-    [[ ! -d "${ORIGIN_DIR}/${PROJECT_SLUG}" ]] && { warn "Scaffolding failed — directory not created."; return 1; }
-    success "Scaffolded at ./${PROJECT_SLUG}"
+    [[ ! -d "$proj" ]] && { warn "Scaffolding failed — directory not created."; return 1; }
+    success "Scaffolded at ${proj}"
 
-    cd "${ORIGIN_DIR}/${PROJECT_SLUG}" || { warn "Could not enter ./${PROJECT_SLUG}."; return 1; }
+    cd "$proj" || { warn "Could not enter ${proj}."; return 1; }
 
     gum spin --spinner dot --title "Installing dependencies ..." -- \
         npm install
@@ -772,9 +835,10 @@ create_print_summary() {
 
     echo ""
     gum style --bold "What was created:"
-    echo "  ./${PROJECT_SLUG}/                   Project root"
-    echo "  ./${PROJECT_SLUG}/astro.config.mjs   Configured with your sidebar"
-    echo "  ./${PROJECT_SLUG}/init.sh             Run this to start the dev server"
+    local root="${PROJECT_PARENT}/${PROJECT_SLUG}"
+    echo "  ${root}/                   Project root"
+    echo "  ${root}/astro.config.mjs   Configured with your sidebar"
+    echo "  ${root}/init.sh             Run this to start the dev server"
 
     if [[ ${#SIDEBAR_ENTRIES[@]} -gt 0 ]]; then
         echo ""
@@ -788,9 +852,9 @@ create_print_summary() {
 
     echo ""
     gum style --bold "To start the site:"
-    gum style --foreground "$CYAN" "  cd ${PROJECT_SLUG} && bash init.sh"
+    gum style --foreground "$CYAN" "  cd ${root} && bash init.sh"
     echo ""
-    gum style --faint "Or: cd ${PROJECT_SLUG} && npm run dev"
+    gum style --faint "Or: cd ${root} && npm run dev"
     echo ""
 }
 
@@ -803,6 +867,7 @@ create_project_flow() {
     # Reset globals for this run
     PROJECT_NAME=""
     PROJECT_SLUG=""
+    PROJECT_PARENT=""
     SITE_DESCRIPTION=""
     SIDEBAR_ENTRIES=()
     EXTERNAL_LINKS=()
@@ -1056,18 +1121,11 @@ create_external_flow() {
     desc=$(gum input --width 60 --placeholder "Description (optional)" --char-limit 160) || true
     [[ -z "$desc" ]] && desc="Documents from ${src}"
 
-    local home_opt="${STARLIGHT_HOME}/${slug}" here_opt="${ORIGIN_DIR}/${slug}" where
-    where=$(gum choose --header "Where should the site project live?" \
-        "${home_opt}  (outside any repository)" \
-        "${here_opt}  (here)") || true
-    [[ -z "$where" ]] && { warn "Cancelled."; return; }
-    local proj="${where%%  (*}"
-
-    # The point is to keep the site out of the documents' folder.
-    if [[ "$proj/" == "$src/"* ]]; then
-        warn "${proj} is inside the source folder — pick a location outside it."
-        return
-    fi
+    # The point is to keep the site out of the documents' folder (refused) and
+    # out of any repository's code (warned, see choose_project_location).
+    local proj
+    proj=$(choose_project_location "$slug" "$src")
+    [[ -z "$proj" ]] && return
     if [[ -e "$proj" ]]; then
         warn "${proj} already exists — choose another title or remove it first."
         return

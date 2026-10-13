@@ -24,6 +24,28 @@ Create and manage Astro Starlight documentation sites:
   existing project works without it).
 - **tree** optional — enables the *View site structure* action.
 
+## Where a new project lives
+
+Both Create flows ask where the project's files go:
+
+- **Another folder…** — any path (`~/...` works); a missing folder is created
+  after a confirm. Use this to keep sites out of every code repository, e.g.
+  `~/sites`.
+- **scomp-link's sites folder** — `${XDG_DATA_HOME:-~/.local/share}/scomp-link/starlight/<name>`
+  (override the base with `$SCOMP_STARLIGHT_HOME`).
+- **Here** — next to the directory the TUI was started from.
+
+Whichever you pick:
+
+- **Inside any git repository:** you are warned, with the repository's path,
+  because the site's files would show up there and could be committed with that
+  repository's code. You confirm before it goes ahead (default No).
+- **Overlapping the documents** (site in the source folder, or the source folder
+  in the site): refused.
+
+Created projects are remembered, so they are listed wherever the TUI is
+started from.
+
 ## Manage menu
 
 Pick an existing project or switch to another one at any time. The list holds:
@@ -69,11 +91,8 @@ notes folder), read **in place**:
   collection loads the documents by absolute path (stored in the project's
   `.docs-source`; `$DOCS_SOURCE` overrides it). Edits in the folder show up on
   the next reload of the dev server.
-- **The site project lives elsewhere.** Default:
-  `${XDG_DATA_HOME:-~/.local/share}/scomp-link/starlight/<name>` (override the
-  base with `$SCOMP_STARLIGHT_HOME`), or `./<name>` next to where the TUI was
-  started. A location inside the source folder is refused. `node_modules/` and
-  `dist/` stay in the project.
+- **The site project lives elsewhere:** any folder you choose (see "Where a
+  new project lives" above). `node_modules/` and `dist/` stay in the project.
 - **Plain Markdown documents read as pages:**
   - a file without a front-matter `title` takes its first `# ` heading, and that
     leading H1 is dropped, since Starlight renders the title as the page heading;

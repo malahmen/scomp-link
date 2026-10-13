@@ -70,7 +70,7 @@ mkdir -p "$T/start"
 echo "# 1. site over an existing folder, created outside any repository"
 run "$T/start" \
     "Create site over an existing folder" "$SRC" "Reports" "" \
-    "$T/home/reports  (outside any repository)" \
+    "$T/home/reports  (scomp-link's sites folder)" \
     "Quit" "── quit ──"
 P="$T/home/reports"
 check "project created under STARLIGHT_HOME" test -f "$P/package.json"
@@ -98,13 +98,13 @@ echo "# 3. refuses to create the site inside the source folder"
 run "$SRC" \
     "── create site over an existing folder ──" "$SRC" "Inside" "" \
     "$SRC/inside  (here)" "── quit ──"
-check "refusal explained" has "inside the source folder" "$T/out"
+check "refusal explained" has "overlaps the source folder" "$T/out"
 check "nothing created inside the source" test ! -e "$SRC/inside"
 check "npm never ran" test ! -s "$NPM_LOG"
 
 echo "# 4. normal project: new sidebar shape, Mermaid on Astro 7's processor"
 run "$T/start" \
-    "── create new project ──" "Docs Test" "" "yes" \
+    "── create new project ──" "Docs Test" "$T/start/docs-test  (here)" "" "yes" \
     "guides" "Guides" "autogenerate" "" \
     "" \
     "Back to project list" "── quit ──"
@@ -192,5 +192,26 @@ ln -s "$O" "$T/link-to-team-docs"
 run "$T/link-to-team-docs" "$(cd "$O" && pwd -P)" "Delete this project" "Quit" "── quit ──"
 check "refused via the real path" has "this TUI was started from" "$T/out"
 check "project kept" test -f "$O/package.json"
+
+echo "# 14. 'Another folder…': any folder, created on confirm"
+run "$T/other" "── create site over an existing folder ──" "$SRC" "Sites Elsewhere" "" \
+    "Another folder…" "$T/my-sites/new" "yes" "Quit" "── quit ──"
+check "site created in the chosen folder" test -f "$T/my-sites/new/sites-elsewhere/package.json"
+check "and served from the source in place" [ "$(cat "$T/my-sites/new/sites-elsewhere/.docs-source")" = "$SRC" ]
+
+echo "# 15. a location inside a git repository is warned about"
+mkdir -p "$T/some-repo" && git -C "$T/some-repo" init -q
+run "$T/other" "── create new project ──" "In Repo" "Another folder…" "$T/some-repo" "no" "── quit ──"
+check "warning names the repository" has "inside the git repository $T/some-repo" "$T/out"
+check "declined: nothing created" test ! -e "$T/some-repo/in-repo"
+run "$T/other" "── create new project ──" "In Repo" "Another folder…" "$T/some-repo" "yes" \
+    "" "no" "" "" "Back to project list" "── quit ──"
+check "accepted: created inside the repository" test -f "$T/some-repo/in-repo/package.json"
+
+echo "# 16. a location that would contain the source folder is refused"
+run "$T/other" "── create site over an existing folder ──" "$SRC/sub" "docs-repo" "" \
+    "Another folder…" "$T" "── quit ──"
+check "overlap refused" has "overlaps the source folder" "$T/out"
+check "nothing created around the source" test ! -e "$T/docs-repo/package.json"
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi
