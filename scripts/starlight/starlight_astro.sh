@@ -959,6 +959,21 @@ pick_source_dir() {
     printf '%s' "$dir"
 }
 
+# link_docs_to_source <project_dir> <source_dir> — make src/content/docs a
+# symlink to <source_dir>. An existing link is replaced; an existing real
+# directory (the template's own pages) is removed first. Never follows the link:
+# removing the link leaves the source folder untouched.
+link_docs_to_source() {
+    local proj="$1" src="$2" docs="$1/src/content/docs"
+    mkdir -p "${proj}/src/content" || return 1
+    if [[ -L "$docs" ]]; then
+        rm -f -- "$docs"
+    elif [[ -d "$docs" ]]; then
+        rm -rf -- "${docs:?}"
+    fi
+    ln -s "$src" "$docs" || { warn "Could not link ${docs} -> ${src}."; return 1; }
+}
+
 # write_external_site_files <project_dir> <source_dir> <title> <description>
 # Everything that makes the project read its documents from <source_dir>.
 write_external_site_files() {
@@ -966,31 +981,26 @@ write_external_site_files() {
     local safe_title="${title//\'/\\\'}" safe_desc="${desc//\'/\\\'}"
 
     printf '%s\n' "$src" > "${proj}/${SOURCE_FILE}"
-
-    # The template's own pages would otherwise be served next to the external
-    # ones; the collection below never reads src/content/docs.
-    rm -rf "${proj:?}/src/content/docs"
+    link_docs_to_source "$proj" "$src" || return 1
 
     cat > "${proj}/src/content.config.ts" <<'TSEOF'
-// Starlight's docs collection, loaded from a folder OUTSIDE this project.
-// The folder is named in ../.docs-source (or $DOCS_SOURCE); nothing is copied.
+// Starlight's docs collection. src/content/docs is a SYMLINK to the source
+// folder named in ../.docs-source: the documents are read in place, nothing is
+// copied. Keeping Starlight's usual layout is what gives a flat sidebar rooted
+// at that folder (Starlight derives sidebar groups from each file's path
+// below src/content/docs).
 import { defineCollection } from 'astro:content';
 import { glob } from 'astro/loaders';
 import { docsSchema } from '@astrojs/starlight/schema';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DOCS_SOURCE, docId } from './external-docs.mjs';
+import { docId } from './external-docs.mjs';
 
 // glob(), plus a title for documents without one: Starlight requires a
 // front-matter `title`, so a file that has none takes its first "# " heading
 // (or, failing that, its file name).
-function externalDocs(base) {
-  const inner = glob({
-    base,
-    pattern: ['**/*.{md,mdx}', '!**/node_modules/**', '!**/.git/**'],
-    generateId: ({ entry }) => docId(entry),
-  });
+function withTitles(inner) {
   return {
     name: 'external-docs',
     load: (ctx) =>
@@ -1008,8 +1018,14 @@ function externalDocs(base) {
   };
 }
 
+const docs = glob({
+  base: './src/content/docs',
+  pattern: ['**/*.{md,mdx}', '!**/node_modules/**', '!**/.git/**'],
+  generateId: ({ entry }) => docId(entry),
+});
+
 export const collections = {
-  docs: defineCollection({ loader: externalDocs(DOCS_SOURCE), schema: docsSchema() }),
+  docs: defineCollection({ loader: withTitles(docs), schema: docsSchema() }),
 };
 TSEOF
 
@@ -1017,11 +1033,14 @@ TSEOF
 // Shared by content.config.ts and astro.config.mjs for a site over an external
 // folder: where the documents are, how a file maps to a page, and two remark
 // plugins that make plain Markdown documents read well as Starlight pages.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const sourceFile = new URL('../.docs-source', import.meta.url);
-export const DOCS_SOURCE = (process.env.DOCS_SOURCE || readFileSync(sourceFile, 'utf8')).trim();
+// The real source folder (for the dev server's file allow-list), and the
+// symlink Starlight reads it through.
+export const DOCS_SOURCE = readFileSync(new URL('../.docs-source', import.meta.url), 'utf8').trim();
+export const DOCS_LINK = fileURLToPath(new URL('./content/docs', import.meta.url));
 
 // review-2026-10-02.md -> review-2026-10-02 ; README.md (any folder) -> index.
 export function docId(relPath) {
@@ -1030,14 +1049,23 @@ export function docId(relPath) {
   return id.endsWith('/readme') ? id.slice(0, -'/readme'.length) : id;
 }
 
-const insideSource = (file) => typeof file?.path === 'string' && file.path.startsWith(DOCS_SOURCE + path.sep);
+// The folder a document is served from (through the symlink or, if a tool
+// resolved it, the real path), or null for anything else.
+function docsRoot(file) {
+  const p = typeof file?.path === 'string' ? file.path : '';
+  if (p.startsWith(DOCS_LINK + path.sep)) return DOCS_LINK;
+  let real = DOCS_SOURCE;
+  try { real = realpathSync(DOCS_SOURCE); } catch {}
+  if (p.startsWith(real + path.sep)) return real;
+  return null;
+}
 
 // Starlight renders the title as the page's H1. A document that opens with
 // its own "# Title" would show it twice, so drop an H1 that is the very first
 // node. H1s further down (e.g. "# Round 2") are kept.
 export function remarkDropLeadingH1() {
   return (tree, file) => {
-    if (!insideSource(file)) return;
+    if (!docsRoot(file)) return;
     const first = tree.children.find((n) => n.type !== 'yaml' && n.type !== 'toml');
     if (first && first.type === 'heading' && first.depth === 1) tree.children.splice(tree.children.indexOf(first), 1);
   };
@@ -1045,16 +1073,17 @@ export function remarkDropLeadingH1() {
 
 // Links between documents are written as files ("[x](other.md#part)"); on the
 // site they must be page URLs ("/other/#part"). Only relative .md/.mdx links
-// that resolve inside the source folder are rewritten.
+// that resolve inside the served folder are rewritten.
 export function remarkMdLinksToPages() {
   return (tree, file) => {
-    if (!insideSource(file)) return;
+    const root = docsRoot(file);
+    if (!root) return;
     const visit = (node) => {
       if (node.type === 'link' || node.type === 'definition') {
         const m = /^([^?#]+\.mdx?)(#.*)?$/i.exec(node.url || '');
         if (m && !/^[a-z][a-z0-9+.-]*:/i.test(node.url) && !node.url.startsWith('/')) {
           const target = path.resolve(path.dirname(file.path), decodeURI(m[1]));
-          const rel = path.relative(DOCS_SOURCE, target);
+          const rel = path.relative(root, target);
           if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
             const id = docId(rel.split(path.sep).join('/'));
             node.url = (id === 'index' ? '/' : `/${id}/`) + (m[2] || '');
@@ -1184,6 +1213,7 @@ change_external_source() {
         return
     fi
     printf '%s\n' "$src" > "$SOURCE_FILE"
+    link_docs_to_source "$PROJECT_DIR" "$src" || return
     success "Source set to ${src}. Restart a running dev server to pick it up."
 }
 
@@ -1198,7 +1228,23 @@ external_serve() {
     run_foreground npm run dev ${host_flag[@]+"${host_flag[@]}"}
 }
 
+# Sites generated before src/content/docs became a symlink read the folder by
+# absolute path, and Starlight then shows that path as nested sidebar groups.
+# Offer to regenerate their files (title and description are kept).
+upgrade_external_site() {
+    [[ -L "src/content/docs" ]] && return 0
+    warn "This site was generated by an earlier version: its sidebar shows the folder's full path."
+    gum confirm "Regenerate its files to fix that? (title and description are kept)" || return 0
+    local title desc
+    title=$(read_site_title); [[ -z "$title" ]] && title="$(basename "$PROJECT_DIR")"
+    desc=$(read_config_string description)
+    if write_external_site_files "$PROJECT_DIR" "$(external_source)" "$title" "$desc"; then
+        success "Regenerated. Restart a running dev server to pick it up."
+    fi
+}
+
 external_manage_menu() {
+    upgrade_external_site
     while true; do
         header "Managing: $(basename "$PROJECT_DIR") (external)"
         info "Source: $(external_source)"
@@ -1250,8 +1296,17 @@ list_files_in_section() {
         | sort | sed "s|${DOCS_DIR}/${section}/||"
 }
 
+# read_config_string <key> — the first single-quoted `key: '...'` value in the
+# config, with \' unescaped. Escaped quotes inside the value are kept (a plain
+# [^']* match would stop at "Old \" in 'Old \'quoted\' desc').
+read_config_string() {
+    local v
+    v=$(sed -nE "s/.*${1}: '((\\\\.|[^'\\\\])*)'.*/\\1/p" "$CONFIG_FILE" | head -1)
+    printf '%s' "${v//\\\'/\'}"
+}
+
 read_site_title() {
-    sed -n "s/.*title: '\\([^']*\\)'.*/\\1/p" "$CONFIG_FILE" | head -1
+    read_config_string title
 }
 
 rename_section_in_config() {

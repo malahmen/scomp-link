@@ -96,10 +96,15 @@ Actions:
 the `.md`/`.mdx` files of a folder you already have (a reports repository, a
 notes folder), read **in place**:
 
-- **Nothing is copied, and nothing is written into the folder.** The content
-  collection loads the documents by absolute path (stored in the project's
-  `.docs-source`; `$DOCS_SOURCE` overrides it). Edits in the folder show up on
-  the next reload of the dev server.
+- **Nothing is copied, and nothing is written into the folder.** The
+  project's `src/content/docs` is a **symlink** to the folder, whose path is
+  also recorded in the project's `.docs-source`. Starlight therefore sees its
+  usual layout: the sidebar starts at the folder's own files, not at the path
+  that leads to it. Edits in the folder show up on the next reload of the dev
+  server. Deleting the site removes the link, never the folder.
+- **Sites made by an earlier version** read the folder by absolute path, so
+  their sidebar showed that path as nested groups. Opening one offers to
+  regenerate its files, keeping the title and description.
 - **The site project lives elsewhere:** any folder you choose (see "Where a
   new project lives" above). `node_modules/` and `dist/` stay in the project.
 - **Plain Markdown documents read as pages:**
