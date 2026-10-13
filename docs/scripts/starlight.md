@@ -40,7 +40,8 @@ Actions:
   when a strict-mode sidebar entry in `astro.config.mjs` may need updating.
 - **Site** — Edit homepage (`index.mdx`/`index.md`, created if missing) ·
   Edit astro.config.mjs · View site structure (only when `tree` is installed;
-  ignores `node_modules`, `.git`, `dist`, `.astro`)
+  ignores `node_modules`, `.git`, `dist`, `.astro`) · Delete this project
+  (see below)
 - **Switch project** · **Quit**
 
 ## Sites over an existing folder
@@ -70,7 +71,8 @@ notes folder), read **in place**:
   - build static site (into the project's `dist/`);
   - preview the build;
   - change source folder;
-  - edit `astro.config.mjs`.
+  - edit `astro.config.mjs`;
+  - delete this site (the source folder is never touched).
 
   Page and section editing doesn't apply, because the content belongs to the
   source folder.
@@ -78,6 +80,23 @@ notes folder), read **in place**:
 It installs `@astrojs/markdown-remark`, because the two Markdown plugins it uses
 run on Astro 7's `unified()` processor. Images referenced from the documents are
 served from the source folder: the dev server is allowed to read it.
+
+## Deleting a project
+
+**Delete this project** (or **Delete this site** for a site over an existing
+folder) removes the project directory, after:
+
+- **showing what goes:** the path, the file count and size;
+  - for a normal project, how many pages under `src/content/docs/` go with it;
+  - for an external site, the reminder that its source folder is not touched;
+  - if the project is its own git repository, how many uncommitted changes and
+    commits not on any remote would be lost;
+- **asking twice:** type the project's folder name, then confirm (default No).
+
+It refuses anything that isn't a Starlight project (`astro.config.mjs` +
+`package.json`), the directory the TUI was started from (or one of its
+parents), `$HOME` and `/`. It also refuses an external site whose source folder
+is inside it, since deleting it would delete the documents.
 
 ## What Create generates
 

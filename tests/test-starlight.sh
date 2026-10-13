@@ -130,4 +130,33 @@ check "accepted: nested directory converted" \
     has "{ label: 'Deep Docs', items: [{ autogenerate: { directory: 'deep/docs' } }] }" "$N/astro.config.mjs"
 check "accepted: no old shape left" lacks "', autogenerate: {" "$N/astro.config.mjs"
 
+echo "# 6. deleting an external site: name and confirm gate it; the source survives"
+run "$T/start" "$P" "Delete this site" "wrong-name" "Quit" "── quit ──"
+check "wrong name: site kept" test -d "$P"
+check "wrong name: explained" has "Name did not match" "$T/out"
+run "$T/start" "$P" "Delete this site" "reports" "no" "Quit" "── quit ──"
+check "declined: site kept" test -d "$P"
+check "the warning says the source is not touched" has "The source folder is NOT touched: $SRC" "$T/out"
+run "$T/start" "$P" "Delete this site" "reports" "yes" "── quit ──"
+check "confirmed: site deleted" test ! -e "$P"
+check "confirmed: the source folder is untouched" [ "$(find "$SRC" -type f | sort | xargs cat | cksum)" = "$before" ]
+
+echo "# 7. refuses when the source folder lives inside the site"
+mkdir -p "$T/home/inner/docs" && echo "x" > "$T/home/inner/docs/x.md"
+echo '{}' > "$T/home/inner/package.json"; echo "export default {};" > "$T/home/inner/astro.config.mjs"
+echo "$T/home/inner/docs" > "$T/home/inner/.docs-source"
+run "$T/start" "$T/home/inner" "Delete this site" "Quit" "── quit ──"
+check "refused, documents inside the site" has "would delete the documents" "$T/out"
+check "nothing deleted" test -f "$T/home/inner/docs/x.md"
+
+echo "# 8. refuses the project the TUI was started from"
+run "$N" "." "Delete this project" "Quit" "── quit ──"
+check "refused: it is the start directory" has "this TUI was started from" "$T/out"
+check "start-directory project kept" test -f "$N/package.json"
+
+echo "# 9. deleting a normal project warns that its pages go with it"
+run "$T/start" "docs-test" "Delete this project" "docs-test" "yes" "── quit ──"
+check "pages-go-too warning shown" has "page(s) under src/content/docs/ go too" "$T/out"
+check "normal project deleted" test ! -e "$N"
+
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi

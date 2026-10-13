@@ -1066,7 +1066,7 @@ external_manage_menu() {
             "Edit astro.config.mjs"
         )
         [[ $HAS_TREE -eq 1 ]] && options+=("View site structure")
-        options+=("── ──" "Switch project" "Quit")
+        options+=("Delete this site" "── ──" "Switch project" "Quit")
 
         local choice
         choice=$(printf '%s\n' "${options[@]}" | gum choose \
@@ -1082,6 +1082,7 @@ external_manage_menu() {
             "Change source folder")       change_external_source ;;
             "Edit astro.config.mjs")      edit_config ;;
             "View site structure")        view_structure ;;
+            "Delete this site")           if delete_project; then return_to_origin; return; fi ;;
             "Switch project")             return_to_origin; return ;;
             "Quit")                       return ;;
             "── "*)                       continue ;;
@@ -1524,6 +1525,79 @@ edit_config() {
 }
 
 # =============================================================================
+# MANAGE — delete the project
+# =============================================================================
+
+# delete_project — remove the current project directory, after showing what
+# goes and asking twice: type the folder name, then confirm (default No).
+# Returns 0 when the project was deleted (the caller then goes back to the
+# project list), 1 when it was kept.
+delete_project() {
+    local dir="$PROJECT_DIR" name
+    name="$(basename "$dir")"
+    header "Delete Project: ${name}"
+
+    # Only ever a Starlight project, and never a directory that holds the place
+    # the TUI was started from (or $HOME, or /).
+    if [[ ! -f "${dir}/${CONFIG_FILE}" || ! -f "${dir}/package.json" ]]; then
+        warn "${dir} does not look like a Starlight project (no ${CONFIG_FILE} + package.json). Not deleting."
+        return 1
+    fi
+    if [[ "$dir" == "/" || "$dir" == "$HOME" || "$ORIGIN_DIR/" == "$dir/"* ]]; then
+        warn "${dir} is (or contains) the directory this TUI was started from. Not deleting — remove it by hand."
+        return 1
+    fi
+
+    local external=0 src=""
+    if [[ -f "${dir}/${SOURCE_FILE}" ]]; then
+        external=1
+        src="$(tr -d '\n' < "${dir}/${SOURCE_FILE}")"
+        # The documents must survive: refuse if they live inside the project.
+        if [[ -n "$src" && "$src/" == "$dir/"* ]]; then
+            warn "The source folder ${src} is inside this project; deleting it would delete the documents. Not deleting."
+            return 1
+        fi
+    fi
+
+    local files size
+    files=$(find "$dir" -type f 2>/dev/null | wc -l | tr -d ' ')
+    size=$(du -sh "$dir" 2>/dev/null | awk '{print $1}')
+    warn "This permanently deletes ${dir} (${files} files, ${size:-?})."
+    if (( external )); then
+        info "The source folder is NOT touched: ${src}"
+    else
+        local pages
+        pages=$(find "${dir}/${DOCS_DIR}" -type f \( -name '*.md' -o -name '*.mdx' \) 2>/dev/null | wc -l | tr -d ' ')
+        warn "Its pages live inside it: ${pages} page(s) under ${DOCS_DIR}/ go too."
+    fi
+    if [[ -d "${dir}/.git" ]]; then
+        local dirty ahead
+        dirty=$(git -C "$dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        ahead=$(git -C "$dir" log --oneline --branches --not --remotes 2>/dev/null | wc -l | tr -d ' ')
+        warn "It is a git repository: ${dirty} uncommitted change(s), ${ahead} commit(s) not on any remote."
+    fi
+
+    local typed
+    typed=$(gum input --width 60 --placeholder "Type '${name}' to confirm" --char-limit 128) || true
+    if [[ "$typed" != "$name" ]]; then
+        warn "Name did not match. Nothing deleted."
+        return 1
+    fi
+    if ! gum confirm --default=false "Delete ${dir} now? This cannot be undone."; then
+        warn "Cancelled. Nothing deleted."
+        return 1
+    fi
+
+    cd "$ORIGIN_DIR" || cd / || return 1
+    if rm -rf -- "${dir:?}"; then
+        success "Deleted ${dir}."
+        return 0
+    fi
+    warn "Could not delete everything under ${dir}."
+    return 1
+}
+
+# =============================================================================
 # MANAGE MENU
 # =============================================================================
 
@@ -1563,6 +1637,7 @@ manage_menu() {
         )
 
         [[ $HAS_TREE -eq 1 ]] && options+=("View site structure")
+        options+=("Delete this project")
 
         options+=("── ──" "Switch project" "Quit")
 
@@ -1586,6 +1661,8 @@ manage_menu() {
             "Edit homepage")          edit_homepage ;;
             "Edit astro.config.mjs")  edit_config ;;
             "View site structure")    view_structure ;;
+            "Delete this project")
+                if delete_project; then return_to_origin; return; fi ;;
             "Switch project")
                 return_to_origin
                 return   # Back to main loop — will show project list
