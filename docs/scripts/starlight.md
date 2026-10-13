@@ -28,12 +28,21 @@ Create and manage Astro Starlight documentation sites:
 
 Both Create flows ask where the project's files go:
 
-- **Another folder…** — any path (`~/...` works); a missing folder is created
-  after a confirm. Use this to keep sites out of every code repository, e.g.
-  `~/sites`.
-- **scomp-link's sites folder** — `${XDG_DATA_HOME:-~/.local/share}/scomp-link/starlight/<name>`
-  (override the base with `$SCOMP_STARLIGHT_HOME`).
-- **Here** — next to the directory the TUI was started from.
+- **scomp-link's sites folder** (the default, so Enter takes it):
+  `${XDG_DATA_HOME:-~/.local/share}/scomp-link/starlight/<name>` (override the
+  base with `$SCOMP_STARLIGHT_HOME`). It is the same place for every project on
+  this machine, outside any code repository.
+- **Another folder…**: any path (`~/...` works). A missing folder is created
+  after a confirm.
+- **Here**: next to the directory the TUI was started from.
+
+The project folder holds the whole Astro project (`package.json`, the config,
+`src/`, `node_modules/`, `dist/`), not just configuration files. For a site
+over an existing folder, the pages stay in that folder, so the project can be
+deleted and recreated freely. For a normal project, the pages live **inside**
+it (`src/content/docs/`). The sites folder is not under version control, so the
+TUI notes that when a normal project is put there: choose another folder (a
+repository of its own, say) if those pages matter.
 
 Whichever you pick:
 

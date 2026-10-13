@@ -214,4 +214,15 @@ run "$T/other" "── create site over an existing folder ──" "$SRC/sub" "d
 check "overlap refused" has "overlaps the source folder" "$T/out"
 check "nothing created around the source" test ! -e "$T/docs-repo/package.json"
 
+echo "# 17. the sites folder is the default, with a note for normal projects"
+run "$T/other" "── create new project ──" "Home Default" "$T/home/home-default  (scomp-link's sites folder)" \
+    "" "no" "" "" "Back to project list" "── quit ──"
+first_opt="$(grep -A1 '<header> Where should the project files live?' "$T/out" | sed -n 's/^<option> //p' | head -1)"
+check "first (default) option is the sites folder" [ "$first_opt" = "$T/home/home-default  (scomp-link's sites folder)" ]
+check "normal project there: note about version control" has "is not under version control" "$T/out"
+check "normal project created in the sites folder" test -f "$T/home/home-default/package.json"
+run "$T/other" "── create site over an existing folder ──" "$SRC" "Ext Default" "" \
+    "$T/home/ext-default  (scomp-link's sites folder)" "Quit" "── quit ──"
+check "external site there: no note (its pages stay in the source)" lacks "is not under version control" "$T/out"
+
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi

@@ -266,6 +266,10 @@ git_repo_containing() {
 
 # choose_project_location <slug> [source_dir] — ask where a new project goes;
 # echoes its absolute path (<parent>/<slug>), or nothing when cancelled/refused.
+# The default (first, so Enter takes it) is scomp-link's sites folder, the same
+# place for every project on this machine. Without <source_dir> (a normal
+# project, whose pages live inside it) picking that folder adds a note: it is
+# not under version control, so pages written there exist only on this machine.
 # A location inside <source_dir> is refused; one inside any git repository is
 # allowed only after a warning, since its files would be committed with that
 # repository's own code.
@@ -273,8 +277,8 @@ choose_project_location() {
     local slug="$1" src="${2:-}" where parent
     local home_opt="${STARLIGHT_HOME}/${slug}" here_opt="${ORIGIN_DIR}/${slug}"
     where=$(gum choose --header "Where should the project files live?" \
-        "Another folder…" \
         "${home_opt}  (scomp-link's sites folder)" \
+        "Another folder…" \
         "${here_opt}  (here)") || true
     [[ -z "$where" ]] && { warn "Cancelled."; return 0; }
 
@@ -295,6 +299,10 @@ choose_project_location() {
         parent=$(dirname "${where%%  (*}")
         mkdir -p "$parent" 2>/dev/null || { warn "Cannot create ${parent}."; return 0; }
         parent=$(real_path "$parent")
+        if [[ -z "$src" && "$where" == "$home_opt  "* ]]; then
+            info "Note: this project's pages live inside it (src/content/docs/), and ${STARLIGHT_HOME}"
+            info "is not under version control. Choose another folder if you want them in a repository."
+        fi
     fi
     [[ -z "$parent" ]] && { warn "Cannot use that folder."; return 0; }
     local proj="${parent}/${slug}"
