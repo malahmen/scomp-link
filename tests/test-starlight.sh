@@ -49,6 +49,8 @@ mkdir -p "$T/hc/.fcc"; : > "$T/hc/holo-convert.sh"
 export PATH="${TEST_DIR}/stubs:$T/bin:$PATH"
 export GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" NPM_LOG="$T/npm.log"
 export SCOMP_STARLIGHT_HOME="$T/home" HOLO_CONVERT_DIR="$T/hc"
+# Never the real ~/.config/scomp-link/starlight-projects.
+export SCOMP_STARLIGHT_REGISTRY="$T/registry"
 
 # run <cwd> <answer>... — run the TUI from <cwd> with scripted gum answers.
 run() {
@@ -139,6 +141,7 @@ check "declined: site kept" test -d "$P"
 check "the warning says the source is not touched" has "The source folder is NOT touched: $SRC" "$T/out"
 run "$T/start" "$P" "Delete this site" "reports" "yes" "── quit ──"
 check "confirmed: site deleted" test ! -e "$P"
+check "confirmed: site forgotten from the registry" lacks "$P" "$SCOMP_STARLIGHT_REGISTRY"
 check "confirmed: the source folder is untouched" [ "$(find "$SRC" -type f | sort | xargs cat | cksum)" = "$before" ]
 
 echo "# 7. refuses when the source folder lives inside the site"
@@ -148,6 +151,7 @@ echo "$T/home/inner/docs" > "$T/home/inner/.docs-source"
 run "$T/start" "$T/home/inner" "Delete this site" "Quit" "── quit ──"
 check "refused, documents inside the site" has "would delete the documents" "$T/out"
 check "nothing deleted" test -f "$T/home/inner/docs/x.md"
+rm -rf "${T:?}/home/inner"     # fixture only; later cases count listed projects
 
 echo "# 8. refuses the project the TUI was started from"
 run "$N" "." "Delete this project" "Quit" "── quit ──"
@@ -158,5 +162,35 @@ echo "# 9. deleting a normal project warns that its pages go with it"
 run "$T/start" "docs-test" "Delete this project" "docs-test" "yes" "── quit ──"
 check "pages-go-too warning shown" has "page(s) under src/content/docs/ go too" "$T/out"
 check "normal project deleted" test ! -e "$N"
+
+echo "# 10. open by path: any Astro config name, remembered and listed from anywhere"
+O="$T/elsewhere/team-docs"; mkdir -p "$O/src/content/docs"
+echo '{}' > "$O/package.json"; echo "export default {};" > "$O/astro.config.ts"
+run "$T/start" "Open a project by path…" "$O" "Quit" "── quit ──"   # no projects yet: the empty-state menu
+check "astro.config.ts project opened" has "Managing: team-docs" "$T/out"
+check "remembered in the registry" has "$(cd "$O" && pwd -P)" "$SCOMP_STARLIGHT_REGISTRY"
+mkdir -p "$T/other"
+run "$T/other" "── quit ──"
+check "listed from an unrelated start directory" has "Select a project (1 found)" "$T/out"
+run "$T/other" "$(cd "$O" && pwd -P)" "Quit" "── quit ──"
+check "selecting it by path opens it" has "Managing: team-docs" "$T/out"
+
+echo "# 11. open by path refuses a folder without an Astro config"
+mkdir -p "$T/not-a-site"
+run "$T/other" "── open a project by path… ──" "$T/not-a-site" "── quit ──"
+check "refusal explained" has "No Astro config" "$T/out"
+check "not remembered" lacks "$T/not-a-site" "$SCOMP_STARLIGHT_REGISTRY"
+
+echo "# 12. a remembered project that disappeared is hidden, not forgotten"
+echo "$T/gone-away" >> "$SCOMP_STARLIGHT_REGISTRY"
+run "$T/other" "── quit ──"
+check "still 1 project listed" has "Select a project (1 found)" "$T/out"
+check "the missing entry is kept" has "$T/gone-away" "$SCOMP_STARLIGHT_REGISTRY"
+
+echo "# 13. delete refuses the start directory even through a symlink"
+ln -s "$O" "$T/link-to-team-docs"
+run "$T/link-to-team-docs" "$(cd "$O" && pwd -P)" "Delete this project" "Quit" "── quit ──"
+check "refused via the real path" has "this TUI was started from" "$T/out"
+check "project kept" test -f "$O/package.json"
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi

@@ -59,7 +59,15 @@ ENABLE_MERMAID=false
 
 # Globals used by management
 DOCS_DIR="src/content/docs"
-CONFIG_FILE="astro.config.mjs"
+CONFIG_FILE="astro.config.mjs"   # set per project by manage_menu (whichever name it uses)
+# Every name Astro loads its config from. Create writes .mjs; projects made
+# elsewhere may use any of them.
+ASTRO_CONFIG_NAMES=(astro.config.mjs astro.config.js astro.config.ts astro.config.mts astro.config.cjs astro.config.cts)
+
+# Projects this TUI has created, opened or been pointed at, one absolute path
+# per line. Listed wherever the TUI is started, so a site living in another
+# tree (e.g. ~/Documents/...) does not depend on where discovery happens to look.
+STARLIGHT_REGISTRY="${SCOMP_STARLIGHT_REGISTRY:-${XDG_CONFIG_HOME:-$HOME/.config}/scomp-link/starlight-projects}"
 
 # Sites built over an existing folder ("external" sites) keep the absolute path
 # of that folder here, in the project root. Its presence is what marks a project
@@ -103,6 +111,34 @@ run_foreground() {
     trap ':' INT
     "$@" || true
     trap - INT
+}
+
+# project_config_file <dir> — the Astro config file name <dir> uses (empty if none).
+project_config_file() {
+    local f
+    for f in "${ASTRO_CONFIG_NAMES[@]}"; do
+        [[ -f "$1/$f" ]] && { printf '%s' "$f"; return 0; }
+    done
+    return 1
+}
+
+# real_path <dir> — absolute, symlink-free path of an existing directory.
+real_path() { (cd "$1" 2>/dev/null && pwd -P); }
+
+# register_project / unregister_project <dir> — maintain STARLIGHT_REGISTRY.
+register_project() {
+    local p; p=$(real_path "$1") || return 0
+    [[ -n "$p" ]] || return 0
+    mkdir -p "$(dirname "$STARLIGHT_REGISTRY")" 2>/dev/null || return 0
+    touch "$STARLIGHT_REGISTRY" 2>/dev/null || return 0
+    grep -qxF -- "$p" "$STARLIGHT_REGISTRY" || printf '%s\n' "$p" >> "$STARLIGHT_REGISTRY"
+}
+unregister_project() {
+    local p="$1" tmp
+    [[ -f "$STARLIGHT_REGISTRY" ]] || return 0
+    tmp=$(mktemp) || return 0
+    grep -vxF -- "$p" "$STARLIGHT_REGISTRY" > "$tmp" || true
+    mv "$tmp" "$STARLIGHT_REGISTRY"
 }
 
 # Returns to ORIGIN_DIR — called before any operation that needs to rescan
@@ -159,22 +195,64 @@ preflight_checks() {
 # Project discovery
 # -----------------------------------------------------------------------------
 
+# astro_projects_under <dir> <maxdepth> — directories holding an Astro config
+# (any of ASTRO_CONFIG_NAMES), skipping node_modules and .git.
+astro_projects_under() {
+    local name_args=() f
+    for f in "${ASTRO_CONFIG_NAMES[@]}"; do name_args+=(-o -name "$f"); done
+    find "$1" -maxdepth "$2" \( -name node_modules -o -name .git \) -prune \
+        -o -type f \( "${name_args[@]:1}" \) -print 2>/dev/null \
+        | sed 's|/[^/]*$||' | sort -u
+}
+
 scan_projects() {
-    # Returns newline-separated list of dirs containing astro.config.mjs,
-    # relative to ORIGIN_DIR, depth 3. Empty if none found.
-    # Sites under STARLIGHT_HOME (external sites) are listed too, by absolute
-    # path, since they live outside the directory the TUI was started from.
+    # Newline-separated list of projects. Those up to 3 levels below ORIGIN_DIR
+    # are shown relative to it ("." for ORIGIN_DIR itself); the others — sites
+    # under STARLIGHT_HOME and projects remembered in STARLIGHT_REGISTRY — by
+    # absolute path. Each project is listed once, however it was found.
+    local -A seen=()
+    local d real
+    while IFS= read -r d; do
+        [[ -z "$d" ]] && continue
+        real=$(real_path "$d"); [[ -z "$real" || -n "${seen[$real]:-}" ]] && continue
+        seen[$real]=1
+        if [[ "$d" == "$ORIGIN_DIR" ]]; then echo "."; else echo "${d#"$ORIGIN_DIR"/}"; fi
+    done < <(astro_projects_under "$ORIGIN_DIR" 3)
+
     {
-        find "$ORIGIN_DIR" -maxdepth 3 -name "astro.config.mjs" 2>/dev/null \
-            | sed "s|/astro.config.mjs||" \
-            | sed "s|^${ORIGIN_DIR}/||" \
-            | sed "s|^${ORIGIN_DIR}$|.|" \
-            | sort
-        if [[ -d "$STARLIGHT_HOME" && "$STARLIGHT_HOME" != "$ORIGIN_DIR"* ]]; then
-            find "$STARLIGHT_HOME" -mindepth 2 -maxdepth 2 -name "astro.config.mjs" 2>/dev/null \
-                | sed "s|/astro.config.mjs||" | sort
+        [[ -d "$STARLIGHT_HOME" ]] && astro_projects_under "$STARLIGHT_HOME" 2
+        # Remembered projects that still exist and still hold an Astro config.
+        # Missing ones are skipped, not forgotten (an unmounted disk comes back).
+        if [[ -f "$STARLIGHT_REGISTRY" ]]; then
+            while IFS= read -r d; do
+                [[ -n "$d" && -d "$d" ]] && project_config_file "$d" >/dev/null && echo "$d"
+            done < "$STARLIGHT_REGISTRY"
         fi
-    }
+    } | sort -u | while IFS= read -r d; do
+        real=$(real_path "$d"); [[ -z "$real" || -n "${seen[$real]:-}" ]] && continue
+        seen[$real]=1
+        echo "$d"
+    done
+}
+
+# Ask for a project directory anywhere on disk, remember it, and manage it.
+open_project_by_path() {
+    header "Open a Project by Path"
+    local raw dir
+    raw=$(gum input --width 70 --placeholder "Path to a Starlight project (absolute or ~/...)" \
+        --char-limit 512) || true
+    [[ -z "$raw" ]] && { warn "Cancelled."; return; }
+    [[ "$raw" == "~"* ]] && raw="${HOME}${raw:1}"
+    dir=$(real_path "$raw")
+    [[ -z "$dir" ]] && { warn "Not a directory: ${raw}"; return; }
+    if ! project_config_file "$dir" >/dev/null; then
+        warn "No Astro config (${ASTRO_CONFIG_NAMES[*]}) in ${dir}."
+        return
+    fi
+    register_project "$dir"
+    success "Remembered ${dir} — it will be listed from now on."
+    PROJECT_DIR="$dir"
+    manage_menu
 }
 
 # =============================================================================
@@ -745,6 +823,7 @@ create_project_flow() {
     # At this point cwd is inside the new project (set by create_scaffold)
     local created_dir
     created_dir="$(pwd)"
+    register_project "$created_dir"
 
     local next
     next=$(gum choose \
@@ -1016,6 +1095,7 @@ create_external_flow() {
     write_external_site_files "$proj" "$src" "$name" "$desc"
     (cd "$proj" && command -v mise &>/dev/null && mise trust mise.toml >/dev/null 2>&1) || true
     (cd "$proj" && create_write_init_script)
+    register_project "$proj"
     success "Site ready: ${proj}"
     info "Source: ${src} (stored in ${SOURCE_FILE})"
 
@@ -1539,11 +1619,15 @@ delete_project() {
 
     # Only ever a Starlight project, and never a directory that holds the place
     # the TUI was started from (or $HOME, or /).
-    if [[ ! -f "${dir}/${CONFIG_FILE}" || ! -f "${dir}/package.json" ]]; then
-        warn "${dir} does not look like a Starlight project (no ${CONFIG_FILE} + package.json). Not deleting."
+    if ! project_config_file "$dir" >/dev/null || [[ ! -f "${dir}/package.json" ]]; then
+        warn "${dir} does not look like a Starlight project (no Astro config + package.json). Not deleting."
         return 1
     fi
-    if [[ "$dir" == "/" || "$dir" == "$HOME" || "$ORIGIN_DIR/" == "$dir/"* ]]; then
+    # Compared as real paths: a project reached through a symlinked path must
+    # not slip past the "start directory" check.
+    local dir_p origin_p home_p
+    dir_p=$(real_path "$dir"); origin_p=$(real_path "$ORIGIN_DIR"); home_p=$(real_path "$HOME")
+    if [[ -z "$dir_p" || "$dir_p" == "/" || "$dir_p" == "$home_p" || "$origin_p/" == "$dir_p/"* ]]; then
         warn "${dir} is (or contains) the directory this TUI was started from. Not deleting — remove it by hand."
         return 1
     fi
@@ -1590,6 +1674,7 @@ delete_project() {
 
     cd "$ORIGIN_DIR" || cd / || return 1
     if rm -rf -- "${dir:?}"; then
+        unregister_project "$dir_p"
         success "Deleted ${dir}."
         return 0
     fi
@@ -1604,6 +1689,8 @@ delete_project() {
 manage_menu() {
     # Ensure we're in the project directory
     cd "$PROJECT_DIR" || error_exit "Cannot enter project directory: ${PROJECT_DIR}"
+    CONFIG_FILE=$(project_config_file "$PROJECT_DIR") || CONFIG_FILE="astro.config.mjs"
+    register_project "$PROJECT_DIR"
 
     if [[ -f "$SOURCE_FILE" ]]; then
         # Its pages belong to the source folder, so the page/section editing
@@ -1701,6 +1788,7 @@ main() {
             choice=$(gum choose \
                 "Create new project" \
                 "Create site over an existing folder" \
+                "Open a project by path…" \
                 "Refresh" \
                 "Quit" \
                 --header "What would you like to do?") || true
@@ -1708,6 +1796,7 @@ main() {
             case "$choice" in
                 "Create new project") create_project_flow ;;
                 "Create site over an existing folder") create_external_flow ;;
+                "Open a project by path…") open_project_by_path ;;
                 "Refresh")            continue ;;
                 "Quit"|"")            break ;;
             esac
@@ -1715,7 +1804,7 @@ main() {
         fi
 
         # Build menu: create option + found projects + quit
-        local menu_items=("── create new project ──" "── create site over an existing folder ──")
+        local menu_items=("── create new project ──" "── create site over an existing folder ──" "── open a project by path… ──")
         while IFS= read -r proj; do
             menu_items+=("$proj")
         done <<< "$project_list"
@@ -1731,6 +1820,9 @@ main() {
                 ;;
             "── create site over an existing folder ──")
                 create_external_flow
+                ;;
+            "── open a project by path… ──")
+                open_project_by_path
                 ;;
             "── quit ──"|"")
                 break
@@ -1751,7 +1843,7 @@ main() {
                     continue
                 fi
 
-                if [[ ! -f "${abs_path}/${CONFIG_FILE}" ]]; then
+                if ! project_config_file "$abs_path" >/dev/null; then
                     warn "'${selection}' is no longer a valid Starlight project."
                     continue
                 fi

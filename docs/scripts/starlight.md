@@ -26,9 +26,24 @@ Create and manage Astro Starlight documentation sites:
 
 ## Manage menu
 
-Pick an existing project (discovery scans for `astro.config.mjs` up to three
-levels below the current directory, plus the sites under `$SCOMP_STARLIGHT_HOME`)
-or switch to another one at any time. Opening a project whose sidebar still uses
+Pick an existing project or switch to another one at any time. The list holds:
+
+- projects up to three levels below the directory the TUI was started from
+  (shown relative to it; `node_modules` and `.git` are skipped);
+- the sites under `$SCOMP_STARLIGHT_HOME`;
+- every project the TUI has **created, opened or been pointed at** (shown by
+  absolute path), wherever the TUI is started. They are remembered in
+  `${XDG_CONFIG_HOME:-~/.config}/scomp-link/starlight-projects` (override with
+  `$SCOMP_STARLIGHT_REGISTRY`). A remembered project that no longer exists is
+  hidden but kept, so an unmounted disk doesn't drop it. Deleting a project from
+  the TUI forgets it.
+
+**Open a project by path…** adds any project on disk, e.g. one under
+`~/Documents`, which a TUI started from `~/_code` would never find by scanning.
+
+A project is recognised by any Astro config name: `astro.config.mjs`, `.js`,
+`.ts`, `.mts`, `.cjs` or `.cts`. Its actions edit whichever one it has. Create
+always writes `astro.config.mjs`. Opening a project whose sidebar still uses
 the pre-0.39 group shape (`{ label, autogenerate }`, which Starlight 0.39+
 refuses to build) offers to convert it to `{ label, items: [{ autogenerate }] }`.
 Actions:
@@ -93,9 +108,10 @@ folder) removes the project directory, after:
     commits not on any remote would be lost;
 - **asking twice:** type the project's folder name, then confirm (default No).
 
-It refuses anything that isn't a Starlight project (`astro.config.mjs` +
+It refuses anything that isn't a Starlight project (an Astro config +
 `package.json`), the directory the TUI was started from (or one of its
-parents), `$HOME` and `/`. It also refuses an external site whose source folder
+parents), `$HOME` and `/`. These are compared as real paths, so a symlinked
+path can't get around them. It also refuses an external site whose source folder
 is inside it, since deleting it would delete the documents.
 
 ## What Create generates
