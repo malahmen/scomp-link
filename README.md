@@ -101,6 +101,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`mind-trick/mind-trick.sh`](docs/scripts/mind-trick.md) | Scrub commit-message trailers (e.g. AI co-author) from git history — front-end for the standalone [mind-trick](https://github.com/malahmen/mind-trick) engine |
 | [`holonet-sync/holonet-sync.sh`](docs/scripts/holonet-sync.md) | Reconcile repos both ways between Gitea and GitHub — branches, tags, auto-merge, never a force-push — front-end for the standalone [holonet-sync](https://github.com/malahmen/holonet-sync) engine, which also runs unattended from cron |
 | [`astromech/astromech.sh`](docs/scripts/astromech.md) | Keep every git repo under your folders on a fresh main/master — commits feature-branch work, stashes changes on main, `pull --rebase`, never pushes — plus tidying local branches the trunk already holds (`git branch -d`, after showing you the list) and a toggle for git's `fetch.prune`; front-end for the standalone [astromech](https://github.com/malahmen/astromech) engine, which also runs from cron |
+| [`thermal-exhaust-port/thermal-exhaust-port.sh`](docs/scripts/thermal-exhaust-port.md) | Stepped fan curve for machines whose fans the embedded controller owns rather than hwmon PWM (a Framework Desktop exposes no `pwm*` nodes at all, so fan-control and `fancontrol` have nothing to drive) — temperature → duty steps with one-sided hysteresis, driving the EC through `ectool`; front-end for the standalone [thermal-exhaust-port](https://github.com/malahmen/thermal-exhaust-port) engine, which runs as a systemd service |
 
 ---
 
@@ -161,6 +162,7 @@ The setup script will:
 | lsof or ss                  | kind port-conflict check, lgtm/dozzle port checks     |
 | xdotool, wmctrl             | bazzite-utils (auto-installed via dnf/apt/rpm-ostree)  |
 | keyd                        | bazzite-utils `lofree-edge-fix` only (COPR-layered on Fedora Atomic, `dnf`/`apt` elsewhere; requires a reboot on rpm-ostree hosts) |
+| ectool                      | thermal-exhaust-port engine (ships with the host's EC/firmware tooling; already in the Bazzite image — not installable from a package manager) |
 | uv, python3                 | bmad                                                  |
 | flatpak, Xvfb, systemd      | lmstudio (Linux only)                                 |
 | podman (>= 4.4), systemd    | speaches Podman target (Linux only; podman installed via dnf/apt/rpm-ostree if missing) |
@@ -342,7 +344,10 @@ scomp-link/
 ├── tests/                            # Front-end tests, driven through a gum stub
 │   ├── run-all.sh                    # runs every tests/test-*.sh
 │   ├── stubs/gum                     # scripted answers instead of a terminal
-│   └── test-astromech.sh             # the astromech front-end
+│   ├── test-astromech.sh             # the astromech front-end
+│   ├── test-speaches.sh              # the speaches front-end
+│   ├── test-starlight.sh             # the starlight front-end
+│   └── test-thermal-exhaust-port.sh  # the thermal-exhaust-port front-end
 │
 └── scripts/                          # All runnable scripts live here
     │
@@ -449,6 +454,8 @@ scomp-link/
     │   └── holonet-sync.sh           # front-end for the holonet-sync Gitea <-> GitHub reconciler engine (its own repo)
     ├── astromech/
     │   └── astromech.sh              # front-end for the astromech repo-maintenance engine (its own repo)
+    ├── thermal-exhaust-port/
+    │   └── thermal-exhaust-port.sh   # front-end for the thermal-exhaust-port EC fan-curve engine (its own repo)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
