@@ -76,6 +76,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | Script                                    | Description                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------- |
 | [`lmstudio.sh`](docs/scripts/lmstudio.md) | Install and manage LM Studio (Flatpak), headless service support included |
+| [`speaches.sh`](docs/scripts/speaches.md) | Speaches speech server (OpenAI-compatible speech-to-text and text-to-speech) - install, models, round-trip test; Podman (systemd user service) · Docker · K8s |
 
 ### Gaming
 
@@ -162,6 +163,7 @@ The setup script will:
 | keyd                        | bazzite-utils `lofree-edge-fix` only (COPR-layered on Fedora Atomic, `dnf`/`apt` elsewhere; requires a reboot on rpm-ostree hosts) |
 | uv, python3                 | bmad                                                  |
 | flatpak, Xvfb, systemd      | lmstudio (Linux only)                                 |
+| podman (>= 4.4), systemd    | speaches Podman target (Linux only; podman installed via dnf/apt/rpm-ostree if missing) |
 
 > **Helm** is checked at runtime and can be auto-installed via `mise` if missing. **kubectl** is checked but not installed by the shared helpers; only `kind.sh` and `karpenter.sh` install it themselves via `mise`.
 
@@ -413,6 +415,8 @@ scomp-link/
     ├── # AI / ML
     ├── lmstudio/
     │   └── lmstudio.sh               # LM Studio install/manage, headless service
+    ├── speaches/
+    │   └── speaches.sh               # Speaches speech server (Podman · Docker · K8s)
     │
     ├── # Gaming
     ├── bazzite-utils/
@@ -650,5 +654,6 @@ Have a useful script? Contributions are welcome! Good candidates:
 - [Harbor](https://goharbor.io/) for the open-source container registry
 - [n8n](https://n8n.io/) for the workflow automation platform and [community-charts](https://github.com/community-charts/helm-charts) for its Helm chart
 - [Qdrant](https://qdrant.tech/) for the vector database and its Helm chart
+- [Speaches](https://speaches.ai/) for the OpenAI-compatible speech server
 - [Astro](https://astro.build/) and [Starlight](https://starlight.astro.build/) for documentation tooling
 - [Pandoc](https://pandoc.org/) for document conversion
