@@ -64,12 +64,34 @@ git -C "$R/alpha" push -q origin main
 printf 'onboarded=1\nroot=%s\n' "$R" > "$ASTROMECH_CONFIG"
 
 # ---- drivers ----------------------------------------------------------------
+# A run that hangs on a prompt must not hang the suite, so menu runs are
+# time-limited - but GNU `timeout` is not on macOS (coreutils installs it as
+# `gtimeout`). Without either, run unbounded rather than not at all: a missing
+# `timeout` once made every run die with "command not found", and the checks
+# below then read an empty transcript.
+if command -v timeout &>/dev/null; then LIMIT_CMD=timeout
+elif command -v gtimeout &>/dev/null; then LIMIT_CMD=gtimeout
+else LIMIT_CMD=""; echo "note - no timeout or gtimeout: menu runs are not time-limited" >&2; fi
+limited() { if [[ -n "$LIMIT_CMD" ]]; then "$LIMIT_CMD" 120 "$@"; else "$@"; fi; }
+
+# ran <status> - stop if the front-end never started: 127/126 is a launcher
+# that was not found or not executable (the missing `timeout` was exactly that,
+# with "command not found" as the whole transcript), and an empty transcript is
+# no run at all. Going on would let the checks that assert something is ABSENT
+# pass on nothing.
+ran() {
+    if [[ "$1" == 127 || "$1" == 126 || -z "$OUT" ]]; then
+        echo "   FAIL - the front-end did not run (exit $1): ${OUT:0:200}" >&2
+        exit 1
+    fi
+}
+
 # tui <answer>... — run the front-end against the REAL engine with those
 # answers. OUT is the whole transcript.
 export OUT=""
 tui() {
     printf '%s\n' "$@" > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"
-    OUT="$(ASTROMECH_DIR="$(dirname "$REAL_ENGINE")" timeout 120 bash "$FRONT" </dev/null 2>&1)"
+    OUT="$(ASTROMECH_DIR="$(dirname "$REAL_ENGINE")" limited bash "$FRONT" </dev/null 2>&1)"; ran $?
 }
 # rec <answer>... — the same, but the engine is a wrapper that RECORDS its
 # argv and forwards to the real one. CALLS is one line per invocation, which is
@@ -85,7 +107,7 @@ WRAP
     chmod +x "$T/fake/astromech.sh"
     : > "$T/calls"
     printf '%s\n' "$@" > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"
-    OUT="$(ASTROMECH_DIR="$T/fake" timeout 120 bash "$FRONT" </dev/null 2>&1)"
+    OUT="$(ASTROMECH_DIR="$T/fake" limited bash "$FRONT" </dev/null 2>&1)"; ran $?
     CALLS="$(cat "$T/calls")"
 }
 calls_with() { grep -q -- "$1" <<<"$CALLS"; }
@@ -100,7 +122,7 @@ mkdir -p "$T/old"
 sed -e '/^  tidy /d' -e '/^  prune /d' -e 's/^        tidy)/        __no_tidy)/' \
     -e 's/^        prune)/        __no_prune)/' "$REAL_ENGINE" > "$T/old/astromech.sh"
 OUT="$(printf 'Quit\n' > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"
-       ASTROMECH_DIR="$T/old" timeout 120 bash "$FRONT" </dev/null 2>&1)"
+       ASTROMECH_DIR="$T/old" limited bash "$FRONT" </dev/null 2>&1)"; ran $?
 check "an engine without tidy is not offered it"  bash -c '! grep -q "Tidy merged branches" <<<"$OUT"'
 check "  nor prune"                               bash -c '! grep -q "Fetch pruning" <<<"$OUT"'
 check "  and the rest of the menu still works"    has "Trigger maintenance" "$OUT"
