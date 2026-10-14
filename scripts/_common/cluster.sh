@@ -9,8 +9,14 @@
 #   select_target          # prompts the user; sets TARGET_TYPE and TARGET_CONTEXT
 #
 # After select_target():
-#   TARGET_TYPE    = "docker" | "kind" | "k8s"
-#   TARGET_CONTEXT = "" (docker) | cluster name (kind) | context name (k8s)
+#   TARGET_TYPE    = "docker" | "podman" | "kind" | "k8s"
+#   TARGET_CONTEXT = "" (docker, podman) | cluster name (kind) | context name (k8s)
+#
+# The podman target is opt-in: a script that handles it sets
+# SELECT_TARGET_PODMAN=1 before calling select_target. It means rootless podman
+# run as a systemd user service through Quadlet, so it is offered on Linux with
+# systemd only - and offered even when podman is not installed yet, because the
+# script that asked for it installs it.
 #
 # Calling scripts branch on TARGET_TYPE:
 #   case "$TARGET_TYPE" in
@@ -39,6 +45,14 @@ _cluster_err()  { gum style --foreground "$_C_RED" "[error] $1"; }
 
 _docker_available() {
     command -v docker &>/dev/null && docker info &>/dev/null 2>&1
+}
+
+# Linux with a systemd user manager: what a Quadlet unit needs. podman itself
+# is not required here - see the header.
+_podman_offerable() {
+    [[ "${SELECT_TARGET_PODMAN:-0}" == "1" ]] || return 1
+    [[ "$(uname -s)" == "Linux" ]] || return 1
+    command -v systemctl &>/dev/null
 }
 
 _kind_available() {
@@ -80,6 +94,17 @@ _build_options() {
     if _docker_available; then
         OPTION_LABELS+=("Docker  (local daemon)")
         OPTION_TYPES+=("docker")
+        OPTION_CONTEXTS+=("")
+    fi
+
+    # Rootless podman under systemd (opt-in)
+    if _podman_offerable; then
+        if command -v podman &>/dev/null; then
+            OPTION_LABELS+=("Podman  (rootless, systemd user service)")
+        else
+            OPTION_LABELS+=("Podman  (rootless, systemd user service - will be installed)")
+        fi
+        OPTION_TYPES+=("podman")
         OPTION_CONTEXTS+=("")
     fi
 
@@ -164,7 +189,7 @@ helm_context_flag() {
     case "$TARGET_TYPE" in
         kind)   echo "--kube-context kind-${TARGET_CONTEXT}" ;;
         k8s)    echo "--kube-context ${TARGET_CONTEXT}" ;;
-        docker) echo "" ;;
+        docker|podman) echo "" ;;
     esac
 }
 
@@ -174,7 +199,7 @@ kubectl_context_flag() {
     case "$TARGET_TYPE" in
         kind)   echo "--context kind-${TARGET_CONTEXT}" ;;
         k8s)    echo "--context ${TARGET_CONTEXT}" ;;
-        docker) echo "" ;;
+        docker|podman) echo "" ;;
     esac
 }
 
@@ -182,6 +207,7 @@ kubectl_context_flag() {
 target_summary() {
     case "$TARGET_TYPE" in
         docker) echo "Docker (local daemon)" ;;
+        podman) echo "Podman (rootless, systemd user service)" ;;
         kind)   echo "kind cluster: ${TARGET_CONTEXT}" ;;
         k8s)    echo "k8s context: ${TARGET_CONTEXT}" ;;
         *)      echo "(no target selected)" ;;
