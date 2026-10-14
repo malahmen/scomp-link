@@ -10,6 +10,7 @@ Create and manage Astro Starlight documentation sites:
 - **File management** (add, edit, rename, move, delete pages within a section)
 - **External links** (top-level, grouped, or homepage-only)
 - **Content editing** with vim integration (pages, the homepage, `astro.config.mjs`)
+- **Sites over an existing folder**: serve a folder of Markdown (e.g. a reports repository) as a Starlight site, live, without copying the documents or putting the site inside that folder
 - **Project discovery** to manage existing sites
 
 ## Requirements
@@ -23,10 +24,60 @@ Create and manage Astro Starlight documentation sites:
   existing project works without it).
 - **tree** optional — enables the *View site structure* action.
 
+## Where a new project lives
+
+Both Create flows ask where the project's files go:
+
+- **scomp-link's sites folder** (the default, so Enter takes it):
+  `${XDG_DATA_HOME:-~/.local/share}/scomp-link/starlight/<name>` (override the
+  base with `$SCOMP_STARLIGHT_HOME`). It is the same place for every project on
+  this machine, outside any code repository.
+- **Another folder…**: any path (`~/...` works). A missing folder is created
+  after a confirm.
+- **Here**: next to the directory the TUI was started from.
+
+The project folder holds the whole Astro project (`package.json`, the config,
+`src/`, `node_modules/`, `dist/`), not just configuration files. For a site
+over an existing folder, the pages stay in that folder, so the project can be
+deleted and recreated freely. For a normal project, the pages live **inside**
+it (`src/content/docs/`). The sites folder is not under version control, so the
+TUI notes that when a normal project is put there: choose another folder (a
+repository of its own, say) if those pages matter.
+
+Whichever you pick:
+
+- **Inside any git repository:** you are warned, with the repository's path,
+  because the site's files would show up there and could be committed with that
+  repository's code. You confirm before it goes ahead (default No).
+- **Overlapping the documents** (site in the source folder, or the source folder
+  in the site): refused.
+
+Created projects are remembered, so they are listed wherever the TUI is
+started from.
+
 ## Manage menu
 
-Pick an existing project (discovery scans for `astro.config.mjs`) or switch to
-another one at any time. Actions:
+Pick an existing project or switch to another one at any time. The list holds:
+
+- projects up to three levels below the directory the TUI was started from
+  (shown relative to it; `node_modules` and `.git` are skipped);
+- the sites under `$SCOMP_STARLIGHT_HOME`;
+- every project the TUI has **created, opened or been pointed at** (shown by
+  absolute path), wherever the TUI is started. They are remembered in
+  `${XDG_CONFIG_HOME:-~/.config}/scomp-link/starlight-projects` (override with
+  `$SCOMP_STARLIGHT_REGISTRY`). A remembered project that no longer exists is
+  hidden but kept, so an unmounted disk doesn't drop it. Deleting a project from
+  the TUI forgets it.
+
+**Open a project by path…** adds any project on disk, e.g. one under
+`~/Documents`, which a TUI started from `~/_code` would never find by scanning.
+
+A project is recognised by any Astro config name: `astro.config.mjs`, `.js`,
+`.ts`, `.mts`, `.cjs` or `.cts`. Its actions edit whichever one it has. Create
+always writes `astro.config.mjs`. Opening a project whose sidebar still uses
+the pre-0.39 group shape (`{ label, autogenerate }`, which Starlight 0.39+
+refuses to build) offers to convert it to `{ label, items: [{ autogenerate }] }`.
+Actions:
 
 - **Sections** — Add section · Rename section · Remove section · Reorder sections
   (reorder opens `astro.config.mjs` in vim)
@@ -35,8 +86,66 @@ another one at any time. Actions:
   when a strict-mode sidebar entry in `astro.config.mjs` may need updating.
 - **Site** — Edit homepage (`index.mdx`/`index.md`, created if missing) ·
   Edit astro.config.mjs · View site structure (only when `tree` is installed;
-  ignores `node_modules`, `.git`, `dist`, `.astro`)
+  ignores `node_modules`, `.git`, `dist`, `.astro`) · Delete this project
+  (see below)
 - **Switch project** · **Quit**
+
+## Sites over an existing folder
+
+**Create site over an existing folder** builds a Starlight site whose pages are
+the `.md`/`.mdx` files of a folder you already have (a reports repository, a
+notes folder), read **in place**:
+
+- **Nothing is copied, and nothing is written into the folder.** The
+  project's `src/content/docs` is a **symlink** to the folder, whose path is
+  also recorded in the project's `.docs-source`. Starlight therefore sees its
+  usual layout: the sidebar starts at the folder's own files, not at the path
+  that leads to it. Edits in the folder show up on the next reload of the dev
+  server. Deleting the site removes the link, never the folder.
+- **Sites made by an earlier version** read the folder by absolute path, so
+  their sidebar showed that path as nested groups. Opening one offers to
+  regenerate its files, keeping the title and description.
+- **The site project lives elsewhere:** any folder you choose (see "Where a
+  new project lives" above). `node_modules/` and `dist/` stay in the project.
+- **Plain Markdown documents read as pages:**
+  - a file without a front-matter `title` takes its first `# ` heading, and that
+    leading H1 is dropped, since Starlight renders the title as the page heading;
+  - `README.md` is the homepage (`README.md` in a subfolder is that folder's index);
+  - relative links between documents (`[x](other.md#part)`) become page URLs
+    (`/other/#part`);
+  - `draft: true` in front matter keeps a document out of a build.
+- **Its manage menu:**
+  - serve (dev server, live; this machine only, or the network with `--host`);
+  - build static site (into the project's `dist/`);
+  - preview the build;
+  - change source folder;
+  - edit `astro.config.mjs`;
+  - delete this site (the source folder is never touched).
+
+  Page and section editing doesn't apply, because the content belongs to the
+  source folder.
+
+It installs `@astrojs/markdown-remark`, because the two Markdown plugins it uses
+run on Astro 7's `unified()` processor. Images referenced from the documents are
+served from the source folder: the dev server is allowed to read it.
+
+## Deleting a project
+
+**Delete this project** (or **Delete this site** for a site over an existing
+folder) removes the project directory, after:
+
+- **showing what goes:** the path, the file count and size;
+  - for a normal project, how many pages under `src/content/docs/` go with it;
+  - for an external site, the reminder that its source folder is not touched;
+  - if the project is its own git repository, how many uncommitted changes and
+    commits not on any remote would be lost;
+- **asking twice:** type the project's folder name, then confirm (default No).
+
+It refuses anything that isn't a Starlight project (an Astro config +
+`package.json`), the directory the TUI was started from (or one of its
+parents), `$HOME` and `/`. These are compared as real paths, so a symlinked
+path can't get around them. It also refuses an external site whose source folder
+is inside it, since deleting it would delete the documents.
 
 ## What Create generates
 
@@ -55,6 +164,9 @@ Besides the Astro Starlight scaffold itself, Create writes:
 
   When Mermaid is enabled, `[tools]` also pins `npm:@mermaid-js/mermaid-cli`
   (11.12.0) via mise. Create then runs `mise trust mise.toml` + `mise install`.
+  Mermaid's remark plugin is passed to Astro 7's `markdown.processor:
+  unified(…)`, so Create also installs `@astrojs/markdown-remark` (Astro 7 no
+  longer ships it, and the old `markdown.remarkPlugins` fails without it).
 - **`converter/`** — the project's own gum front-end (`convert.sh`) plus a
   vendored copy of the [holo-convert](holo-convert.md) engine
   (`holo-convert.sh` and its `.fcc/` assets copied to `converter/.fcc/`), so the

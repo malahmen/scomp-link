@@ -91,7 +91,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 
 | Script                                                  | Description                                                                 |
 | ------------------------------------------------------- | --------------------------------------------------------------------------- |
-| [`starlight/starlight_astro.sh`](docs/scripts/starlight.md) | Create and manage Starlight documentation sites                          |
+| [`starlight/starlight_astro.sh`](docs/scripts/starlight.md) | Create and manage Starlight documentation sites, including sites served live over an existing folder of Markdown |
 | [`protocol-droid/protocol-droid.sh`](docs/scripts/protocol-droid.md) | Convert PDF/Office/audio/etc -> Markdown/JSON (local or scalable service) — front-end for the standalone [protocol-droid](https://github.com/malahmen/protocol-droid) engine, a multi-backend converter driving [marker](https://github.com/datalab-to/marker) and [Microsoft markitdown](https://github.com/microsoft/markitdown) |
 | [`holo-convert`](docs/scripts/holo-convert.md)         | Convert documents (Markdown ↔ PDF/DOCX) — front-end for the standalone [holo-convert](https://github.com/malahmen/holo-convert) engine |
 | [`bmad/bmad.sh`](docs/scripts/bmad.md)                 | Manage BMAD-METHOD projects — create, update BMAD version, delete project |
