@@ -249,6 +249,13 @@ gather_options() {
         fi
     fi
 
+    # Opening each output is the engine's default; a batch opens one viewer
+    # per file. Only the "no" is passed: --no-open is new in holo-convert
+    # v2, and a v1.0.0 engine (HOLO_CONVERT_DIR rollback) rejects it.
+    local what="the output"
+    (( ${#FILES[@]} > 1 )) && what="each of the ${#FILES[@]} outputs"
+    gum confirm "Open ${what} in its viewer when done?" || FLAGS+=(--no-open)
+
     # Format-specific.
     case "${src}->${to}" in
         "md->docx") gather_docx_options ;;
