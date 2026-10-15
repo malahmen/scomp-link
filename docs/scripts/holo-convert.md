@@ -70,4 +70,6 @@ Dependencies are checked, never installed automatically: `bash` 4+ and `pandoc` 
 
 When podman or docker is present, the menu first asks where the tools come from: **local** (installed on this host) or **container** (`--engine container`: pinned tools in an image, nothing installed here). In container mode the PDF engine is XeLaTeX with the image's fonts, so the font and engine pickers are skipped, and a failed run offers to build the image instead of installing packages.
 
+**Trying the Python engine** (work in progress): `HOLO_CONVERT_IMPL=python` makes the menu run the engine's Python port, `wip/holo-convert.sh` from the same checkout, and says so when it starts. Unset, the bash engine runs.
+
 See the [holo-convert repository](https://github.com/malahmen/holo-convert) for engine internals and the complete option reference.
