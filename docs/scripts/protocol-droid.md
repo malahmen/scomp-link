@@ -44,6 +44,10 @@ The front-end finds `protocol-droid.sh` automatically, in order:
 Set `$PROTOCOL_DROID_REPO` to clone from a different remote (a fork or mirror).
 The cache honours `XDG_CACHE_HOME` (`${XDG_CACHE_HOME:-~/.cache}/scomp-link/protocol-droid`).
 
+**Trying the Python engine** (work in progress): `PROTOCOL_DROID_ENGINE=python` makes the
+front-end run `wip/protocol-droid.sh` from the checkout found above - the Python port, with
+the same commands and flags - and says so when it starts. Unset, the bash engine runs.
+
 Ctrl-C is handled: every engine call the menus make runs in the foreground, so
 an interrupt (or an engine error) stops just the running conversion — or
 setup/logs — and returns you to the TUI.
