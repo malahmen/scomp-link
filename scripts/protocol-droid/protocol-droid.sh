@@ -67,6 +67,20 @@ resolve_engine() {
     ENGINE="${PD_CACHE}/protocol-droid.sh"; success "protocol-droid cloned to ${PD_CACHE}"
 }
 
+# Opt-in: PROTOCOL_DROID_ENGINE=python runs the Python port from the same
+# checkout's wip/ (work in progress), through a launcher with the bash
+# engine's name and flags. Unset, or the port absent, the bash engine runs.
+apply_engine_choice() {
+    [[ "${PROTOCOL_DROID_ENGINE:-bash}" == python ]] || return 0
+    local port; port="$(dirname "$ENGINE")/wip/protocol-droid.sh"
+    if [[ -f "$port" ]]; then
+        ENGINE="$port"
+        warn "Using the Python engine (work in progress): ${port}"
+    else
+        warn "PROTOCOL_DROID_ENGINE=python, but this checkout has no wip/protocol-droid.sh — using the bash engine."
+    fi
+}
+
 # engine: for calls whose exit status the caller inspects (scan). Every action
 # the menus run — convert included — goes through engine_foreground instead:
 # under `set -e` a bare `engine` that exits non-zero (a failed conversion, a
@@ -451,6 +465,7 @@ menu_container() {
 # -----------------------------------------------------------------------------
 main() {
     resolve_engine
+    apply_engine_choice
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border double \
         --align center --width 62 --margin "1 2" --padding "1 4" \
