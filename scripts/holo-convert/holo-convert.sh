@@ -175,21 +175,6 @@ pick_font() {
     printf '%s' "$font"
 }
 
-# Opt-in: HOLO_CONVERT_IMPL=python runs the engine's Python port from the same
-# checkout's wip/ (work in progress), through a launcher with the bash engine's
-# name and flags. Unset, or the port absent, the bash engine runs. (Not
-# HOLO_CONVERT_ENGINE: that already chooses local or container tools.)
-apply_engine_choice() {
-    [[ "${HOLO_CONVERT_IMPL:-bash}" == python ]] || return 0
-    local port; port="$(dirname "$ENGINE")/wip/holo-convert.sh"
-    if [[ -f "$port" ]]; then
-        ENGINE="$port"
-        warn "Using the Python engine (work in progress): ${port}"
-    else
-        warn "HOLO_CONVERT_IMPL=python, but this checkout has no wip/holo-convert.sh — using the bash engine."
-    fi
-}
-
 # Where the tools come from. Offered only when a container runtime is here:
 # without one there is nothing to choose. The engine does the rest - in
 # container mode its --setup builds the image instead of installing packages.
@@ -411,7 +396,6 @@ for x in data:
 # -----------------------------------------------------------------------------
 main() {
     resolve_engine
-    apply_engine_choice
     gather_options
     interactive_link_check
 
