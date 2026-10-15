@@ -7,6 +7,8 @@
 A gum front-end for **[protocol-droid](https://github.com/malahmen/protocol-droid)**,
 a standalone, gum-free **multi-backend** engine that converts documents **into**
 Markdown (or JSON/HTML/chunks) — the inverse of [`holo-convert`](holo-convert.md).
+The engine is Python (standard library only) behind the same `protocol-droid.sh`;
+the bash engine it replaced is v1.0.0.
 scomp-link ships only the front-end; the logic (and the converter dependencies)
 live in the engine's own repo — the same split as [holo-convert](holo-convert.md),
 [navicomputer](navicomputer.md), and [mind-trick](mind-trick.md).
@@ -92,7 +94,9 @@ marker pulls in PyTorch and downloads several GB of models on first run, so the
 engine installs it in an **isolated pipx environment**; it never touches system
 Python.
 
-- Requires **Python 3.10–3.13** and **pipx** (the engine installs pipx during
+- The engine itself runs on the host's own `python3` (any 3.9+). The range
+  below is only for marker's isolated environment.
+- That environment requires **Python 3.10–3.13** and **pipx** (the engine installs pipx during
   `setup` if missing). marker/PyTorch do **not** support Python 3.14 yet, so the
   engine auto-selects a supported interpreter (preferring 3.12) with a working
   `venv`; it does **not** use a too-new default `python3`.
