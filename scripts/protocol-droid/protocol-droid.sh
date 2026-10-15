@@ -412,6 +412,41 @@ menu_service() {
 }
 
 # -----------------------------------------------------------------------------
+# Container: marker from the service image, run once on local files - nothing
+# installed here. The engine's `container` mode does the work; this only asks.
+# -----------------------------------------------------------------------------
+menu_container() {
+    header "marker in a container (nothing installed here)"
+    command -v podman &>/dev/null || command -v docker &>/dev/null \
+        || { warn "Needs podman or docker."; return 0; }
+    while true; do
+        local action
+        action=$(gum choose "Convert documents" "Benchmark (model load vs per document)" \
+            "Status" "Build image" "Back" --header "protocol-droid container:") || true
+        case "$action" in
+            "Convert documents")
+                pick_source marker || continue
+                local fmt out
+                fmt=$(gum choose "markdown" "json" "html" "chunks" --header "Output format:") || continue
+                out=$(gum input --value "$DEFAULT_OUTPUT_DIR" --header "Output directory:") || continue
+                local -a args=(container convert --output-format "$fmt" --output-dir "${out:-$DEFAULT_OUTPUT_DIR}")
+                gum confirm "Force OCR on the whole document? (slower, fixes bad embedded text)" && args+=(--force-ocr)
+                engine_convert "${args[@]}" "${PICKED_PATHS[@]}" ;;
+            "Benchmark"*)
+                info "Times marker's model load apart from each document - the saving a resident worker gives."
+                pick_source marker || continue
+                local runs; runs=$(gum input --value "2" --header "Runs over the set (the first also downloads the models):") || continue
+                [[ "$runs" =~ ^[1-9][0-9]*$ ]] || { warn "Not a positive number: '${runs}'."; continue; }
+                engine_foreground container bench --runs "$runs" "${PICKED_PATHS[@]}" ;;
+            "Status")      engine_foreground container status ;;
+            "Build image") engine_foreground container build ;;
+            "Back"|"")     return 0 ;;
+        esac
+        echo ""
+    done
+}
+
+# -----------------------------------------------------------------------------
 # Main menu loop
 # -----------------------------------------------------------------------------
 main() {
@@ -426,12 +461,14 @@ main() {
         choice=$(gum choose \
             "Convert documents" \
             "Local tool  (setup · status · manage a backend)" \
+            "marker in a container  (nothing installed · convert · benchmark)" \
             "Deploy as a service  (Docker / K8s · marker)" \
             "Quit" \
             --header "What would you like to do?") || true
         case "$choice" in
             "Convert documents")     action_convert ;;
             "Local tool"*)           menu_local ;;
+            "marker in a container"*) menu_container ;;
             "Deploy as a service"*)  menu_service ;;
             "Quit"|"")               gum style --faint "Bye."; exit 0 ;;
         esac

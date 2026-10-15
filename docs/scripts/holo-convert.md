@@ -68,4 +68,6 @@ holo-convert.sh --help                # full flag list
 
 Dependencies are checked, never installed automatically: `bash` 4+ and `pandoc` always; a LaTeX engine for PDF; `python3` (stdlib) for DOCX; optional `rsvg-convert`, ImageMagick/`sips`, fontconfig, and `mermaid-cli`. Run `--setup` to install the core, or `--with-optional` for the core plus the optional tools.
 
+When podman or docker is present, the menu first asks where the tools come from: **local** (installed on this host) or **container** (`--engine container`: pinned tools in an image, nothing installed here). In container mode the PDF engine is XeLaTeX with the image's fonts, so the font and engine pickers are skipped, and a failed run offers to build the image instead of installing packages.
+
 See the [holo-convert repository](https://github.com/malahmen/holo-convert) for engine internals and the complete option reference.

@@ -175,8 +175,25 @@ pick_font() {
     printf '%s' "$font"
 }
 
+# Where the tools come from. Offered only when a container runtime is here:
+# without one there is nothing to choose. The engine does the rest - in
+# container mode its --setup builds the image instead of installing packages.
+ENGINE_MODE="local"
+choose_engine_mode() {
+    command -v podman &>/dev/null || command -v docker &>/dev/null || return 0
+    local sel
+    sel=$(gum choose "local - the tools installed on this host" \
+        "container - pinned tools in an image, nothing installed here" \
+        --header "Run the conversion with:") || exit 0
+    if [[ "$sel" == container* ]]; then
+        ENGINE_MODE="container"
+        FLAGS+=(--engine container)
+    fi
+}
+
 gather_options() {
     header "holo-convert"
+    choose_engine_mode
 
     local src to
     src=$(gum choose "md" "docx" --header "Source format:") || exit 0
@@ -306,6 +323,12 @@ pick_pdf_engine() {
 
 gather_pdf_options() {
     local font eng
+    # In the image, the PDF engine is XeLaTeX and the fonts are the image's:
+    # this host's fonts and engines are not the ones that will run.
+    if [[ "$ENGINE_MODE" == container ]]; then
+        info "container: XeLaTeX with the image's fonts (Latin Modern, DejaVu)."
+        return 0
+    fi
     font=$(pick_font "None (pandoc default)")
     [[ -n "$font" ]] && FLAGS+=(--font "$font")
     eng=$(pick_pdf_engine)
@@ -387,7 +410,9 @@ main() {
     # which the engine's array expansions abort under.
     if ! "$BASH" "$ENGINE" "${FLAGS[@]}" "${FILES[@]}"; then
         warn "Conversion failed — a dependency may be missing."
-        if gum confirm "Run 'holo-convert --setup' to install dependencies, then retry?"; then
+        local setup_q="Run 'holo-convert --setup' to install dependencies, then retry?"
+        [[ "$ENGINE_MODE" == container ]] && setup_q="Build the container image ('holo-convert --setup --engine container'), then retry?"
+        if gum confirm "$setup_q"; then
             # Scope the setup to the chosen target (--from/--to are already in FLAGS).
             "$BASH" "$ENGINE" --setup "${FLAGS[@]}" || error_exit "Setup failed."
             "$BASH" "$ENGINE" "${FLAGS[@]}" "${FILES[@]}" || error_exit "Conversion failed after setup."
