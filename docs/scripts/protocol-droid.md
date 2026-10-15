@@ -51,6 +51,9 @@ setup/logs — and returns you to the TUI.
 ## Modes
 
 - **local** — run a backend on this machine, isolated in a pipx environment.
+- **container** — marker from the service image, run once on local files: nothing
+  installed on this host, models cached in a named volume. Also `bench`, which
+  times marker's model load apart from each document.
 - **service** — deploy a scalable containerized service (Redis queue + enqueue
   API + marker workers) via Docker or Kubernetes. **marker-only.**
 
@@ -73,6 +76,9 @@ The top level has three entries:
   | — | Install a plugin | `pipx inject` a `#markitdown-plugin` package |
   | Uninstall | Uninstall | Remove that backend's pipx env |
 
+- **marker in a container** — convert documents or run the benchmark with marker
+  from the image (`container convert` / `container bench`), check its status, or
+  build it. Needs podman or docker.
 - **Deploy as a service (Docker / K8s)** — the scalable marker deployment (below).
 
 ## The marker backend
