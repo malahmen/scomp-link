@@ -28,8 +28,12 @@ Launched from the scomp-link menu it:
    repos**, in which case it lists the repos inside and you pick **one** (never
    several — it's a sensitive op).
 2. Asks for the pattern to remove (`grep -iE`, default the AI co-author trailer).
-3. Shows a **dry-run** report of the matching commits/branches.
-4. Asks before **rewriting**, and again before **force-pushing**.
+3. Shows a **dry-run** report of the matching commits/branches. If nothing
+   matches, it stops there.
+4. If this machine has no history-rewriting tool (git 2.55 removed
+   `filter-branch`), offers to install **git filter-repo**: one pinned,
+   checksum-verified file into `~/.local/bin`, no root (the engine's `--setup`).
+5. Asks before **rewriting**, and again before **force-pushing**.
 
 ## Safety
 
@@ -42,19 +46,14 @@ Launched from the scomp-link menu it:
 
 ## Limitations (read before pushing)
 
-- **Tags are not rewritten or pushed.** `filter-branch` runs over `--all`
-  without a tag-name filter, so annotated/lightweight tags keep pointing at the
-  *old* commits, which therefore survive on the remote; a later `git fetch
-  --tags` brings the scrubbed commits (trailer included) straight back. Delete
-  and re-create tags by hand, or run it on a repo without tags.
+- **Rewritten:** every local branch, all tags (re-created on the rewritten
+  commits) and the `origin/*` tracking refs.
+- **Push scope**: local branches that have a matching `origin/<branch>`, with
+  `--force-with-lease` (a remote someone pushed to meanwhile is refused, not
+  overwritten), then all tags with `--force`. Other remotes and remote-only
+  branches are left untouched.
 - **Signatures are stripped** — rewritten commits lose their GPG/SSH signatures.
-- **Push scope**: only local branches that have a matching `origin/<branch>`
-  are force-pushed (plain `--force`, not `--force-with-lease`). Other remotes
-  and remote-only branches are left untouched.
-- **Shallow clones are unsupported** — `filter-branch` on a `--depth` clone
-  produces broken history; use a full clone.
-- The engine still uses `git filter-branch`, which git deprecates in favour of
-  `git filter-repo` (`--message-callback` does the same job).
+- **Shallow clones are unsupported** — use a full clone.
 
 ## What it can't do
 
@@ -73,4 +72,6 @@ mind-trick.sh --help
 ```
 
 See the [engine README](https://github.com/malahmen/mind-trick) for the full flag
-reference. Requires only **git**.
+reference. Requires **git**, plus **git filter-repo** (`mind-trick.sh --setup`
+installs it; needs `python3` and `curl`). `git filter-branch` is used where it
+still exists, which is no longer the case from git 2.55.

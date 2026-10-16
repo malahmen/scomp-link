@@ -89,9 +89,18 @@ main() {
     # fails the same way a second time. If nothing matches, we're done.
     # Captured, not piped into `grep -q`: under pipefail an early-exiting grep
     # can SIGPIPE git and turn "found some" into "found none".
-    local matches
+    local matches rc=0
     matches=$(git -C "$repo" log --all -i -E --grep="$pattern" --format='%H' 2>/dev/null || true)
-    engine --repo "$repo" --pattern "$pattern" || exit $?
+    engine --repo "$repo" --pattern "$pattern" || rc=$?
+    # 3 = matches, but no history-rewriting tool here: offer the engine's
+    # --setup (git filter-repo into ~/.local/bin, no root), then report again.
+    if (( rc == 3 )); then
+        gum confirm "Install git filter-repo (one file, into ~/.local/bin, no root)?" \
+            || { info "Cancelled — nothing changed."; exit 3; }
+        engine --setup || error_exit "Installing git filter-repo failed — nothing changed."
+        rc=0; engine --repo "$repo" --pattern "$pattern" || rc=$?
+    fi
+    (( rc == 0 )) || exit "$rc"
     [[ -n "$matches" ]] || exit 0
 
     gum confirm "Rewrite history to remove them? (a backup bundle is made first)" \
