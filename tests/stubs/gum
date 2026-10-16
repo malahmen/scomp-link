@@ -36,7 +36,9 @@ case "$cmd" in
                 *)   printf '<option> %s\n' "$1" >&2; shift ;;
             esac
         done
-        a="$(_pop)"; printf '<choose> %s\n' "$a" >&2; printf '%s\n' "$a" ;;
+        # A multi-select (--no-limit) answer is several lines; the answers
+        # file has one per prompt, so a literal \n inside one splits it.
+        a="$(_pop)"; printf '<choose> %s\n' "$a" >&2; printf '%s\n' "${a//\\n/$'\n'}" ;;
     confirm)
         a="$(_pop)"; printf '<confirm> %s -> %s\n' "$*" "$a" >&2
         case "$a" in
