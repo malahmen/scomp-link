@@ -84,12 +84,15 @@ main() {
         --header "Remove commit-message lines matching (grep -iE):") || exit 0
     [[ -n "$pattern" ]] || { warn "A pattern is required."; exit 0; }
 
-    # Show the dry-run report (engine). If nothing matches, we're done.
-    if ! git -C "$repo" log --all -i -E --grep="$pattern" --format='%H' 2>/dev/null | grep -q .; then
-        engine --repo "$repo" --pattern "$pattern" || true
-        exit 0
-    fi
-    engine --repo "$repo" --pattern "$pattern" || true   # prints the matches
+    # The dry run (engine) lists the matches. If it fails (no rewrite tool on
+    # this machine, a dirty tree…) stop here: asking to rewrite anyway only
+    # fails the same way a second time. If nothing matches, we're done.
+    # Captured, not piped into `grep -q`: under pipefail an early-exiting grep
+    # can SIGPIPE git and turn "found some" into "found none".
+    local matches
+    matches=$(git -C "$repo" log --all -i -E --grep="$pattern" --format='%H' 2>/dev/null || true)
+    engine --repo "$repo" --pattern "$pattern" || exit $?
+    [[ -n "$matches" ]] || exit 0
 
     gum confirm "Rewrite history to remove them? (a backup bundle is made first)" \
         || { info "Cancelled — nothing changed."; exit 0; }
