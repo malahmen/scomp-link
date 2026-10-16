@@ -348,6 +348,7 @@ scomp-link/
 │   ├── stubs/gum                     # scripted answers instead of a terminal
 │   ├── test-astromech.sh             # the astromech front-end
 │   ├── test-carbonite.sh             # the carbonite front-end (real engine, fake CoolerControl)
+│   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
 │   └── test-thermal-exhaust-port.sh  # the thermal-exhaust-port front-end
