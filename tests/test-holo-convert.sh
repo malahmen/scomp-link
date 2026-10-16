@@ -22,6 +22,15 @@ check() { local d="$1"; shift; if "$@"; then echo "   ok   - $d"; else echo "   
 mkdir -p "$T/engine" "$T/bin" "$T/src"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s/args"\n' "$T" > "$T/engine/holo-convert.sh"
 cp "${TEST_DIR}/stubs/gum" "$T/bin/gum"; chmod +x "$T/bin/gum"
+# The front-end asks local-vs-container only when podman or docker is on PATH,
+# and the answers below are a fixed list that starts with that question's. So
+# a runtime is always put there: without one (a bare container, a CI runner
+# with neither) the question was skipped, every later answer shifted by one,
+# and the --no-open checks failed for a reason that had nothing to do with
+# --no-open (Kamino item 67). The stub is only looked up, never run: the
+# answer is "local".
+printf '#!/bin/sh\necho "stub podman: not for running" >&2\nexit 1\n' > "$T/bin/podman"
+chmod +x "$T/bin/podman"
 : > "$T/src/report.docx"
 
 # drive <answer to "Open ... when done?">
@@ -34,6 +43,7 @@ drive() {
 
 echo "# opening the output"
 drive yes
+check "the menus ask local or container first (a runtime is on PATH)" grep -q "local - the tools installed on this host" "$T/out"
 check "the menus ask about opening the output" grep -q "Open the output in its viewer when done" "$T/out"
 check "yes: the engine runs" [ -s "$T/args" ]
 check "  without --no-open (opening is its default)" bash -c '! grep -qx -- "--no-open" "$1"' _ "$T/args"
