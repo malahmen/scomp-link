@@ -55,8 +55,8 @@ CARB_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/carbonite"
 ENGINE=""
 
 # Engine-reported state, filled by _engine_state.
-URL=""; TOKEN=""; REACHABLE=0; AUTHORIZED=0; APPLIED=0
-CURVE=""; DEFAULT_CURVE=""; SENSORS=""; CHANNELS=""; PINS=""; HYST=""; DELAY=""; CONFLICTS=0
+URL=""; REACHABLE=0; AUTHORIZED=0; APPLIED=0
+CURVE=""; DEFAULT_CURVE=""; SENSORS=""; CHANNELS=""; PINS=""; CONFLICTS=0
 
 # Desktop presets, read against a CPU package sensor (TjMax 100C on a 12th-gen
 # Intel) and a GPU core sensor. Labelled by what they are FOR.
@@ -114,12 +114,14 @@ engine() { bash "$ENGINE" "$@"; }
 # -----------------------------------------------------------------------------
 _engine_state() {
     local key val
-    URL=""; TOKEN=""; REACHABLE=0; AUTHORIZED=0; APPLIED=0
-    CURVE=""; DEFAULT_CURVE=""; SENSORS=""; CHANNELS=""; PINS=""; HYST=""; DELAY=""; CONFLICTS=0
+    URL=""; REACHABLE=0; AUTHORIZED=0; APPLIED=0
+    CURVE=""; DEFAULT_CURVE=""; SENSORS=""; CHANNELS=""; PINS=""; CONFLICTS=0
+    # Only what the menus use. The engine also reports token, hyst and delay;
+    # the token check reads `authorized`, and status prints the engine's own
+    # `status`, so those are left unread.
     while IFS='=' read -r key val; do
         case "$key" in
             url)           URL="$val" ;;
-            token)         TOKEN="$val" ;;
             reachable)     REACHABLE="$val" ;;
             authorized)    AUTHORIZED="$val" ;;
             applied)       APPLIED="$val" ;;
@@ -128,8 +130,6 @@ _engine_state() {
             sensors)       SENSORS="$val" ;;
             channels)      CHANNELS="$val" ;;
             pins)          PINS="$val" ;;
-            hyst)          HYST="$val" ;;
-            delay)         DELAY="$val" ;;
             conflicts)     CONFLICTS="$val" ;;
         esac
     done < <(engine config 2>/dev/null)
