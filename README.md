@@ -77,6 +77,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | ----------------------------------------- | ------------------------------------------------------------------------- |
 | [`lmstudio.sh`](docs/scripts/lmstudio.md) | Install and manage LM Studio (Flatpak), headless service support included |
 | [`speaches.sh`](docs/scripts/speaches.md) | Speaches speech server (OpenAI-compatible speech-to-text and text-to-speech) - install, models, round-trip test; Podman (systemd user service) · Docker · K8s |
+| [`protocol.sh`](docs/scripts/protocol.md) | protocol, the conversion API (marker · markitdown behind one non-blocking API) - build from source, install, status, round-trip test; Podman (systemd user services) |
 
 ### Gaming
 
@@ -168,6 +169,7 @@ The setup script will:
 | uv, python3                 | bmad                                                  |
 | flatpak, Xvfb, systemd      | lmstudio (Linux only)                                 |
 | podman (>= 4.4), systemd    | speaches Podman target (Linux only; podman installed via dnf/apt/rpm-ostree if missing) |
+| podman (>= 4.5), systemd, git | protocol (Linux only; builds its images from source) |
 
 > **Helm** is checked at runtime and can be auto-installed via `mise` if missing. **kubectl** is checked but not installed by the shared helpers; only `kind.sh` and `karpenter.sh` install it themselves via `mise`.
 
@@ -349,6 +351,7 @@ scomp-link/
 │   ├── test-astromech.sh             # the astromech front-end
 │   ├── test-carbonite.sh             # the carbonite front-end (real engine, fake CoolerControl)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
+│   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
 │   └── test-thermal-exhaust-port.sh  # the thermal-exhaust-port front-end
@@ -426,6 +429,8 @@ scomp-link/
     │   └── lmstudio.sh               # LM Studio install/manage, headless service
     ├── speaches/
     │   └── speaches.sh               # Speaches speech server (Podman · Docker · K8s)
+    ├── protocol/
+    │   └── protocol.sh               # protocol conversion API (Podman)
     │
     ├── # Gaming
     ├── bazzite-utils/
