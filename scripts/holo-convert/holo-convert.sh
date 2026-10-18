@@ -30,7 +30,6 @@ USE_TP=false
 source "${SCRIPT_DIR}/../_common/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required to fetch the engine." >&2; exit 1; }
 
 HOLO_REPO="${HOLO_CONVERT_REPO:-https://github.com/malahmen/holo-convert.git}"
 HOLO_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/holo-convert"
@@ -60,12 +59,13 @@ resolve_engine() {
     if [[ -f "${HOLO_CACHE}/holo-convert.sh" ]]; then
         ENGINE="${HOLO_CACHE}/holo-convert.sh"
         info "Using cached holo-convert: ${HOLO_CACHE}"
-        if [[ -d "${HOLO_CACHE}/.git" ]] && gum confirm "Update holo-convert (git pull)?"; then
+        if [[ -d "${HOLO_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update holo-convert (git pull)?"; then
             gum spin --spinner dot --title "Updating holo-convert..." -- \
                 git -C "$HOLO_CACHE" pull --ff-only || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the holo-convert engine"
 
     gum confirm "holo-convert engine not found. Clone it from ${HOLO_REPO}?" \
         || error_exit "holo-convert engine is unavailable."

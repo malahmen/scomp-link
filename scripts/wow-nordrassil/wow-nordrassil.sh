@@ -37,7 +37,6 @@ fi
 source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required." >&2; exit 1; }
 
 NORDRASSIL_REPO="${NORDRASSIL_REPO:-https://github.com/malahmen/nordrassil.git}"
 NORDRASSIL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/nordrassil"
@@ -68,11 +67,12 @@ resolve_engine() {
     fi
     if [[ -f "${NORDRASSIL_CACHE}/nordrassil.sh" ]]; then
         ENGINE="${NORDRASSIL_CACHE}/nordrassil.sh"; info "Using cached nordrassil: ${NORDRASSIL_CACHE}"
-        if [[ -d "${NORDRASSIL_CACHE}/.git" ]] && gum confirm "Update nordrassil (git pull)?"; then
+        if [[ -d "${NORDRASSIL_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update nordrassil (git pull)?"; then
             gum spin --spinner dot --title "Updating nordrassil..." -- git -C "$NORDRASSIL_CACHE" pull --ff-only || warn "Update failed; using existing copy."
         fi
         return
     fi
+    need_git "to fetch the nordrassil engine"
     gum confirm "nordrassil engine not found. Clone it from ${NORDRASSIL_REPO}?" || error_exit "nordrassil engine is unavailable."
     mkdir -p "$(dirname "$NORDRASSIL_CACHE")"
     gum spin --spinner dot --title "Cloning nordrassil..." -- git clone --depth 1 "$NORDRASSIL_REPO" "$NORDRASSIL_CACHE" \

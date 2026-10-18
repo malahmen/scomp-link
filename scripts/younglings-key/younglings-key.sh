@@ -28,7 +28,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required to fetch the engine." >&2; exit 1; }
 
 YK_REPO="${YOUNGLINGS_KEY_REPO:-https://github.com/malahmen/younglings-key.git}"
 YK_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/younglings-key"
@@ -56,12 +55,13 @@ resolve_engine() {
     if [[ -f "${YK_CACHE}/ignite.sh" ]]; then
         ENGINE="${YK_CACHE}/ignite.sh"
         info "Using cached younglings-key: ${YK_CACHE}"
-        if [[ -d "${YK_CACHE}/.git" ]] && gum confirm "Update younglings-key (git pull)?"; then
+        if [[ -d "${YK_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update younglings-key (git pull)?"; then
             gum spin --spinner dot --title "Updating younglings-key..." -- \
                 git -C "$YK_CACHE" pull --ff-only || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the younglings-key engine"
 
     gum confirm "younglings-key engine not found. Clone it from ${YK_REPO}?" \
         || error_exit "younglings-key engine is unavailable."

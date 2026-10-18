@@ -36,7 +36,6 @@ fi
 source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required." >&2; exit 1; }
 
 DARK_PORTAL_REPO="${DARK_PORTAL_REPO:-https://github.com/malahmen/dark-portal.git}"
 DARK_PORTAL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/dark-portal"
@@ -54,11 +53,12 @@ resolve_engine() {
     fi
     if [[ -f "${DARK_PORTAL_CACHE}/dark-portal.sh" ]]; then
         ENGINE="${DARK_PORTAL_CACHE}/dark-portal.sh"; info "Using cached dark-portal: ${DARK_PORTAL_CACHE}"
-        if [[ -d "${DARK_PORTAL_CACHE}/.git" ]] && gum confirm "Update dark-portal (git pull)?"; then
+        if [[ -d "${DARK_PORTAL_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update dark-portal (git pull)?"; then
             gum spin --spinner dot --title "Updating dark-portal..." -- git -C "$DARK_PORTAL_CACHE" pull --ff-only || warn "Update failed; using existing copy."
         fi
         return
     fi
+    need_git "to fetch the dark-portal engine"
     gum confirm "dark-portal engine not found. Clone it from ${DARK_PORTAL_REPO}?" || error_exit "dark-portal engine is unavailable."
     mkdir -p "$(dirname "$DARK_PORTAL_CACHE")"
     gum spin --spinner dot --title "Cloning dark-portal..." -- git clone --depth 1 "$DARK_PORTAL_REPO" "$DARK_PORTAL_CACHE" \

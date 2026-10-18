@@ -31,7 +31,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required." >&2; exit 1; }
 
 PD_REPO="${PROTOCOL_DROID_REPO:-https://github.com/malahmen/protocol-droid.git}"
 PD_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/protocol-droid"
@@ -55,11 +54,12 @@ resolve_engine() {
     fi
     if [[ -f "${PD_CACHE}/protocol-droid.sh" ]]; then
         ENGINE="${PD_CACHE}/protocol-droid.sh"; info "Using cached protocol-droid: ${PD_CACHE}"
-        if [[ -d "${PD_CACHE}/.git" ]] && gum confirm "Update protocol-droid (git pull)?"; then
+        if [[ -d "${PD_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update protocol-droid (git pull)?"; then
             gum spin --spinner dot --title "Updating protocol-droid..." -- git -C "$PD_CACHE" pull --ff-only || warn "Update failed; using existing copy."
         fi
         return
     fi
+    need_git "to fetch the protocol-droid engine"
     gum confirm "protocol-droid engine not found. Clone it from ${PD_REPO}?" || error_exit "protocol-droid engine is unavailable."
     mkdir -p "$(dirname "$PD_CACHE")"
     gum spin --spinner dot --title "Cloning protocol-droid..." -- git clone --depth 1 "$PD_REPO" "$PD_CACHE" \

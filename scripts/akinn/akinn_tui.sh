@@ -37,7 +37,6 @@ fi
 source "${COMMON_DIR}/ui.sh"
 
 command -v gum  &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git  &>/dev/null || error_exit "git is required to fetch akinn: apt install git / brew install git"
 command -v curl &>/dev/null || error_exit "curl is required to fetch version lists."
 
 # -----------------------------------------------------------------------------
@@ -69,13 +68,14 @@ resolve_akinn() {
     if [[ -f "${AKINN_CACHE}/akinn.sh" ]]; then
         AKINN_DIR="$AKINN_CACHE"
         info "Using cached akinn: ${AKINN_DIR}"
-        if [[ -d "${AKINN_CACHE}/.git" ]] && gum confirm "Update akinn (git pull)?"; then
+        if [[ -d "${AKINN_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update akinn (git pull)?"; then
             gum spin --spinner dot --title "Updating akinn..." -- \
                 git -C "$AKINN_DIR" pull --ff-only \
                 || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the akinn engine"
 
     # Nothing found — clone it.
     local repo
