@@ -140,6 +140,11 @@ echo "0.50 0.40 0.30 1/500 1" > "$T/loadavg"
 head -c 1000 /dev/zero > "$T/audio/short.wav"; head -c 9000 /dev/zero > "$T/audio/long.mp3"
 UNIT="$T/quadlet/speaches.container"
 
+# The report a bench run wrote. Only at the top of $T/bench: the transcripts
+# beside it are .json too, and find lists files in whatever order the
+# filesystem keeps them - CI's picked a transcript.
+bench_report() { find "$T/bench" -maxdepth 1 -name 'speaches-bench-*.json' | head -1; }
+
 # run <answer>... - run the TUI with scripted gum answers.
 run() {
     printf '%s\n' "$@" > "$GUM_ANSWERS"; : > "$GUM_STATE"; : > "$STUB_LOG"
@@ -195,7 +200,7 @@ check "a closed port reads as closed, not unknown" has "8000/tcp closed" "$T/out
 # ---- bench ------------------------------------------------------------------------
 echo "bench"
 run bench "$T/audio" 3 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
-REPORT="$(find "$T/bench" -name 'speaches-bench-corelia-*.json' | head -1)"
+REPORT="$(bench_report)"
 check "an idle host is not questioned" lacks "not idle" "$T/out"
 check "a report is written, named for the host" test -n "$REPORT"
 check "...and is valid JSON" python3 -m json.tool "${REPORT:-/dev/null}" /dev/null
@@ -220,12 +225,12 @@ run bench no "← back"
 check "a game under Wine is named" has "running under Wine: swtor.exe" "$T/out"
 check "...and declining benches nothing" test -z "$(ls -A "$T/bench")"
 run bench yes "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
-check "benching anyway says so in the report" has '"not_idle":true' "$(find "$T/bench" -name '*.json' | head -1)"
+check "benching anyway says so in the report" has '"not_idle":true' "$(bench_report)"
 rm -f "$T/state/wine"
 
 rm -rf "${T:?}/bench"/*; : > "$T/state/no-unload"
 run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
-REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+REPORT="$(bench_report)"
 check "a model that will not unload leaves the load unmeasured" has '"load_seconds":null' "${REPORT:-/dev/null}"
 check "...and says why, with the HTTP status" has "could not unload deepdml/faster-whisper-large-v3-turbo-ct2 (DELETE /api/ps: HTTP 500)" "${REPORT:-/dev/null}"
 check "...and text to speech is primed untimed, so its runs are warm" test "$(grep -c '/v1/audio/speech' "$T/calls")" -eq 5
@@ -233,13 +238,13 @@ rm -f "$T/state/no-unload"
 
 rm -rf "${T:?}/bench"/*
 run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
-REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+REPORT="$(bench_report)"
 check "a loaded Whisper is unloaded (204), and the cold run timed" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
 
 rm -rf "${T:?}/bench"/*; cp "$T/state/models" "$T/state/models.all"
 grep -vxF speaches-ai/Kokoro-82M-v1.0-ONNX "$T/state/models.all" > "$T/state/models"
 run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
-REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+REPORT="$(bench_report)"
 check "without Kokoro, no command - and says so" has "No short command to time" "$T/out"
 check "...the recordings still run, the smallest cold" has '"file":"short.wav","spoken_text":null' "${REPORT:-/dev/null}"
 mv "$T/state/models.all" "$T/state/models"
@@ -247,7 +252,7 @@ mv "$T/state/models.all" "$T/state/models"
 # Another Whisper, not installed: offered for download, then benched.
 rm -rf "${T:?}/bench"/*
 run bench "$T/audio" 1 Systran/faster-whisper-small yes "← back"
-REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+REPORT="$(bench_report)"
 check "a model not installed is downloaded first" has "-X POST http://127.0.0.1:8000/v1/models/Systran/faster-whisper-small" "$T/calls"
 check "...and is the one transcribing" has "model=Systran/faster-whisper-small" "$T/calls"
 check "...and the one reported" has '"model":"Systran/faster-whisper-small"' "${REPORT:-/dev/null}"
