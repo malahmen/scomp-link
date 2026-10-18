@@ -17,7 +17,10 @@
 #     cold run is on the smallest recording, after an unload, and the load is
 #     cold minus warm on that file; medians, real-time factors and the TTS
 #     audio length (from the WAV) reach a report that is valid JSON; a model
-#     that cannot be unloaded leaves the load unmeasured, with the reason.
+#     that cannot be unloaded leaves the load unmeasured, with the reason;
+#     Whisper not loaded at all (404, and absent from /api/ps) counts as
+#     cold; a short command spoken by Kokoro takes the cold run;
+#   - status lists loaded models from 0.8.3's {"models": [...]}.
 # shellcheck disable=SC2016
 # Single-quoted heredoc stubs expand their own $1/$@ at run time, on purpose.
 set -uo pipefail
@@ -89,11 +92,22 @@ case "$method $url" in
     "GET "*/v1/models)     printf '{"data":['; sed 's/.*/{"id":"&","object":"model"}/' "$models" | paste -sd, -; printf ']}\n' ;;
     "POST "*/v1/models/*)  echo "${url#*/v1/models/}" >> "$models" ;;
     "DELETE "*/v1/models/*) grep -vxF "${url#*/v1/models/}" "$models" > "$models.new"; mv "$models.new" "$models" ;;
-    "GET "*/api/ps)        echo '{"data":[]}' ;;
-    # An unload makes the next request cold: 10 s instead of 2.
-    "DELETE "*/api/ps/*)   [[ -f "$STUB_STATE/no-unload" ]] && exit 22; : > "$STUB_STATE/cold" ;;
+    # As 0.8.3 answers: plain strings, and only Whisper's models.
+    "GET "*/api/ps)        printf '{"models":['; sed 's/.*/"&"/' "$STUB_STATE/loaded" 2>/dev/null | paste -sd, -; printf ']}\n' ;;
+    # 204 for a loaded model, 404 "Model not found" for one that is not;
+    # no-unload: a 500 that leaves it loaded.
+    "DELETE "*/api/ps/*)
+        model="${url#*/api/ps/}"; code=404
+        if [[ -f "$STUB_STATE/no-unload" ]]; then code=500
+        elif grep -qxF "$model" "$STUB_STATE/loaded" 2>/dev/null; then
+            grep -vxF "$model" "$STUB_STATE/loaded" > "$STUB_STATE/loaded.new"; mv "$STUB_STATE/loaded.new" "$STUB_STATE/loaded"; code=204
+        fi
+        printf '%s' "$code"; exit 0 ;;
+    # A transcription is 10 s while Whisper is not loaded, 2 s once it is.
     *"/v1/audio/transcriptions")
-        echo '{"text":"hello there","language":"en","duration":60.0,"segments":[]}' > "$out" ;;
+        echo '{"text":"hello there","language":"en","duration":60.0,"segments":[]}' > "$out"
+        grep -qxF deepdml/faster-whisper-large-v3-turbo-ct2 "$STUB_STATE/loaded" 2>/dev/null \
+            || { echo deepdml/faster-whisper-large-v3-turbo-ct2 >> "$STUB_STATE/loaded"; : > "$STUB_STATE/cold"; } ;;
     *"/v1/audio/speech")
         echo "$data" >> "$STUB_STATE/speech-requests"
         # one second of 24 kHz mono 16-bit, under a streamed header's maximal sizes
@@ -184,7 +198,11 @@ check "an idle host is not questioned" lacks "not idle" "$T/out"
 check "a report is written, named for the host" test -n "$REPORT"
 check "...and is valid JSON" python3 -m json.tool "${REPORT:-/dev/null}" /dev/null
 check "Whisper is unloaded before the cold run" has "-X DELETE http://127.0.0.1:8000/api/ps/deepdml/faster-whisper-large-v3-turbo-ct2" "$T/calls"
-check "the cold run takes the smallest recording" test "$(grep -m1 -o 'file=@[^ ]*' "$T/calls")" = "file=@$T/audio/short.wav"
+check "...and, not loaded at all (404), counts as cold" lacks "could not unload deepdml" "${REPORT:-/dev/null}"
+check "Kokoro speaks a short command first" has "Turn off the lights" "$T/state/speech-requests"
+check "...which takes the cold run" test "$(grep -m1 -o 'file=@[^ ]*' "$T/calls")" = "file=@${REPORT%.json}/spoken-command.wav"
+check "...and is reported with what was said" has '"file":"spoken-command.wav","spoken_text":"Turn off the lights' "${REPORT:-/dev/null}"
+check "...then the recordings, smallest first" test "$(grep -o 'file=@[^ ]*' "$T/calls" | sed -n 5p)" = "file=@$T/audio/short.wav"
 check "the load is cold minus the warm median" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
 check "each recording runs the asked number of times" has '"runs_seconds":[2.0,2.0,2.0]' "${REPORT:-/dev/null}"
 check "the real-time factor is median over audio length" has '"realtime_factor":0.0333' "${REPORT:-/dev/null}"
@@ -206,9 +224,25 @@ rm -rf "${T:?}/bench"/*; : > "$T/state/no-unload"
 run bench "$T/audio" 1 "← back"
 REPORT="$(find "$T/bench" -name '*.json' | head -1)"
 check "a model that will not unload leaves the load unmeasured" has '"load_seconds":null' "${REPORT:-/dev/null}"
-check "...and says why" has "could not unload" "${REPORT:-/dev/null}"
-check "...and text to speech is primed untimed, so its runs are warm" test "$(grep -c '/v1/audio/speech' "$T/calls")" -eq 4
+check "...and says why, with the HTTP status" has "could not unload deepdml/faster-whisper-large-v3-turbo-ct2 (DELETE /api/ps: HTTP 500)" "${REPORT:-/dev/null}"
+check "...and text to speech is primed untimed, so its runs are warm" test "$(grep -c '/v1/audio/speech' "$T/calls")" -eq 5
 rm -f "$T/state/no-unload"
+
+rm -rf "${T:?}/bench"/*
+run bench "$T/audio" 1 "← back"
+REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+check "a loaded Whisper is unloaded (204), and the cold run timed" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
+
+rm -rf "${T:?}/bench"/*; cp "$T/state/models" "$T/state/models.all"
+grep -vxF speaches-ai/Kokoro-82M-v1.0-ONNX "$T/state/models.all" > "$T/state/models"
+run bench "$T/audio" 1 "← back"
+REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+check "without Kokoro, no command - and says so" has "No short command to time" "$T/out"
+check "...the recordings still run, the smallest cold" has '"file":"short.wav","spoken_text":null' "${REPORT:-/dev/null}"
+mv "$T/state/models.all" "$T/state/models"
+
+run status "← back"
+check "status lists the loaded models, from 0.8.3's answer" has "Loaded now: deepdml/faster-whisper-large-v3-turbo-ct2" "$T/out"
 
 # ---- settings ----------------------------------------------------------------------
 echo "settings"
