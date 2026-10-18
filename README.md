@@ -76,7 +76,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | Script                                    | Description                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------- |
 | [`lmstudio.sh`](docs/scripts/lmstudio.md) | Install and manage LM Studio (Flatpak), headless service support included |
-| [`speaches.sh`](docs/scripts/speaches.md) | Speaches speech server (OpenAI-compatible speech-to-text and text-to-speech) - install, models, round-trip test; Podman (systemd user service) · Docker · K8s |
+| [`speaches.sh`](docs/scripts/speaches.md) | Speaches speech server (OpenAI-compatible speech-to-text and text-to-speech) - install, models, round-trip test, speed bench; Podman (systemd user service) · Docker · K8s |
 | [`protocol.sh`](docs/scripts/protocol.md) | protocol, the conversion API (marker · markitdown behind one non-blocking API) - build from source, install, status, round-trip test; Podman (systemd user services) |
 
 ### Gaming
