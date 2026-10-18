@@ -15,12 +15,13 @@
 #   - the renderers: Quadlet, Kubernetes manifests and docker run arguments;
 #   - bench (item 68): a busy host is said so and benches only if asked; the
 #     cold run is on the smallest recording, after an unload, and the load is
-#     cold minus warm on that file; medians, real-time factors and the TTS
-#     audio length (from the WAV) reach a report that is valid JSON; a model
-#     that cannot be unloaded leaves the load unmeasured, with the reason;
-#     Whisper not loaded at all (404, and absent from /api/ps) counts as
-#     cold; a short command spoken by Kokoro takes the cold run;
-#   - status lists loaded models from 0.8.3's {"models": [...]}.
+#     cold minus warm on that file - and nothing is ever unloaded (it froze
+#     Speaches 0.8.3 on corelia); medians, real-time factors and the TTS
+#     audio length (from the WAV) reach a report that is valid JSON; a
+#     Whisper already loaded leaves the load unmeasured, with the reason;
+#     a short command spoken by Kokoro takes the cold run;
+#   - status lists loaded models from 0.8.3's {"models": [...]}, and
+#     installed models without the voices nested in them.
 # shellcheck disable=SC2016
 # Single-quoted heredoc stubs expand their own $1/$@ at run time, on purpose.
 set -uo pipefail
@@ -89,20 +90,12 @@ done
 models="$STUB_STATE/models"; touch "$models"
 case "$method $url" in
     "GET "*/health)        exit 0 ;;
-    "GET "*/v1/models)     printf '{"data":['; sed 's/.*/{"id":"&","object":"model"}/' "$models" | paste -sd, -; printf ']}\n' ;;
+    # Each entry with a voice nested in it, as Kokoro's and Piper's have.
+    "GET "*/v1/models)     printf '{"data":['; sed 's/.*/{"id":"&","object":"model","voices":[{"id":"af_heart","name":"af_heart"}]}/' "$models" | paste -sd, -; printf ']}\n' ;;
     "POST "*/v1/models/*)  echo "${url#*/v1/models/}" >> "$models" ;;
     "DELETE "*/v1/models/*) grep -vxF "${url#*/v1/models/}" "$models" > "$models.new"; mv "$models.new" "$models" ;;
     # As 0.8.3 answers: plain strings, and only Whisper's models.
     "GET "*/api/ps)        printf '{"models":['; sed 's/.*/"&"/' "$STUB_STATE/loaded" 2>/dev/null | paste -sd, -; printf ']}\n' ;;
-    # 204 for a loaded model, 404 "Model not found" for one that is not;
-    # no-unload: a 500 that leaves it loaded.
-    "DELETE "*/api/ps/*)
-        model="${url#*/api/ps/}"; code=404
-        if [[ -f "$STUB_STATE/no-unload" ]]; then code=500
-        elif grep -qxF "$model" "$STUB_STATE/loaded" 2>/dev/null; then
-            grep -vxF "$model" "$STUB_STATE/loaded" > "$STUB_STATE/loaded.new"; mv "$STUB_STATE/loaded.new" "$STUB_STATE/loaded"; code=204
-        fi
-        printf '%s' "$code"; exit 0 ;;
     # A transcription is 10 s while Whisper is not loaded, 2 s once it is.
     *"/v1/audio/transcriptions")
         echo '{"text":"hello there","language":"en","duration":60.0,"segments":[]}' > "$out"
@@ -190,6 +183,7 @@ echo "status"
 run status "← back"
 check "status reports health" has "Health: ok" "$T/out"
 check "status lists installed models" has "speaches-ai/Kokoro-82M-v1.0-ONNX" "$T/out"
+check "...without the voices nested in them" lacks "af_heart" "$T/out"
 check "status reports the open port" has "8000/tcp open" "$T/out"
 check "status reports lingering" has "Linger: on" "$T/out"
 rm -f "$T/state/port-open"
@@ -204,8 +198,8 @@ REPORT="$(bench_report)"
 check "an idle host is not questioned" lacks "not idle" "$T/out"
 check "a report is written, named for the host" test -n "$REPORT"
 check "...and is valid JSON" python3 -m json.tool "${REPORT:-/dev/null}" /dev/null
-check "Whisper is unloaded before the cold run" has "-X DELETE http://127.0.0.1:8000/api/ps/deepdml/faster-whisper-large-v3-turbo-ct2" "$T/calls"
-check "...and, not loaded at all (404), counts as cold" lacks "could not unload deepdml" "${REPORT:-/dev/null}"
+check "Whisper not loaded counts as cold" lacks "already loaded" "${REPORT:-/dev/null}"
+check "nothing is unloaded, ever" lacks "-X DELETE" "$T/calls"
 check "Kokoro speaks a short command first" has "Turn off the lights" "$T/state/speech-requests"
 check "...which takes the cold run" test "$(grep -m1 -o 'file=@[^ ]*' "$T/calls")" = "file=@${REPORT%.json}/spoken-command.wav"
 check "...and is reported with what was said" has '"file":"spoken-command.wav","spoken_text":"Turn off the lights' "${REPORT:-/dev/null}"
@@ -228,18 +222,21 @@ run bench yes "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
 check "benching anyway says so in the report" has '"not_idle":true' "$(bench_report)"
 rm -f "$T/state/wine"
 
-rm -rf "${T:?}/bench"/*; : > "$T/state/no-unload"
-run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
-REPORT="$(bench_report)"
-check "a model that will not unload leaves the load unmeasured" has '"load_seconds":null' "${REPORT:-/dev/null}"
-check "...and says why, with the HTTP status" has "could not unload deepdml/faster-whisper-large-v3-turbo-ct2 (DELETE /api/ps: HTTP 500)" "${REPORT:-/dev/null}"
-check "...and text to speech is primed untimed, so its runs are warm" test "$(grep -c '/v1/audio/speech' "$T/calls")" -eq 5
-rm -f "$T/state/no-unload"
-
+# Whisper is loaded now (the runs above loaded it in the stub).
 rm -rf "${T:?}/bench"/*
 run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
 REPORT="$(bench_report)"
-check "a loaded Whisper is unloaded (204), and the cold run timed" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
+check "a Whisper already loaded is not unloaded" lacks "-X DELETE" "$T/calls"
+check "...its load is left unmeasured" has '"load_seconds":null' "${REPORT:-/dev/null}"
+check "...and the report says why" has "was already loaded - the load is not measured" "${REPORT:-/dev/null}"
+check "...and how to measure it" has "restart Speaches" "$T/out"
+check "text to speech is primed untimed, so its runs are warm" test "$(grep -c '/v1/audio/speech' "$T/calls")" -eq 5
+
+# After Speaches' own idle unload (or a restart): cold again.
+rm -rf "${T:?}/bench"/*; : > "$T/state/loaded"
+run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
+REPORT="$(bench_report)"
+check "once Speaches has unloaded it, the cold run is timed" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
 
 rm -rf "${T:?}/bench"/*; cp "$T/state/models" "$T/state/models.all"
 grep -vxF speaches-ai/Kokoro-82M-v1.0-ONNX "$T/state/models.all" > "$T/state/models"
