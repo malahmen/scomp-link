@@ -189,6 +189,12 @@ check "  and the branch was tidied"           bash -c '! git -C "'"$R"'/alpha" s
 rec "Trigger maintenance" "Run maintenance, then tidy merged branches" no Quit
 check "declining runs no maintenance at all"  bash -c '! grep -q "maintain" <<<"$CALLS"'
 
+echo "## 9. a folder whose name starts with '-' can be ignored"
+mkdir -p "$R/-scratch"
+rec "Edit ignored folders" "-scratch" Quit
+check "set-ignores ends its flags first"      calls_with "set-ignores -- $R -scratch"
+check "  and the folder is ignored"           bash -c 'bash "'"$REAL_ENGINE"'" ignores | grep -qx -- "'"$R"'/-scratch"'
+
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi
 echo "all checks passed"

@@ -194,7 +194,7 @@ action_add_paths() {
             --header "Folder holding git repositories (empty to finish):") || break
         [[ -n "$path" ]] || break
         # The engine prints the normalised path it added (nothing for a duplicate).
-        if added="$(engine add-root "$path")" && [[ -n "$added" ]]; then
+        if added="$(engine add-root -- "$path")" && [[ -n "$added" ]]; then
             ADDED_ROOTS+=("$added")
         fi
         rc=0; _ask "Add another folder?" || rc=$?
@@ -220,7 +220,9 @@ action_edit_ignores_for() {
 
     local chosen=()
     [[ -n "$picked" ]] && mapfile -t chosen <<< "$picked"
-    engine set-ignores "$root" "${chosen[@]}" || warn "Could not update ignored folders."
+    # '--': a folder named '-x' is otherwise read by the engine as a flag, and
+    # could never be ignored.
+    engine set-ignores -- "$root" "${chosen[@]}" || warn "Could not update ignored folders."
 }
 
 action_edit_ignores() {
@@ -250,7 +252,7 @@ action_edit_paths() {
                 [[ -n "$out" ]] || continue
                 mapfile -t picked <<< "$out"
                 _ask "Remove ${#picked[@]} path(s)? Repositories on disk are not touched." || continue
-                engine remove-root "${picked[@]}" || warn "Could not remove path(s)."
+                engine remove-root -- "${picked[@]}" || warn "Could not remove path(s)."
                 ;;
             *) return 0 ;;
         esac
