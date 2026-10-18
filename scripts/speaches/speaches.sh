@@ -244,8 +244,20 @@ sp_healthy() { curl -fsS --max-time 3 "$1/health" &>/dev/null; }
 # '"id":"…"', and a missing jq should not stop a status screen.
 _json_ids() { grep -o '"id" *: *"[^"]*"' | sed 's/.*: *"\(.*\)"/\1/'; }
 
+# Loaded models from /api/ps. 0.8.3 answers {"models":["<id>", ...]}, a list
+# of plain strings, which _json_ids finds nothing in; an OpenAI-style list of
+# "id"s is read too, should a later version answer that.
+_json_loaded() {
+    local body; body="$(tr -d '\n')"
+    if grep -q '"models" *: *\[' <<< "$body"; then
+        sed 's/.*"models" *: *\[\([^]]*\)\].*/\1/' <<< "$body" | grep -o '"[^"]*"' | tr -d '"'
+    else
+        _json_ids <<< "$body"
+    fi
+}
+
 sp_models_installed() { curl -fsS --max-time 10 "$1/v1/models" 2>/dev/null | _json_ids || true; }
-sp_models_loaded()    { curl -fsS --max-time 10 "$1/api/ps" 2>/dev/null | _json_ids || true; }
+sp_models_loaded()    { curl -fsS --max-time 10 "$1/api/ps" 2>/dev/null | _json_loaded || true; }
 
 sp_model_download() {
     local url="$1" model="$2"
@@ -348,6 +360,11 @@ SP_BENCH_SCHEMA="scomp-link/speaches-bench/1"
 SP_BENCH_AUDIO="${SCOMP_SPEACHES_BENCH_AUDIO:-$HOME/speaches-bench-audio}"
 SP_BENCH_OUT="${SCOMP_SPEACHES_BENCH_OUT:-$HOME}"          # the report and the transcripts
 SP_LOADAVG="${SCOMP_SPEACHES_LOADAVG:-/proc/loadavg}"
+# What Padme mostly hears: a few seconds, not a chapter. Spoken by Kokoro, so
+# the bench needs no recording that short (LibriVox has none) and no ffmpeg to
+# cut one; it is the smallest file, so it also takes the cold run - the wait
+# for the first command after SP_TTL idle seconds.
+SP_BENCH_COMMAND="Turn off the lights in the living room, and remind me to call the garage at seven."
 SP_BENCH_TEXT="Corelia runs the house's slower work: documents become text, text becomes vectors, and \
 speech goes both ways. This paragraph is long enough to show how quickly a voice reads a reply aloud, \
 and short enough that waiting for it would still feel like a conversation rather than a lecture. \
@@ -372,8 +389,23 @@ _sp_wav_seconds() {
     awk -v s="$size" -v r="$rate" -v c="$channels" -v b="$bits" 'BEGIN {printf "%.3f", (s - 44) / (r * c * b / 8)}'
 }
 
-# Unload a model, so the next request pays its load. 0 = unloaded.
-_sp_unload() { curl -fsS --max-time 60 -X DELETE "$1/api/ps/$2" -o /dev/null 2>/dev/null; }
+# Unload a model, so the next request pays its load. 0 = unloaded (2xx);
+# otherwise 1. The HTTP status is left in SP_UNLOAD_STATUS for the report.
+_sp_unload() {
+    SP_UNLOAD_STATUS=$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' \
+        -X DELETE "$1/api/ps/$2" 2>/dev/null) || SP_UNLOAD_STATUS="${SP_UNLOAD_STATUS:-000}"
+    [[ "$SP_UNLOAD_STATUS" == 2?? ]]
+}
+
+# Whisper is cold now: unloaded, or not loaded to begin with. Speaches answers
+# 404 "Model not found" for a model it does not hold - the first bench on
+# corelia took that for a failure, after Whisper had sat idle past SP_TTL.
+# A 404 counts only when /api/ps agrees: in 0.8.3 that list is Whisper's
+# alone, so a 404 for any other model proves nothing.
+_sp_whisper_cold() {
+    _sp_unload "$1" "$SP_WHISPER" && return 0
+    [[ "$SP_UNLOAD_STATUS" == 404 ]] && ! grep -qxF -- "$SP_WHISPER" <<< "$(sp_models_loaded "$1")"
+}
 
 # One transcription; prints "seconds" and leaves the verbose JSON in $3.
 _sp_stt_once() {
@@ -437,7 +469,8 @@ sp_bench() {
             \( -iname '*.wav' -o -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.opus' -o -iname '*.m4a' \) \
             -printf '%s\t%p\n' | sort -n | cut -f2-)
     fi
-    [[ ${#files[@]} -gt 0 ]] || { warn "No recordings in ${dir}."; return 0; }
+    [[ ${#files[@]} -gt 0 ]] || grep -qxF -- "$SP_KOKORO" <<< "$installed" \
+        || { warn "No recordings in ${dir}, and no ${SP_KOKORO} to speak a command with."; return 0; }
     repeats=$(gum input --value 3 --header "Warm runs of each recording (the median is reported):") || return 0
     [[ "$repeats" =~ ^[1-9][0-9]*$ ]] || { warn "Not a number: ${repeats}"; return 0; }
 
@@ -446,16 +479,24 @@ sp_bench() {
     report="${SP_BENCH_OUT}/speaches-bench-${host}-${when}.json"
     work="${SP_BENCH_OUT}/speaches-bench-${host}-${when}"   # the transcripts, to judge accuracy by eye
     mkdir -p "$work"
+    local command_wav="$work/spoken-command.wav"
+    if grep -qxF -- "$SP_KOKORO" <<< "$installed" \
+            && (SP_BENCH_TEXT="$SP_BENCH_COMMAND"; _sp_tts_once "$url" "$SP_KOKORO" "$SP_TEST_VOICE" "$command_wav" >/dev/null); then
+        files=("$command_wav" "${files[@]}")
+        info "A short command, spoken by Kokoro: \"${SP_BENCH_COMMAND}\""
+    else
+        warn "No short command to time (${SP_KOKORO} not installed, or it failed) - only the recordings."
+    fi
     info "${#files[@]} recording(s), ${repeats} warm run(s) each. Transcripts go to ${work}/"
 
     # --- speech to text --------------------------------------------------------
     local f name t i cold="null" cold_note="" load="null" stt_json="" first=1 duration lang med rtf
     local -a times
-    if _sp_unload "$url" "$SP_WHISPER"; then
-        info "Cold run on $(basename "${files[0]}") (Whisper unloaded first)..."
+    if _sp_whisper_cold "$url"; then
+        info "Cold run on $(basename "${files[0]}") (Whisper not loaded)..."
         if t=$(_sp_stt_once "$url" "${files[0]}" "$work/.cold.json"); then cold="$t"; else cold_note="the cold run failed"; fi
     else
-        cold_note="could not unload ${SP_WHISPER} (DELETE /api/ps) - the load is not measured"
+        cold_note="could not unload ${SP_WHISPER} (DELETE /api/ps: HTTP ${SP_UNLOAD_STATUS}) - the load is not measured"
         warn "$cold_note"
         _sp_stt_once "$url" "${files[0]}" "$work/.cold.json" >/dev/null || true   # load it, untimed
     fi
@@ -480,7 +521,9 @@ sp_bench() {
         fi
         first=0
         success "${name}: ${duration:-?} s of audio in ${med} s (median of ${#times[@]}) - real-time factor ${rtf}"
-        stt_json+="${stt_json:+,}{\"file\":\"$(_sp_json_esc "$name")\",\"audio_seconds\":${duration:-null},\"language\":\"$(_sp_json_esc "$lang")\",\"runs_seconds\":[$(IFS=,; echo "${times[*]}")],\"median_seconds\":${med},\"realtime_factor\":${rtf}}"
+        local spoken="null"
+        [[ "$f" == "$command_wav" ]] && spoken="\"$(_sp_json_esc "$SP_BENCH_COMMAND")\""
+        stt_json+="${stt_json:+,}{\"file\":\"$(_sp_json_esc "$name")\",\"spoken_text\":${spoken},\"audio_seconds\":${duration:-null},\"language\":\"$(_sp_json_esc "$lang")\",\"runs_seconds\":[$(IFS=,; echo "${times[*]}")],\"median_seconds\":${med},\"realtime_factor\":${rtf}}"
     done
     [[ "$load" != null ]] && success "Whisper load: ${load} s (cold ${cold} s minus warm)"
 
@@ -496,7 +539,7 @@ sp_bench() {
         if _sp_unload "$url" "$model"; then
             t=$(_sp_tts_once "$url" "$model" "$voice" "$wav") && tcold="$t"
         else
-            tnote="could not unload (DELETE /api/ps) - the load is not measured"
+            tnote="could not unload (DELETE /api/ps: HTTP ${SP_UNLOAD_STATUS}) - the load is not measured"
             _sp_tts_once "$url" "$model" "$voice" "$wav" >/dev/null || true
         fi
         for ((i = 1; i <= repeats; i++)); do
