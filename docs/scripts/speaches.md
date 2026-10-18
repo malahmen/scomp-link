@@ -12,4 +12,15 @@ Installs and manages [Speaches](https://speaches.ai), a ready-made speech server
 - **The defaults are the deployment**: re-running `install` on a rebuilt host has to bring back the same service, so a lasting change belongs in the script's defaults, not only in the settings file.
 - Model cache: named volume `speaches-hf-cache` (a PVC on K8s); `uninstall` keeps it unless you confirm.
 - Config: `~/.config/speaches-tui/speaches.conf`
-- Commands: `install`, `status` (health, LAN URL, installed and loaded models, missing defaults, firewall, lingering), `models` (list, download, remove, download the defaults), `test` (Kokoro speaks a sentence, Whisper transcribes it back), `logs`, `config`, `uninstall`; K8s adds `port-forward`
+- Commands: `install`, `status` (health, LAN URL, installed and loaded models, missing defaults, firewall, lingering), `models` (list, download, remove, download the defaults), `test` (Kokoro speaks a sentence, Whisper transcribes it back), `bench` (how fast, below), `logs`, `config`, `uninstall`; K8s adds `port-forward`
+
+## Bench
+
+`bench` measures what `test` cannot: speed on this host.
+
+- **Speech to text**: each recording in a folder (default `~/speaches-bench-audio`; wav, mp3, flac, ogg, opus or m4a - ideally real speech of about 1, 5 and 30 minutes) is transcribed several times warm, and the median reported as the **real-time factor**: processing seconds per second of audio, so under 1 is faster than real time. The audio's length is Speaches' own (`verbose_json`), so no ffprobe is needed.
+- **Load**: Whisper is unloaded (`DELETE /api/ps/...`) and the smallest recording run cold; the load is cold minus that recording's warm median - what the first request after `idle time` pays.
+- **Text to speech**: Kokoro and Piper read a fixed paragraph; reported as seconds of audio made per second (above 1 can stream). Speaches 0.8.3 cannot unload them, so their load is not measured; an untimed first request keeps it out of the warm runs.
+- **Conditions**: the CPU count, the load and anything running under Wine are recorded, and a host that is not idle is named and benched only if you confirm - a game beside the first marker bench made it 1.12x slow.
+
+Writes `~/speaches-bench-<host>-<date>.json` (schema `scomp-link/speaches-bench/1`) and, beside it, every transcript, to read against the recordings for accuracy.

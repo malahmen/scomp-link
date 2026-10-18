@@ -12,7 +12,12 @@
 #   - a closed firewalld port reads as closed - firewall-cmd exits 1 on "no";
 #   - settings survive a run and reach the unit; uninstall keeps the model
 #     cache unless asked;
-#   - the renderers: Quadlet, Kubernetes manifests and docker run arguments.
+#   - the renderers: Quadlet, Kubernetes manifests and docker run arguments;
+#   - bench (item 68): a busy host is said so and benches only if asked; the
+#     cold run is on the smallest recording, after an unload, and the load is
+#     cold minus warm on that file; medians, real-time factors and the TTS
+#     audio length (from the WAV) reach a report that is valid JSON; a model
+#     that cannot be unloaded leaves the load unmeasured, with the reason.
 # shellcheck disable=SC2016
 # Single-quoted heredoc stubs expand their own $1/$@ at run time, on purpose.
 set -uo pipefail
@@ -66,12 +71,14 @@ EOF
 cat > "$T/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "curl $*" >> "$STUB_LOG"
-method=GET url="" out=""
+method=GET url="" out="" wfmt="" data=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -X) method="$2"; shift 2 ;;
         -o) out="$2"; shift 2 ;;
-        -d|-F|-H|--max-time) shift 2 ;;
+        -w) wfmt="$2"; shift 2 ;;
+        -d) data="$2"; shift 2 ;;
+        -F|-H|--max-time) shift 2 ;;
         http*) url="$1"; shift ;;
         *) shift ;;
     esac
@@ -83,16 +90,40 @@ case "$method $url" in
     "POST "*/v1/models/*)  echo "${url#*/v1/models/}" >> "$models" ;;
     "DELETE "*/v1/models/*) grep -vxF "${url#*/v1/models/}" "$models" > "$models.new"; mv "$models.new" "$models" ;;
     "GET "*/api/ps)        echo '{"data":[]}' ;;
+    # An unload makes the next request cold: 10 s instead of 2.
+    "DELETE "*/api/ps/*)   [[ -f "$STUB_STATE/no-unload" ]] && exit 22; : > "$STUB_STATE/cold" ;;
+    *"/v1/audio/transcriptions")
+        echo '{"text":"hello there","language":"en","duration":60.0,"segments":[]}' > "$out" ;;
+    *"/v1/audio/speech")
+        echo "$data" >> "$STUB_STATE/speech-requests"
+        # one second of 24 kHz mono 16-bit, under a streamed header's maximal sizes
+        { printf 'RIFF\xff\xff\xff\xffWAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\xc0\x5d\x00\x00\x80\xbb\x00\x00\x02\x00\x10\x00data\xff\xff\xff\xff'
+          head -c 48000 /dev/zero; } > "$out" ;;
     *)                     exit 22 ;;
 esac
-[[ -n "$out" && "$out" != /dev/null ]] && printf 'RIFF' > "$out"
+[[ -n "$out" && "$out" != /dev/null && ! -s "$out" ]] && printf 'RIFF' > "$out"
+if [[ -n "$wfmt" ]]; then
+    if [[ -f "$STUB_STATE/cold" ]]; then rm -f "$STUB_STATE/cold"; printf '10.0'; else printf '2.0'; fi
+fi
 exit 0
 EOF
+# What the bench sees of the host: a game under Wine only when asked to be.
+cat > "$T/bin/pgrep" <<'EOF'
+#!/usr/bin/env bash
+[[ -f "$STUB_STATE/wine" ]] && echo "4242 swtor.exe"
+exit 0
+EOF
+printf '#!/usr/bin/env bash\necho 32\n' > "$T/bin/nproc"
+printf '#!/usr/bin/env bash\necho corelia\n' > "$T/bin/hostname"
 chmod +x "$T/bin/"*
 
 export PATH="${TEST_DIR}/stubs:$T/bin:$PATH"
 export GUM_ANSWERS="$T/answers" GUM_STATE="$T/gumstate" STUB_LOG="$T/calls" STUB_STATE="$T/state"
 export SCOMP_SPEACHES_CONFIG_DIR="$T/config" SCOMP_SPEACHES_QUADLET_DIR="$T/quadlet"
+export SCOMP_SPEACHES_BENCH_OUT="$T/bench" SCOMP_SPEACHES_LOADAVG="$T/loadavg"
+mkdir -p "$T/bench" "$T/audio"
+echo "0.50 0.40 0.30 1/500 1" > "$T/loadavg"
+head -c 1000 /dev/zero > "$T/audio/short.wav"; head -c 9000 /dev/zero > "$T/audio/long.mp3"
 UNIT="$T/quadlet/speaches.container"
 
 # run <answer>... - run the TUI with scripted gum answers.
@@ -144,6 +175,40 @@ rm -f "$T/state/port-open"
 run status "← back"
 check "a closed port reads as closed, not unknown" has "8000/tcp closed" "$T/out"
 : > "$T/state/port-open"
+
+# ---- bench ------------------------------------------------------------------------
+echo "bench"
+run bench "$T/audio" 3 "← back"
+REPORT="$(find "$T/bench" -name 'speaches-bench-corelia-*.json' | head -1)"
+check "an idle host is not questioned" lacks "not idle" "$T/out"
+check "a report is written, named for the host" test -n "$REPORT"
+check "...and is valid JSON" python3 -m json.tool "${REPORT:-/dev/null}" /dev/null
+check "Whisper is unloaded before the cold run" has "-X DELETE http://127.0.0.1:8000/api/ps/deepdml/faster-whisper-large-v3-turbo-ct2" "$T/calls"
+check "the cold run takes the smallest recording" test "$(grep -m1 -o 'file=@[^ ]*' "$T/calls")" = "file=@$T/audio/short.wav"
+check "the load is cold minus the warm median" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
+check "each recording runs the asked number of times" has '"runs_seconds":[2.0,2.0,2.0]' "${REPORT:-/dev/null}"
+check "the real-time factor is median over audio length" has '"realtime_factor":0.0333' "${REPORT:-/dev/null}"
+check "the conditions are recorded" has '"conditions":{"cpus":32,"load1":0.50,"wine":"","not_idle":false}' "${REPORT:-/dev/null}"
+check "the transcripts are kept" test -f "${REPORT%.json}/long.mp3.json"
+check "text to speech: the WAV's length, not its streamed header's" has '"audio_seconds":1.000' "${REPORT:-/dev/null}"
+check "...made at 0.5x real time" has '"audio_per_second":0.50' "${REPORT:-/dev/null}"
+check "Piper is asked for the voice its package names" has '"voice":"en_US-lessac-medium"' "$T/state/speech-requests"
+
+rm -rf "${T:?}/bench"/*; : > "$T/state/wine"
+run bench no "← back"
+check "a game under Wine is named" has "running under Wine: swtor.exe" "$T/out"
+check "...and declining benches nothing" test -z "$(ls -A "$T/bench")"
+run bench yes "$T/audio" 1 "← back"
+check "benching anyway says so in the report" has '"not_idle":true' "$(find "$T/bench" -name '*.json' | head -1)"
+rm -f "$T/state/wine"
+
+rm -rf "${T:?}/bench"/*; : > "$T/state/no-unload"
+run bench "$T/audio" 1 "← back"
+REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+check "a model that will not unload leaves the load unmeasured" has '"load_seconds":null' "${REPORT:-/dev/null}"
+check "...and says why" has "could not unload" "${REPORT:-/dev/null}"
+check "...and text to speech is primed untimed, so its runs are warm" test "$(grep -c '/v1/audio/speech' "$T/calls")" -eq 4
+rm -f "$T/state/no-unload"
 
 # ---- settings ----------------------------------------------------------------------
 echo "settings"

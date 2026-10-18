@@ -328,6 +328,206 @@ sp_test() {
 }
 
 # -----------------------------------------------------------------------------
+# Bench - how fast this host runs each direction (Kamino item 68)
+# -----------------------------------------------------------------------------
+# What `test` cannot say: speed. Speech-to-text as processing seconds per
+# second of audio (the real-time factor: under 1 is faster than real time),
+# warm, on the owner's own recordings at several lengths; the cost of loading
+# Whisper, which the first request after SP_TTL idle seconds pays; and
+# text-to-speech as seconds of audio made per second, for Kokoro and Piper.
+#
+# Lessons from protocol-droid's marker bench (Kamino items 8 and 64), each
+# answered here: a game running beside the first marker run made it 1.12x
+# slow, so the host's load is checked first and recorded; one fast run was
+# taken for the rate, so every figure is the median of several; and a load
+# hidden inside "per document" time misled a decision, so the cold run is
+# measured on its own and the load reported as cold minus warm, on the same
+# file. Timing is curl's own (time_total), so an upload over loopback is in
+# it - negligible beside the work.
+SP_BENCH_SCHEMA="scomp-link/speaches-bench/1"
+SP_BENCH_AUDIO="${SCOMP_SPEACHES_BENCH_AUDIO:-$HOME/speaches-bench-audio}"
+SP_BENCH_OUT="${SCOMP_SPEACHES_BENCH_OUT:-$HOME}"          # the report and the transcripts
+SP_LOADAVG="${SCOMP_SPEACHES_LOADAVG:-/proc/loadavg}"
+SP_BENCH_TEXT="Corelia runs the house's slower work: documents become text, text becomes vectors, and \
+speech goes both ways. This paragraph is long enough to show how quickly a voice reads a reply aloud, \
+and short enough that waiting for it would still feel like a conversation rather than a lecture. \
+If it comes back faster than it takes to hear, reading aloud can stream; if not, it has to be cut up."
+
+# median of the numbers on stdin, one per line
+_sp_median() { sort -g | awk '{v[NR]=$1} END {if (!NR) exit 1; print (NR % 2) ? v[(NR+1)/2] : (v[NR/2] + v[NR/2+1]) / 2}'; }
+# the first number for "key" in a JSON text: no jq, as for _json_ids
+_sp_json_num() { grep -o "\"$1\" *: *-\?[0-9][0-9.eE+-]*" | head -1 | sed 's/.*: *//'; }
+_sp_json_str() { grep -o "\"$1\" *: *\"[^\"]*\"" | head -1 | sed 's/.*: *"\(.*\)"/\1/'; }
+_sp_json_esc() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\t'/ }"; }
+# a WAV's length in seconds from its header: 16-bit PCM as Speaches writes it.
+# The data size comes from the file, not the header, which a streamed WAV
+# leaves at its maximum.
+_sp_wav_seconds() {
+    local f="$1" rate channels bits size
+    rate=$(od -An -tu4 -j24 -N4 "$f" | tr -d ' ')
+    channels=$(od -An -tu2 -j22 -N2 "$f" | tr -d ' ')
+    bits=$(od -An -tu2 -j34 -N2 "$f" | tr -d ' ')
+    size=$(wc -c < "$f" | tr -d ' ')
+    [[ "$rate" -gt 0 && "$channels" -gt 0 && "$bits" -gt 0 && "$size" -gt 44 ]] || return 1
+    awk -v s="$size" -v r="$rate" -v c="$channels" -v b="$bits" 'BEGIN {printf "%.3f", (s - 44) / (r * c * b / 8)}'
+}
+
+# Unload a model, so the next request pays its load. 0 = unloaded.
+_sp_unload() { curl -fsS --max-time 60 -X DELETE "$1/api/ps/$2" -o /dev/null 2>/dev/null; }
+
+# One transcription; prints "seconds" and leaves the verbose JSON in $3.
+_sp_stt_once() {
+    local url="$1" file="$2" out="$3"
+    curl -fsS --max-time 7200 -o "$out" -w '%{time_total}' "${url}/v1/audio/transcriptions" \
+        -F "file=@${file}" -F "model=${SP_WHISPER}" -F "response_format=verbose_json"
+}
+
+# One synthesis; prints "seconds" and leaves the WAV in $4.
+_sp_tts_once() {
+    local url="$1" model="$2" voice="$3" out="$4"
+    curl -fsS --max-time 600 -o "$out" -w '%{time_total}' "${url}/v1/audio/speech" \
+        -H 'content-type: application/json' \
+        -d "{\"model\":\"${model}\",\"voice\":\"${voice}\",\"input\":\"${SP_BENCH_TEXT}\",\"response_format\":\"wav\"}"
+}
+
+# The voice a TTS model is benched with: Kokoro's test voice (0.8.3 refuses
+# an unknown one with 422); for Piper, the voice its package is named after -
+# 0.8.3 ignores Piper's `voice`, so this only matters to a later version.
+_sp_tts_voice() {
+    case "$1" in
+        *Kokoro*) echo "$SP_TEST_VOICE" ;;
+        */piper-*) echo "${1##*/piper-}" ;;
+        *) echo "$SP_TEST_VOICE" ;;
+    esac
+}
+
+# What else the host is doing: load against its CPUs, and anything running
+# under Wine (item 8's first run was taken beside the game).
+_sp_host_conditions() {
+    local cpus load1 wine
+    cpus=$(nproc 2>/dev/null || echo 0)
+    load1=$(cut -d' ' -f1 "$SP_LOADAVG" 2>/dev/null || echo 0)
+    wine=$(pgrep -fl '\.exe( |$)' 2>/dev/null | awk '{print $2}' | sort -u | paste -sd, - || true)
+    printf '%s %s %s\n' "$cpus" "$load1" "${wine:-}"
+}
+
+sp_bench() {
+    local url="$1" dir repeats installed host cpus load1 wine busy=false when report work
+    header "Speaches - bench (${url})"
+    sp_healthy "$url" || { warn "Not reachable at ${url}."; return 0; }
+    installed="$(sp_models_installed "$url")"
+    grep -qxF -- "$SP_WHISPER" <<< "$installed" \
+        || { warn "${SP_WHISPER} is not installed - models -> download the defaults."; return 0; }
+
+    read -r cpus load1 wine <<< "$(_sp_host_conditions)"
+    if [[ -n "$wine" ]] || awk -v l="$load1" -v c="$cpus" 'BEGIN {exit !(l > c / 8)}'; then
+        busy=true
+        warn "The host is not idle: load ${load1} on ${cpus} CPUs${wine:+; running under Wine: ${wine}}."
+        warn "Figures taken beside other work are not this host's (item 8's first run, beside a game, came out 1.12x slow)."
+        gum confirm "Bench anyway? (the report records it)" --default=false || return 0
+    fi
+
+    dir=$(gum input --value "$SP_BENCH_AUDIO" \
+        --header "Folder of speech recordings (wav, mp3, flac, ogg, opus, m4a) - ideally ~1, ~5 and ~30 minutes:") || return 0
+    dir="${dir/#\~/$HOME}"
+    local -a files=()
+    if [[ -d "$dir" ]]; then
+        # smallest first: the cold run uses the first, and pays the least for it
+        mapfile -t files < <(find "$dir" -maxdepth 1 -type f \
+            \( -iname '*.wav' -o -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.opus' -o -iname '*.m4a' \) \
+            -printf '%s\t%p\n' | sort -n | cut -f2-)
+    fi
+    [[ ${#files[@]} -gt 0 ]] || { warn "No recordings in ${dir}."; return 0; }
+    repeats=$(gum input --value 3 --header "Warm runs of each recording (the median is reported):") || return 0
+    [[ "$repeats" =~ ^[1-9][0-9]*$ ]] || { warn "Not a number: ${repeats}"; return 0; }
+
+    host="$(hostname -s 2>/dev/null || hostname)"
+    when="$(date +%Y%m%d-%H%M)"
+    report="${SP_BENCH_OUT}/speaches-bench-${host}-${when}.json"
+    work="${SP_BENCH_OUT}/speaches-bench-${host}-${when}"   # the transcripts, to judge accuracy by eye
+    mkdir -p "$work"
+    info "${#files[@]} recording(s), ${repeats} warm run(s) each. Transcripts go to ${work}/"
+
+    # --- speech to text --------------------------------------------------------
+    local f name t i cold="null" cold_note="" load="null" stt_json="" first=1 duration lang med rtf
+    local -a times
+    if _sp_unload "$url" "$SP_WHISPER"; then
+        info "Cold run on $(basename "${files[0]}") (Whisper unloaded first)..."
+        if t=$(_sp_stt_once "$url" "${files[0]}" "$work/.cold.json"); then cold="$t"; else cold_note="the cold run failed"; fi
+    else
+        cold_note="could not unload ${SP_WHISPER} (DELETE /api/ps) - the load is not measured"
+        warn "$cold_note"
+        _sp_stt_once "$url" "${files[0]}" "$work/.cold.json" >/dev/null || true   # load it, untimed
+    fi
+    rm -f "$work/.cold.json"
+
+    for f in "${files[@]}"; do
+        name="$(basename "$f")"; times=(); duration=""; lang=""
+        for ((i = 1; i <= repeats; i++)); do
+            info "${name}: run ${i}/${repeats}..."
+            if ! t=$(_sp_stt_once "$url" "$f" "$work/${name}.json"); then
+                warn "${name}: run ${i} failed"; continue
+            fi
+            times+=("$t")
+        done
+        [[ ${#times[@]} -gt 0 ]] || { stt_json+="${stt_json:+,}{\"file\":\"$(_sp_json_esc "$name")\",\"error\":\"every run failed\"}"; continue; }
+        duration="$(_sp_json_num duration < "$work/${name}.json")"
+        lang="$(_sp_json_str language < "$work/${name}.json")"
+        med="$(printf '%s\n' "${times[@]}" | _sp_median)"
+        rtf="$(awk -v m="$med" -v d="${duration:-0}" 'BEGIN {if (d > 0) printf "%.4f", m / d; else print "null"}')"
+        if ((first)) && [[ "$cold" != null ]]; then
+            load="$(awk -v c="$cold" -v m="$med" 'BEGIN {printf "%.2f", c - m}')"
+        fi
+        first=0
+        success "${name}: ${duration:-?} s of audio in ${med} s (median of ${#times[@]}) - real-time factor ${rtf}"
+        stt_json+="${stt_json:+,}{\"file\":\"$(_sp_json_esc "$name")\",\"audio_seconds\":${duration:-null},\"language\":\"$(_sp_json_esc "$lang")\",\"runs_seconds\":[$(IFS=,; echo "${times[*]}")],\"median_seconds\":${med},\"realtime_factor\":${rtf}}"
+    done
+    [[ "$load" != null ]] && success "Whisper load: ${load} s (cold ${cold} s minus warm)"
+
+    # --- text to speech --------------------------------------------------------
+    # Speaches 0.8.3 unloads only Whisper models (/api/ps: "FIX: support
+    # non-whisper models"). When an unload fails, an untimed first request
+    # loads the model, so the warm runs are warm; the cold figure is null.
+    local model voice tts_json="" tcold tnote wav audio
+    for model in "$SP_KOKORO" "$SP_PIPER"; do
+        grep -qxF -- "$model" <<< "$installed" || { info "${model}: not installed, skipped"; continue; }
+        voice="$(_sp_tts_voice "$model")"; times=(); tcold="null"; tnote=""; audio=""
+        wav="$work/tts-${model##*/}.wav"
+        if _sp_unload "$url" "$model"; then
+            t=$(_sp_tts_once "$url" "$model" "$voice" "$wav") && tcold="$t"
+        else
+            tnote="could not unload (DELETE /api/ps) - the load is not measured"
+            _sp_tts_once "$url" "$model" "$voice" "$wav" >/dev/null || true
+        fi
+        for ((i = 1; i <= repeats; i++)); do
+            t=$(_sp_tts_once "$url" "$model" "$voice" "$wav") && times+=("$t")
+        done
+        if [[ ${#times[@]} -eq 0 ]]; then
+            warn "${model}: every request failed (voice ${voice})"
+            tts_json+="${tts_json:+,}{\"model\":\"${model}\",\"voice\":\"$(_sp_json_esc "$voice")\",\"error\":\"every request failed\"}"
+            continue
+        fi
+        audio="$(_sp_wav_seconds "$wav" || echo null)"
+        med="$(printf '%s\n' "${times[@]}" | _sp_median)"
+        rtf="$(awk -v a="$audio" -v m="$med" 'BEGIN {if (a + 0 > 0) printf "%.2f", a / m; else print "null"}')"
+        success "${model}: ${audio} s of speech in ${med} s - ${rtf}x real time"
+        tts_json+="${tts_json:+,}{\"model\":\"${model}\",\"voice\":\"$(_sp_json_esc "$voice")\",\"characters\":${#SP_BENCH_TEXT},\"audio_seconds\":${audio},\"cold_seconds\":${tcold},\"note\":\"$(_sp_json_esc "$tnote")\",\"runs_seconds\":[$(IFS=,; echo "${times[*]}")],\"median_seconds\":${med},\"audio_per_second\":${rtf}}"
+    done
+
+    {
+        printf '{"schema":"%s","host":"%s","when":"%s","speaches":"%s","image":"%s",' \
+            "$SP_BENCH_SCHEMA" "$(_sp_json_esc "$host")" "$(date -Iseconds)" "$SP_VERSION" "$(sp_image)"
+        printf '"conditions":{"cpus":%s,"load1":%s,"wine":"%s","not_idle":%s},"repeats":%s,' \
+            "${cpus:-0}" "${load1:-0}" "$(_sp_json_esc "$wine")" "$busy" "$repeats"
+        printf '"stt":{"model":"%s","cold_seconds":%s,"load_seconds":%s,"note":"%s","recordings":[%s]},' \
+            "$SP_WHISPER" "$cold" "$load" "$(_sp_json_esc "$cold_note")" "$stt_json"
+        printf '"tts":[%s]}\n' "$tts_json"
+    } > "$report"
+    success "Report: ${report}"
+    info "Transcripts: ${work}/ - read them against the recordings for accuracy."
+}
+
+# -----------------------------------------------------------------------------
 # Firewall - so the LAN (meksha, Padme) can reach the port
 # -----------------------------------------------------------------------------
 _fw_tool() {
@@ -709,12 +909,13 @@ _local_menu() {
     local t="$TARGET_TYPE" action
     while true; do
         header "Speaches - $(target_summary)"
-        action=$(gum choose install status models test logs config uninstall "← back" --header "Action:") || return 0
+        action=$(gum choose install status models test bench logs config uninstall "← back" --header "Action:") || return 0
         case "$action" in
             install)   "sp_install_${t}" ;;
             status)    "sp_status_${t}" ;;
             models)    sp_models_menu "$(sp_local_url)" ;;
             test)      sp_test "$(sp_local_url)" ;;
+            bench)     sp_bench "$(sp_local_url)" ;;
             logs)      "sp_logs_${t}" ;;
             config)    if sp_config && gum confirm "Re-apply now (re-install with the new settings)?"; then "sp_install_${t}"; fi ;;
             uninstall) "sp_uninstall_${t}" ;;
@@ -727,13 +928,14 @@ _k8s_menu() {
     local action url
     while true; do
         header "Speaches - $(target_summary)"
-        action=$(gum choose install status port-forward models test logs config uninstall "← back" --header "Action:") || return 0
+        action=$(gum choose install status port-forward models test bench logs config uninstall "← back" --header "Action:") || return 0
         case "$action" in
             install)      sp_install_k8s ;;
             status)       sp_status_k8s ;;
             port-forward) sp_port_forward_k8s || true ;;
             models)       url="$(sp_k8s_url)" && sp_models_menu "$url" ;;
             test)         url="$(sp_k8s_url)" && sp_test "$url" ;;
+            bench)        url="$(sp_k8s_url)" && sp_bench "$url" ;;
             logs)         sp_logs_k8s ;;
             config)       if sp_config && gum confirm "Re-apply now?"; then sp_install_k8s; fi ;;
             uninstall)    sp_uninstall_k8s ;;
