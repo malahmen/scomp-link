@@ -7,7 +7,16 @@ Installs and manages [Speaches](https://speaches.ai), a ready-made speech server
 - **Targets**: **Podman** - rootless, a Quadlet unit under the user's systemd with lingering, so it starts at boot without a login (Linux only; podman is installed if missing) · **Docker** - a container with `--restart unless-stopped` · **kind / K8s** - plain manifests through `kubectl` (Speaches has no Helm chart). A cluster managed by Argo CD should get an Application in its GitOps repository instead; the K8s target says so.
 - **Image**: `ghcr.io/speaches-ai/speaches:<version>-<cpu|cuda>`, pinned to `0.8.3` (latest stable; `0.9.0` is a release candidate). `auto` picks CUDA only when `nvidia-smi` sees a GPU.
 - **Default models**, downloaded by `install` through Speaches' own API (`POST /v1/models/{id}`), only those missing: `deepdml/faster-whisper-large-v3-turbo-ct2` (speech-to-text), `speaches-ai/Kokoro-82M-v1.0-ONNX` and `speaches-ai/piper-en_US-lessac-medium` (text-to-speech, English voices).
-- **Whisper on CPU**: `cpu threads` (default 0: Speaches' own, which leaves faster-whisper at its default - 4 threads, as far as is known) and `compute type` (default: the model's own precision; `int8` is usually the fastest on CPU), as `WHISPER__CPU_THREADS` and `WHISPER__COMPUTE_TYPE`. Left at Speaches' defaults until `bench` shows what is better on the host; change them in `config` and re-apply.
+- **Whisper on CPU**: `cpu threads` (default **16**) and `compute type` (default **`int8`**), as `WHISPER__CPU_THREADS` and `WHISPER__COMPUTE_TYPE` - corelia's, measured with `bench` (32 CPUs, large-v3-turbo):
+
+  | Setting | 4.5 s command | 70 s poem |
+  | --- | --- | --- |
+  | Speaches' own (`0`, `default`) | 7.7 s | 18.0 s |
+  | 16 threads | 4.7 s | 10.4 s |
+  | 32 threads | 5.2 s | 13.3 s |
+  | **16 threads, `int8`** | **3.0 s** | **6.6 s** |
+
+  32 threads lose to 16: likely 16 cores with two threads each, where the extra threads only contend. `int8` kept the words (the command exactly; the poem but one homophone). On another host, bench it and set these in `config`; `0` and `default` give Speaches' own.
 - **Idle time**: seconds an unused model stays loaded (default 300; `-1` never unloads). Set for both 0.8 (`WHISPER__TTL`) and 0.9 (`STT_MODEL_TTL`, `TTS_MODEL_TTL`); each version ignores the names it doesn't know.
 - **Firewall**: `install` offers to open the port in firewalld or ufw (sudo) so the LAN can reach it; `status` reports open / closed / unknown.
 - **The defaults are the deployment**: re-running `install` on a rebuilt host has to bring back the same service, so a lasting change belongs in the script's defaults, not only in the settings file.

@@ -73,12 +73,17 @@ cfg_defaults() {
     SP_VARIANT="auto"           # auto | cpu | cuda  (auto: cuda when nvidia-smi sees a GPU)
     SP_PORT=8000
     SP_TTL=300                  # seconds a model stays loaded after its last request; -1 = never unload
-    # Whisper's CPU settings (Kamino item 68). 0 and "default" are Speaches'
-    # own defaults - faster-whisper's 4 threads, as far as is known, and the
-    # model's stored precision - left as they are until bench has measured
-    # what else does on corelia.
-    SP_CPU_THREADS=0            # threads per Whisper model on CPU; 0 = Speaches' default
-    SP_COMPUTE_TYPE="default"   # default | int8 | int8_float32 | int16 | float32 (CTranslate2's CPU types)
+    # Whisper's CPU settings, measured with bench on corelia (32 CPUs, Kamino
+    # item 68, 2026-10-18), large-v3-turbo, a 4.5 s spoken command / a 70 s poem:
+    #   Speaches' defaults (0, default)   7.7 s / 18.0 s
+    #   16 threads                        4.7 s / 10.4 s
+    #   32 threads                        5.2 s / 13.3 s  (likely 16 cores, two
+    #                                      threads each: the extra ones only contend)
+    #   16 threads, int8                  3.0 s /  6.6 s  - 0.094 s per audio second
+    # int8 kept the words: the command exactly, the poem but one homophone.
+    # Another host: bench it, and set these in config.
+    SP_CPU_THREADS=16           # threads per Whisper model on CPU; 0 = Speaches' default
+    SP_COMPUTE_TYPE="int8"      # default | int8 | int8_float32 | int16 | float32 (CTranslate2's CPU types)
     SP_MODELS="${SP_WHISPER} ${SP_KOKORO} ${SP_PIPER}"
     SP_VOLUME="speaches-hf-cache"
     SP_K8S_STORAGE="20Gi"
