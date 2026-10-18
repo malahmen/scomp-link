@@ -162,6 +162,8 @@ check "it pins the stable CPU image" has "Image=ghcr.io/speaches-ai/speaches:0.8
 check "it publishes the port" has "PublishPort=8000:8000" "$UNIT"
 check "the model cache is a named volume" has "Volume=speaches-hf-cache:/home/ubuntu/.cache/huggingface/hub" "$UNIT"
 check "the idle time is set for 0.8 and 0.9 alike" has "Environment=WHISPER__TTL=300" "$UNIT"
+check "Whisper's threads are Speaches' default until changed" has "Environment=WHISPER__CPU_THREADS=0" "$UNIT"
+check "...and so is its compute type" has "Environment=WHISPER__COMPUTE_TYPE=default" "$UNIT"
 check "...including text-to-speech (0.9)" has "Environment=TTS_MODEL_TTL=300" "$UNIT"
 check "no GPU device on a CPU image" lacks "AddDevice" "$UNIT"
 check "it starts at boot" has "WantedBy=default.target" "$UNIT"
@@ -192,7 +194,7 @@ check "a closed port reads as closed, not unknown" has "8000/tcp closed" "$T/out
 
 # ---- bench ------------------------------------------------------------------------
 echo "bench"
-run bench "$T/audio" 3 "← back"
+run bench "$T/audio" 3 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
 REPORT="$(find "$T/bench" -name 'speaches-bench-corelia-*.json' | head -1)"
 check "an idle host is not questioned" lacks "not idle" "$T/out"
 check "a report is written, named for the host" test -n "$REPORT"
@@ -206,6 +208,7 @@ check "...then the recordings, smallest first" test "$(grep -o 'file=@[^ ]*' "$T
 check "the load is cold minus the warm median" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
 check "each recording runs the asked number of times" has '"runs_seconds":[2.0,2.0,2.0]' "${REPORT:-/dev/null}"
 check "the real-time factor is median over audio length" has '"realtime_factor":0.0333' "${REPORT:-/dev/null}"
+check "the model and its settings are recorded" has '"stt":{"model":"deepdml/faster-whisper-large-v3-turbo-ct2","cpu_threads":0,"compute_type":"default",' "${REPORT:-/dev/null}"
 check "the conditions are recorded" has '"conditions":{"cpus":32,"load1":0.50,"wine":"","not_idle":false}' "${REPORT:-/dev/null}"
 check "the transcripts are kept" test -f "${REPORT%.json}/long.mp3.json"
 check "text to speech: the WAV's length, not its streamed header's" has '"audio_seconds":1.000' "${REPORT:-/dev/null}"
@@ -216,12 +219,12 @@ rm -rf "${T:?}/bench"/*; : > "$T/state/wine"
 run bench no "← back"
 check "a game under Wine is named" has "running under Wine: swtor.exe" "$T/out"
 check "...and declining benches nothing" test -z "$(ls -A "$T/bench")"
-run bench yes "$T/audio" 1 "← back"
+run bench yes "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
 check "benching anyway says so in the report" has '"not_idle":true' "$(find "$T/bench" -name '*.json' | head -1)"
 rm -f "$T/state/wine"
 
 rm -rf "${T:?}/bench"/*; : > "$T/state/no-unload"
-run bench "$T/audio" 1 "← back"
+run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
 REPORT="$(find "$T/bench" -name '*.json' | head -1)"
 check "a model that will not unload leaves the load unmeasured" has '"load_seconds":null' "${REPORT:-/dev/null}"
 check "...and says why, with the HTTP status" has "could not unload deepdml/faster-whisper-large-v3-turbo-ct2 (DELETE /api/ps: HTTP 500)" "${REPORT:-/dev/null}"
@@ -229,17 +232,29 @@ check "...and text to speech is primed untimed, so its runs are warm" test "$(gr
 rm -f "$T/state/no-unload"
 
 rm -rf "${T:?}/bench"/*
-run bench "$T/audio" 1 "← back"
+run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
 REPORT="$(find "$T/bench" -name '*.json' | head -1)"
 check "a loaded Whisper is unloaded (204), and the cold run timed" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
 
 rm -rf "${T:?}/bench"/*; cp "$T/state/models" "$T/state/models.all"
 grep -vxF speaches-ai/Kokoro-82M-v1.0-ONNX "$T/state/models.all" > "$T/state/models"
-run bench "$T/audio" 1 "← back"
+run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
 REPORT="$(find "$T/bench" -name '*.json' | head -1)"
 check "without Kokoro, no command - and says so" has "No short command to time" "$T/out"
 check "...the recordings still run, the smallest cold" has '"file":"short.wav","spoken_text":null' "${REPORT:-/dev/null}"
 mv "$T/state/models.all" "$T/state/models"
+
+# Another Whisper, not installed: offered for download, then benched.
+rm -rf "${T:?}/bench"/*
+run bench "$T/audio" 1 Systran/faster-whisper-small yes "← back"
+REPORT="$(find "$T/bench" -name '*.json' | head -1)"
+check "a model not installed is downloaded first" has "-X POST http://127.0.0.1:8000/v1/models/Systran/faster-whisper-small" "$T/calls"
+check "...and is the one transcribing" has "model=Systran/faster-whisper-small" "$T/calls"
+check "...and the one reported" has '"model":"Systran/faster-whisper-small"' "${REPORT:-/dev/null}"
+check "...while the default model is not touched" lacks "model=deepdml/faster-whisper-large-v3-turbo-ct2" "$T/calls"
+rm -rf "${T:?}/bench"/*
+run bench "$T/audio" 1 Systran/faster-whisper-base no "← back"
+check "declining the download benches nothing" test -z "$(ls -A "$T/bench")"
 
 run status "← back"
 check "status lists the loaded models, from 0.8.3's answer" has "Loaded now: deepdml/faster-whisper-large-v3-turbo-ct2" "$T/out"
@@ -249,8 +264,15 @@ echo "settings"
 run config port 8010 "done" yes yes "← back"
 check "a changed port is saved" has "SP_PORT=8010" "$T/config/speaches.conf"
 check "re-applying rewrites the unit with it" has "PublishPort=8010:8000" "$UNIT"
+run config "cpu threads" 16 "compute type" int8 "done" yes yes "← back"
+check "threads are saved" has "SP_CPU_THREADS=16" "$T/config/speaches.conf"
+check "...and reach the unit" has "Environment=WHISPER__CPU_THREADS=16" "$UNIT"
+check "the compute type reaches the unit" has "Environment=WHISPER__COMPUTE_TYPE=int8" "$UNIT"
+run config "cpu threads" lots "done" "← back"
+check "a thread count that is not a number is refused" has "Not a thread count: lots" "$T/out"
 run config "reset to defaults" yes "done" no "← back"
 check "reset brings the defaults back" has "SP_PORT=8000" "$T/config/speaches.conf"
+check "...threads included" has "SP_CPU_THREADS=0" "$T/config/speaches.conf"
 
 # ---- uninstall ---------------------------------------------------------------------
 echo "uninstall"

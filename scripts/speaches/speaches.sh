@@ -73,6 +73,12 @@ cfg_defaults() {
     SP_VARIANT="auto"           # auto | cpu | cuda  (auto: cuda when nvidia-smi sees a GPU)
     SP_PORT=8000
     SP_TTL=300                  # seconds a model stays loaded after its last request; -1 = never unload
+    # Whisper's CPU settings (Kamino item 68). 0 and "default" are Speaches'
+    # own defaults - faster-whisper's 4 threads, as far as is known, and the
+    # model's stored precision - left as they are until bench has measured
+    # what else does on corelia.
+    SP_CPU_THREADS=0            # threads per Whisper model on CPU; 0 = Speaches' default
+    SP_COMPUTE_TYPE="default"   # default | int8 | int8_float32 | int16 | float32 (CTranslate2's CPU types)
     SP_MODELS="${SP_WHISPER} ${SP_KOKORO} ${SP_PIPER}"
     SP_VOLUME="speaches-hf-cache"
     SP_K8S_STORAGE="20Gi"
@@ -91,7 +97,7 @@ cfg_save() {
     {
         printf '# speaches.sh settings - see the defaults in speaches.sh\n'
         local key
-        for key in SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS; do
+        for key in SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_CPU_THREADS SP_COMPUTE_TYPE SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS; do
             printf '%s=%q\n' "$key" "${!key}"
         done
     } > "$CONFIG_FILE"
@@ -115,8 +121,11 @@ sp_image() { echo "${SP_IMAGE_REPO}:${SP_VERSION}-$(sp_variant)"; }
 
 # 0.8.x reads WHISPER__TTL; 0.9 renamed it and added one for text-to-speech.
 # Each version ignores the names it does not know, so all three are set.
+# WHISPER__CPU_THREADS and WHISPER__COMPUTE_TYPE are 0.8.3's names
+# (config.py, WhisperConfig; env_nested_delimiter "__").
 sp_env() {
-    printf '%s\n' "WHISPER__TTL=${SP_TTL}" "STT_MODEL_TTL=${SP_TTL}" "TTS_MODEL_TTL=${SP_TTL}" "LOG_LEVEL=info"
+    printf '%s\n' "WHISPER__TTL=${SP_TTL}" "STT_MODEL_TTL=${SP_TTL}" "TTS_MODEL_TTL=${SP_TTL}" \
+        "WHISPER__CPU_THREADS=${SP_CPU_THREADS}" "WHISPER__COMPUTE_TYPE=${SP_COMPUTE_TYPE}" "LOG_LEVEL=info"
 }
 
 sp_local_url() { echo "http://127.0.0.1:${SP_PORT}"; }
@@ -448,8 +457,6 @@ sp_bench() {
     header "Speaches - bench (${url})"
     sp_healthy "$url" || { warn "Not reachable at ${url}."; return 0; }
     installed="$(sp_models_installed "$url")"
-    grep -qxF -- "$SP_WHISPER" <<< "$installed" \
-        || { warn "${SP_WHISPER} is not installed - models -> download the defaults."; return 0; }
 
     read -r cpus load1 wine <<< "$(_sp_host_conditions)"
     if [[ -n "$wine" ]] || awk -v l="$load1" -v c="$cpus" 'BEGIN {exit !(l > c / 8)}'; then
@@ -474,6 +481,19 @@ sp_bench() {
     repeats=$(gum input --value 3 --header "Warm runs of each recording (the median is reported):") || return 0
     [[ "$repeats" =~ ^[1-9][0-9]*$ ]] || { warn "Not a number: ${repeats}"; return 0; }
 
+    # Which Whisper. Local, so every helper below benches this one: a smaller
+    # model (Systran/faster-whisper-small, -base) is compared the same way.
+    local SP_WHISPER="$SP_WHISPER" model_choice
+    model_choice=$(gum input --value "$SP_WHISPER" --width 80 \
+        --header "Whisper model to bench (a Hugging Face ID Speaches can load):") || return 0
+    [[ -n "$model_choice" ]] && SP_WHISPER="$model_choice"
+    if ! grep -qxF -- "$SP_WHISPER" <<< "$installed"; then
+        gum confirm "${SP_WHISPER} is not installed. Download it now?" || return 0
+        sp_model_download "$url" "$SP_WHISPER" || { warn "${SP_WHISPER}: download failed."; return 0; }
+        success "${SP_WHISPER}: downloaded"
+        installed="$(sp_models_installed "$url")"
+    fi
+
     host="$(hostname -s 2>/dev/null || hostname)"
     when="$(date +%Y%m%d-%H%M)"
     report="${SP_BENCH_OUT}/speaches-bench-${host}-${when}.json"
@@ -487,6 +507,7 @@ sp_bench() {
     else
         warn "No short command to time (${SP_KOKORO} not installed, or it failed) - only the recordings."
     fi
+    info "${SP_WHISPER}, CPU threads ${SP_CPU_THREADS} (0 = default), compute type ${SP_COMPUTE_TYPE}"
     info "${#files[@]} recording(s), ${repeats} warm run(s) each. Transcripts go to ${work}/"
 
     # --- speech to text --------------------------------------------------------
@@ -562,8 +583,11 @@ sp_bench() {
             "$SP_BENCH_SCHEMA" "$(_sp_json_esc "$host")" "$(date -Iseconds)" "$SP_VERSION" "$(sp_image)"
         printf '"conditions":{"cpus":%s,"load1":%s,"wine":"%s","not_idle":%s},"repeats":%s,' \
             "${cpus:-0}" "${load1:-0}" "$(_sp_json_esc "$wine")" "$busy" "$repeats"
-        printf '"stt":{"model":"%s","cold_seconds":%s,"load_seconds":%s,"note":"%s","recordings":[%s]},' \
-            "$SP_WHISPER" "$cold" "$load" "$(_sp_json_esc "$cold_note")" "$stt_json"
+        # The settings as speaches.sh has them - what the service runs once
+        # they were applied (config -> re-apply), which bench cannot see.
+        printf '"stt":{"model":"%s","cpu_threads":%s,"compute_type":"%s","cold_seconds":%s,"load_seconds":%s,"note":"%s","recordings":[%s]},' \
+            "$(_sp_json_esc "$SP_WHISPER")" "$SP_CPU_THREADS" "$(_sp_json_esc "$SP_COMPUTE_TYPE")" \
+            "$cold" "$load" "$(_sp_json_esc "$cold_note")" "$stt_json"
         printf '"tts":[%s]}\n' "$tts_json"
     } > "$report"
     success "Report: ${report}"
@@ -710,6 +734,7 @@ sp_show_settings() {
         "Image:     $(sp_image)" \
         "Port:      ${SP_PORT}" \
         "Idle time: ${SP_TTL}s before an unused model is unloaded" \
+        "Whisper:   $( ((SP_CPU_THREADS)) && echo "${SP_CPU_THREADS} CPU threads" || echo "default CPU threads"), compute type ${SP_COMPUTE_TYPE}" \
         "Models:    ${SP_MODELS}" \
         "Cache:     ${SP_VOLUME}" \
         "Settings:  ${CONFIG_FILE}"
@@ -718,11 +743,11 @@ sp_show_settings() {
 # Returns 0 when something changed (the caller offers to re-apply).
 sp_config() {
     local field value before
-    before="$(declare -p SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS)"
+    before="$(declare -p SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_CPU_THREADS SP_COMPUTE_TYPE SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS)"
     while true; do
         header "Speaches - settings"
         sp_show_settings
-        field=$(gum choose version variant port "idle time" models "cache volume" "k8s storage" "k8s storage class" "reset to defaults" "done" \
+        field=$(gum choose version variant port "idle time" "cpu threads" "compute type" models "cache volume" "k8s storage" "k8s storage class" "reset to defaults" "done" \
             --header "Change:") || break
         case "$field" in
             version)  value=$(gum input --value "$SP_VERSION" --header "Speaches version (image tag without -cpu/-cuda):") || continue
@@ -733,6 +758,10 @@ sp_config() {
                       [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 && value < 65536 )) && SP_PORT="$value" || warn "Not a port: ${value}" ;;
             "idle time") value=$(gum input --value "$SP_TTL" --header "Seconds an unused model stays loaded (-1 = never unload, 0 = unload at once):") || continue
                       [[ "$value" =~ ^-?[0-9]+$ ]] && (( value >= -1 )) && SP_TTL="$value" || warn "Not a valid idle time: ${value}" ;;
+            "cpu threads") value=$(gum input --value "$SP_CPU_THREADS" --header "Threads per Whisper model on CPU (0 = Speaches' default; this host has $(nproc 2>/dev/null || echo '?')):") || continue
+                      [[ "$value" =~ ^[0-9]+$ ]] && SP_CPU_THREADS="$value" || warn "Not a thread count: ${value}" ;;
+            "compute type") value=$(gum choose default int8 int8_float32 int16 float32 --header "Whisper's precision on CPU (default: the model's own; int8 is usually the fastest):") || continue
+                      SP_COMPUTE_TYPE="$value" ;;
             models)   value=$(gum input --value "$SP_MODELS" --width 120 --header "Default models (space-separated):") || continue
                       [[ -n "$value" ]] && SP_MODELS="$value" ;;
             "cache volume") value=$(gum input --value "$SP_VOLUME" --header "Named volume for the model cache:") || continue
@@ -745,7 +774,7 @@ sp_config() {
             *) break ;;
         esac
     done
-    [[ "$before" == "$(declare -p SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS)" ]] && return 1
+    [[ "$before" == "$(declare -p SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_CPU_THREADS SP_COMPUTE_TYPE SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS)" ]] && return 1
     cfg_save
     success "Saved to ${CONFIG_FILE}"
     return 0
