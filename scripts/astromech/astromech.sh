@@ -57,7 +57,6 @@ fi
 source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required." >&2; exit 1; }
 
 ASTROMECH_REPO="${ASTROMECH_REPO:-https://github.com/malahmen/astromech.git}"
 ASTROMECH_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/astromech"
@@ -81,12 +80,13 @@ resolve_engine() {
     fi
     if [[ -f "${ASTROMECH_CACHE}/astromech.sh" ]]; then
         ENGINE="${ASTROMECH_CACHE}/astromech.sh"; info "Using cached astromech: ${ASTROMECH_CACHE}"
-        if [[ -d "${ASTROMECH_CACHE}/.git" ]] && gum confirm "Update astromech (git pull)?"; then
+        if [[ -d "${ASTROMECH_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update astromech (git pull)?"; then
             gum spin --spinner dot --title "Updating astromech..." -- \
                 git -C "$ASTROMECH_CACHE" pull --ff-only || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the astromech engine"
     gum confirm "astromech engine not found. Clone it from ${ASTROMECH_REPO}?" \
         || error_exit "astromech engine is unavailable."
     mkdir -p "$(dirname "$ASTROMECH_CACHE")"

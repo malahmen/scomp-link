@@ -48,7 +48,6 @@ fi
 source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required to fetch the engine." >&2; exit 1; }
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -90,12 +89,13 @@ resolve_engine() {
     if [[ -f "${TEP_CACHE}/thermal-exhaust-port.sh" ]]; then
         ENGINE="${TEP_CACHE}/thermal-exhaust-port.sh"
         info "Using cached thermal-exhaust-port: ${TEP_CACHE}"
-        if [[ -d "${TEP_CACHE}/.git" ]] && gum confirm "Update thermal-exhaust-port (git pull)?"; then
+        if [[ -d "${TEP_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update thermal-exhaust-port (git pull)?"; then
             gum spin --spinner dot --title "Updating thermal-exhaust-port..." -- \
                 git -C "$TEP_CACHE" pull --ff-only || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the thermal-exhaust-port engine"
 
     gum confirm "thermal-exhaust-port engine not found. Clone it from ${TEP_REPO}?" \
         || error_exit "thermal-exhaust-port engine is unavailable."

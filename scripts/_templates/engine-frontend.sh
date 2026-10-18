@@ -37,7 +37,6 @@ fi
 source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required." >&2; exit 1; }
 
 # TODO: rename FOO/foo and point at the engine's public repo.
 FOO_REPO="${FOO_REPO:-https://github.com/OWNER/foo.git}"
@@ -56,11 +55,12 @@ resolve_engine() {
     fi
     if [[ -f "${FOO_CACHE}/foo.sh" ]]; then
         ENGINE="${FOO_CACHE}/foo.sh"; info "Using cached foo: ${FOO_CACHE}"
-        if [[ -d "${FOO_CACHE}/.git" ]] && gum confirm "Update foo (git pull)?"; then
+        if [[ -d "${FOO_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update foo (git pull)?"; then
             gum spin --spinner dot --title "Updating foo..." -- git -C "$FOO_CACHE" pull --ff-only || warn "Update failed; using existing copy."
         fi
         return
     fi
+    need_git "to fetch the foo engine"
     gum confirm "foo engine not found. Clone it from ${FOO_REPO}?" || error_exit "foo engine is unavailable."
     mkdir -p "$(dirname "$FOO_CACHE")"
     gum spin --spinner dot --title "Cloning foo..." -- git clone --depth 1 "$FOO_REPO" "$FOO_CACHE" \

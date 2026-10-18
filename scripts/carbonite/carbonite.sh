@@ -46,7 +46,6 @@ fi
 source "${COMMON_DIR}/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required to fetch the engine." >&2; exit 1; }
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -90,12 +89,13 @@ resolve_engine() {
     if [[ -f "${CARB_CACHE}/carbonite.sh" ]]; then
         ENGINE="${CARB_CACHE}/carbonite.sh"
         info "Using cached carbonite: ${CARB_CACHE}"
-        if [[ -d "${CARB_CACHE}/.git" ]] && gum confirm "Update carbonite (git pull)?"; then
+        if [[ -d "${CARB_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update carbonite (git pull)?"; then
             gum spin --spinner dot --title "Updating carbonite..." -- \
                 git -C "$CARB_CACHE" pull --ff-only || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the carbonite engine"
 
     gum confirm "carbonite engine not found. Clone it from ${CARB_REPO}?" \
         || error_exit "carbonite engine is unavailable."

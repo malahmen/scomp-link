@@ -49,7 +49,6 @@ source "${COMMON_DIR}/ui.sh"
 source "${COMMON_DIR}/deps.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required to fetch the engine." >&2; exit 1; }
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -80,12 +79,13 @@ resolve_engine() {
     if [[ -f "${HOLONET_CACHE}/holonet-sync.sh" ]]; then
         ENGINE="${HOLONET_CACHE}/holonet-sync.sh"
         info "Using cached holonet-sync: ${HOLONET_CACHE}"
-        if [[ -d "${HOLONET_CACHE}/.git" ]] && gum confirm "Update holonet-sync (git pull)?"; then
+        if [[ -d "${HOLONET_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update holonet-sync (git pull)?"; then
             gum spin --spinner dot --title "Updating holonet-sync..." -- \
                 git -C "$HOLONET_CACHE" pull --ff-only || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the holonet-sync engine"
 
     gum confirm "holonet-sync engine not found. Clone it from ${HOLONET_REPO}?" \
         || error_exit "holonet-sync engine is unavailable."

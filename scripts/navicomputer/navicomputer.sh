@@ -27,7 +27,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/ui.sh"
 
 command -v gum &>/dev/null || { echo "[error] gum is required. Run setup.sh first." >&2; exit 1; }
-command -v git &>/dev/null || { echo "[error] git is required to fetch the engine." >&2; exit 1; }
 
 NAVI_REPO="${NAVICOMPUTER_REPO:-https://github.com/malahmen/navicomputer.git}"
 NAVI_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/navicomputer"
@@ -47,12 +46,13 @@ resolve_engine() {
     if [[ -f "${NAVI_CACHE}/navicomputer.sh" ]]; then
         ENGINE="${NAVI_CACHE}/navicomputer.sh"
         info "Using cached navicomputer: ${NAVI_CACHE}"
-        if [[ -d "${NAVI_CACHE}/.git" ]] && gum confirm "Update navicomputer (git pull)?"; then
+        if [[ -d "${NAVI_CACHE}/.git" ]] && command -v git &>/dev/null && gum confirm "Update navicomputer (git pull)?"; then
             gum spin --spinner dot --title "Updating navicomputer..." -- \
                 git -C "$NAVI_CACHE" pull --ff-only || warn "Update failed; using the existing copy."
         fi
         return
     fi
+    need_git "to fetch the navicomputer engine"
     gum confirm "navicomputer engine not found. Clone it from ${NAVI_REPO}?" \
         || error_exit "navicomputer engine is unavailable."
     mkdir -p "$(dirname "$NAVI_CACHE")"
@@ -198,6 +198,7 @@ nav_use() {
     local name; name=$(pick_profile "Select a profile to wire:") || return
     [[ -n "$name" ]] || return
     local extra=()
+    need_git "to set up a repository"
     if ! git -C "${repo/#\~/$HOME}" rev-parse --git-dir &>/dev/null; then
         gum confirm "Not a git repo — initialize one there?" && extra+=(--init) || return
     fi

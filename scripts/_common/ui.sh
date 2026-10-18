@@ -20,3 +20,8 @@ success()    { gum style --foreground "${GREEN:-82}" "[ok] $1"; }
 # stdout via $() (e.g. `target_type=$(cfg_require)`).
 warn()       { gum style --foreground "${YELLOW:-220}" "[warn] $1" >&2; }
 error_exit() { gum style --foreground "${RED:-196}" "[error] $1" >&2; exit 1; }
+
+# need_git <why> - git where it is actually used, not at startup. A front-end
+# with a local or cached engine runs without it; only cloning (and the offer to
+# update a cached copy, which is skipped without git) needs it. Kamino item 81.
+need_git()   { command -v git &>/dev/null || error_exit "git is required $1: apt install git / brew install git"; }
