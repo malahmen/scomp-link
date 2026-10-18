@@ -265,7 +265,10 @@ _json_loaded() {
     fi
 }
 
-sp_models_installed() { curl -fsS --max-time 10 "$1/v1/models" 2>/dev/null | _json_ids || true; }
+# Installed models: /v1/models' "id"s, less the voices nested in Kokoro's and
+# Piper's entries (an "id" each: af_heart, lessac). A model's ID is its Hugging
+# Face repository, owner/name; a voice's never has the slash.
+sp_models_installed() { curl -fsS --max-time 10 "$1/v1/models" 2>/dev/null | _json_ids | grep / || true; }
 sp_models_loaded()    { curl -fsS --max-time 10 "$1/api/ps" 2>/dev/null | _json_loaded || true; }
 
 sp_model_download() {
@@ -398,23 +401,14 @@ _sp_wav_seconds() {
     awk -v s="$size" -v r="$rate" -v c="$channels" -v b="$bits" 'BEGIN {printf "%.3f", (s - 44) / (r * c * b / 8)}'
 }
 
-# Unload a model, so the next request pays its load. 0 = unloaded (2xx);
-# otherwise 1. The HTTP status is left in SP_UNLOAD_STATUS for the report.
-_sp_unload() {
-    SP_UNLOAD_STATUS=$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' \
-        -X DELETE "$1/api/ps/$2" 2>/dev/null) || SP_UNLOAD_STATUS="${SP_UNLOAD_STATUS:-000}"
-    [[ "$SP_UNLOAD_STATUS" == 2?? ]]
-}
-
-# Whisper is cold now: unloaded, or not loaded to begin with. Speaches answers
-# 404 "Model not found" for a model it does not hold - the first bench on
-# corelia took that for a failure, after Whisper had sat idle past SP_TTL.
-# A 404 counts only when /api/ps agrees: in 0.8.3 that list is Whisper's
-# alone, so a 404 for any other model proves nothing.
-_sp_whisper_cold() {
-    _sp_unload "$1" "$SP_WHISPER" && return 0
-    [[ "$SP_UNLOAD_STATUS" == 404 ]] && ! grep -qxF -- "$SP_WHISPER" <<< "$(sp_models_loaded "$1")"
-}
+# Whisper is cold: not in /api/ps (in 0.8.3, the list of loaded Whisper models).
+#
+# Bench never unloads a model to make it cold. On corelia, 2026-10-18,
+# unloading a loaded Whisper (DELETE /api/ps/<model>) logged "unloaded" and
+# never answered; /health went on answering, but every transcription after it
+# waited for good, until a restart. So the load is measured only when Whisper
+# is not loaded already - after a restart, or SP_TTL idle seconds.
+_sp_whisper_cold() { ! grep -qxF -- "$SP_WHISPER" <<< "$(sp_models_loaded "$1")"; }
 
 # One transcription; prints "seconds" and leaves the verbose JSON in $3.
 _sp_stt_once() {
@@ -517,8 +511,9 @@ sp_bench() {
         info "Cold run on $(basename "${files[0]}") (Whisper not loaded)..."
         if t=$(_sp_stt_once "$url" "${files[0]}" "$work/.cold.json"); then cold="$t"; else cold_note="the cold run failed"; fi
     else
-        cold_note="could not unload ${SP_WHISPER} (DELETE /api/ps: HTTP ${SP_UNLOAD_STATUS}) - the load is not measured"
+        cold_note="${SP_WHISPER} was already loaded - the load is not measured (bench does not unload: in 0.8.3 that froze Speaches)"
         warn "$cold_note"
+        warn "To measure it, restart Speaches (or wait ${SP_TTL} s idle) and bench before anything else."
         _sp_stt_once "$url" "${files[0]}" "$work/.cold.json" >/dev/null || true   # load it, untimed
     fi
     rm -f "$work/.cold.json"
@@ -549,20 +544,17 @@ sp_bench() {
     [[ "$load" != null ]] && success "Whisper load: ${load} s (cold ${cold} s minus warm)"
 
     # --- text to speech --------------------------------------------------------
-    # Speaches 0.8.3 unloads only Whisper models (/api/ps: "FIX: support
-    # non-whisper models"). When an unload fails, an untimed first request
-    # loads the model, so the warm runs are warm; the cold figure is null.
+    # Speaches 0.8.3 cannot unload text-to-speech models (/api/ps: "FIX:
+    # support non-whisper models") and does not list them as loaded, so their
+    # load cannot be measured: an untimed first request loads the model, so
+    # the warm runs are warm, and the cold figure is null.
     local model voice tts_json="" tcold tnote wav audio
     for model in "$SP_KOKORO" "$SP_PIPER"; do
         grep -qxF -- "$model" <<< "$installed" || { info "${model}: not installed, skipped"; continue; }
         voice="$(_sp_tts_voice "$model")"; times=(); tcold="null"; tnote=""; audio=""
         wav="$work/tts-${model##*/}.wav"
-        if _sp_unload "$url" "$model"; then
-            t=$(_sp_tts_once "$url" "$model" "$voice" "$wav") && tcold="$t"
-        else
-            tnote="could not unload (DELETE /api/ps: HTTP ${SP_UNLOAD_STATUS}) - the load is not measured"
-            _sp_tts_once "$url" "$model" "$voice" "$wav" >/dev/null || true
-        fi
+        tnote="Speaches 0.8.3 cannot unload text-to-speech models - the load is not measured"
+        _sp_tts_once "$url" "$model" "$voice" "$wav" >/dev/null || true
         for ((i = 1; i <= repeats; i++)); do
             t=$(_sp_tts_once "$url" "$model" "$voice" "$wav") && times+=("$t")
         done
