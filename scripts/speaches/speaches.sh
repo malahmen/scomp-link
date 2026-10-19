@@ -390,8 +390,11 @@ If it comes back faster than it takes to hear, reading aloud can stream; if not,
 # median of the numbers on stdin, one per line
 _sp_median() { sort -g | awk '{v[NR]=$1} END {if (!NR) exit 1; print (NR % 2) ? v[(NR+1)/2] : (v[NR/2] + v[NR/2+1]) / 2}'; }
 # the first number for "key" in a JSON text: no jq, as for _json_ids
-_sp_json_num() { grep -o "\"$1\" *: *-\?[0-9][0-9.eE+-]*" | head -1 | sed 's/.*: *//'; }
-_sp_json_str() { grep -o "\"$1\" *: *\"[^\"]*\"" | head -1 | sed 's/.*: *"\(.*\)"/\1/'; }
+# A field the reply lacks is an empty answer, never a failure: these run in
+# $(...) under set -e and pipefail, where grep finding nothing ended the whole
+# TUI before the report was written (Kamino item 103).
+_sp_json_num() { { grep -o "\"$1\" *: *-\?[0-9][0-9.eE+-]*" | head -1 | sed 's/.*: *//'; } || true; }
+_sp_json_str() { { grep -o "\"$1\" *: *\"[^\"]*\"" | head -1 | sed 's/.*: *"\(.*\)"/\1/'; } || true; }
 _sp_json_esc() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\t'/ }"; }
 # a WAV's length in seconds from its header: 16-bit PCM as Speaches writes it.
 # The data size comes from the file, not the header, which a streamed WAV
@@ -417,9 +420,13 @@ _sp_whisper_cold() { ! grep -qxF -- "$SP_WHISPER" <<< "$(sp_models_loaded "$1")"
 
 # One transcription; prints "seconds" and leaves the verbose JSON in $3.
 _sp_stt_once() {
-    local url="$1" file="$2" out="$3"
+    local url="$1" file="$2" out="$3" q
+    # Quoted for curl's -F: unquoted, a , or ; in the name is form syntax
+    # ("Dickinson, Because I could not.wav" failed every run). Inside the
+    # quotes curl takes \ as an escape, so \ and " are escaped (item 103).
+    q="${file//\\/\\\\}"; q="${q//\"/\\\"}"
     curl -fsS --max-time 7200 -o "$out" -w '%{time_total}' "${url}/v1/audio/transcriptions" \
-        -F "file=@${file}" -F "model=${SP_WHISPER}" -F "response_format=verbose_json"
+        -F "file=@\"${q}\"" -F "model=${SP_WHISPER}" -F "response_format=verbose_json"
 }
 
 # One synthesis; prints "seconds" and leaves the WAV in $4.
@@ -471,9 +478,13 @@ sp_bench() {
     local -a files=()
     if [[ -d "$dir" ]]; then
         # smallest first: the cold run uses the first, and pays the least for it
+        # Sizes from wc, not find -printf: BSD find (the macOS Docker target)
+        # has no -printf, and every recording was silently skipped there.
+        local f
         mapfile -t files < <(find "$dir" -maxdepth 1 -type f \
             \( -iname '*.wav' -o -iname '*.mp3' -o -iname '*.flac' -o -iname '*.ogg' -o -iname '*.opus' -o -iname '*.m4a' \) \
-            -printf '%s\t%p\n' | sort -n | cut -f2-)
+            -print0 | while IFS= read -r -d '' f; do printf '%s\t%s\n' "$(wc -c < "$f" | tr -d ' ')" "$f"; done \
+            | sort -n | cut -f2-)
     fi
     [[ ${#files[@]} -gt 0 ]] || grep -qxF -- "$SP_KOKORO" <<< "$installed" \
         || { warn "No recordings in ${dir}, and no ${SP_KOKORO} to speak a command with."; return 0; }
