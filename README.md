@@ -103,6 +103,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`holonet-sync/holonet-sync.sh`](docs/scripts/holonet-sync.md) | Reconcile repos both ways between Gitea and GitHub — branches, tags, auto-merge, never a force-push — front-end for the standalone [holonet-sync](https://github.com/malahmen/holonet-sync) engine, which also runs unattended from cron |
 | [`astromech/astromech.sh`](docs/scripts/astromech.md) | Keep every git repo under your folders on a fresh main/master — commits feature-branch work, stashes changes on main, `pull --rebase`, never pushes — plus tidying local branches the trunk already holds (`git branch -d`, after showing you the list) and a toggle for git's `fetch.prune`; front-end for the standalone [astromech](https://github.com/malahmen/astromech) engine, which also runs from cron |
 | [`thermal-exhaust-port/thermal-exhaust-port.sh`](docs/scripts/thermal-exhaust-port.md) | Stepped fan curve for machines whose fans the embedded controller owns rather than hwmon PWM (a Framework Desktop exposes no `pwm*` nodes at all, so fan-control and `fancontrol` have nothing to drive) — temperature → duty steps with one-sided hysteresis, driving the EC through `ectool`; front-end for the standalone [thermal-exhaust-port](https://github.com/malahmen/thermal-exhaust-port) engine, which runs as a systemd service |
+| [`edcmea/edcmea.sh`](docs/scripts/edcmea.md) | Elite Dangerous commodity market alerts - watch rules (commodity, price, pad, distance, data age; fleet carriers left out) over Ardent Insight's market data, emailed through Charm's pop when a station pays enough, and the schedule (systemd user timer or crontab); front-end for the standalone [EDCMEA](https://github.com/malahmen/EDCMEA) engine, made for cron |
 | [`carbonite/carbonite.sh`](docs/scripts/carbonite.md) | Fan curve for desktop boards whose headers *are* hwmon PWM (an MSI board's NCT6687) but sit on a BIOS curve — writes a temperature → duty curve into CoolerControl over its API (Graph profile per sensor, Mix of the hottest, one-sided hysteresis) and reads it back, the AIO pump pinned at 100% by name (header labels lie), and per-fan floors for fans that stall; front-end for the standalone [carbonite](https://github.com/malahmen/carbonite) engine |
 
 ---
@@ -166,6 +167,7 @@ The setup script will:
 | keyd                        | bazzite-utils `lofree-edge-fix` only (COPR-layered on Fedora Atomic, `dnf`/`apt` elsewhere; requires a reboot on rpm-ostree hosts) |
 | ectool                      | thermal-exhaust-port engine (ships with the host's EC/firmware tooling; already in the Bazzite image — not installable from a package manager) |
 | curl, jq, coolercontrold    | carbonite engine (CoolerControl is a host package with its own GUI; the engine needs a write-access token from it, not root) |
+| python3 (>= 3.9), pop       | EDCMEA engine (pop sends the alerts: `brew install pop`, or https://github.com/charmbracelet/pop) |
 | uv, python3                 | bmad                                                  |
 | flatpak, Xvfb, systemd      | lmstudio (Linux only)                                 |
 | podman (>= 4.4), systemd    | speaches Podman target (Linux only; podman installed via dnf/apt/rpm-ostree if missing) |
@@ -350,6 +352,7 @@ scomp-link/
 │   ├── stubs/gum                     # scripted answers instead of a terminal
 │   ├── test-astromech.sh             # the astromech front-end
 │   ├── test-carbonite.sh             # the carbonite front-end (real engine, fake CoolerControl)
+│   ├── test-edcmea.sh                # the EDCMEA front-end (fake engine, recording crontab/systemctl)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-speaches.sh              # the speaches front-end
@@ -467,6 +470,8 @@ scomp-link/
     │   └── thermal-exhaust-port.sh   # front-end for the thermal-exhaust-port EC fan-curve engine (its own repo)
     ├── carbonite/
     │   └── carbonite.sh              # front-end for the carbonite CoolerControl fan-curve engine (its own repo)
+    ├── edcmea/
+    │   └── edcmea.sh                 # front-end for the EDCMEA market-alert engine (its own repo, made for cron)
     │
     └── your-script/
         └── your-script.sh            # Add your own scripts here
