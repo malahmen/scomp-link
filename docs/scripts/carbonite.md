@@ -59,7 +59,7 @@ whatever is there now.
 | --- | --- |
 | status | The applied curve, hysteresis and delay, the watched temperatures, and every fan with RPM, duty and whether it follows the curve |
 | try a curve | Pick a preset or type points, then walk them over a list of temperatures. Touches nothing. |
-| apply a curve | Curve and preview, then sensors, which header is the AIO pump (pinned at 100%), which fans follow the curve, which of those stall at low speed (they get a floor), then confirm |
+| apply a curve | Curve and preview, then sensors, which header is the AIO pump (pinned at 100%), which fans follow the curve, which of those stall at low speed (they get a floor), then confirm. A curve that reaches 0% names the fans without a floor that would stop, and asks before letting them (`--allow-stop`) |
 | change the curve | Replace just the curve. Sensors and fans stay as they are. |
 | list sensors | Every temperature source CoolerControl sees, with its id and reading |
 | list fans | Every fan channel CoolerControl can drive, with RPM, duty and curve |

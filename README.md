@@ -353,6 +353,8 @@ scomp-link/
 │   ├── test-astromech.sh             # the astromech front-end
 │   ├── test-carbonite.sh             # the carbonite front-end (real engine, fake CoolerControl)
 │   ├── test-edcmea.sh                # the EDCMEA front-end (fake engine, recording crontab/systemctl)
+│   ├── test-git-optional.sh          # the front-ends without git: a local engine still runs
+│   ├── test-holo-convert.sh          # the holo-convert front-end (fake engine)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-speaches.sh              # the speaches front-end

@@ -22,7 +22,7 @@ The front-end finds `navicomputer.sh` automatically, in order:
 
 - **`jq`** — the engine's core dependency (and the front-end parses its JSON). If
   missing, the front-end offers to install it (Homebrew / apt / dnf).
-- `ssh-keygen` (key generation), `ssh` (test/import), `git` (use) — as needed.
+- `ssh-keygen` (key generation), `ssh` (test/import), `git` (use) — as needed. Without git, **use** says so and returns to the menu; the rest works.
 - `gum`, `git` (framework floor).
 
 ## What it manages
