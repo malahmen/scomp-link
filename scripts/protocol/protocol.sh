@@ -419,6 +419,14 @@ pr_install() {
     elif gum confirm "Rebuild the images from ${PR_REF} first?" --default=false; then
         pr_build_images || return 0
     fi
+    # check before the units are written: it needs only pr_run_args. Written
+    # first, units with a failing configuration stayed on disk with
+    # WantedBy=default.target, and the next boot or restart ran them anyway,
+    # crash-looping (Kamino item 95).
+    if ! pr_deploy_cmd check; then
+        warn "A backend is unreachable (above). Fix it, then install again - nothing was written or started."
+        return 0
+    fi
     mkdir -p "$QUADLET_DIR"
     local unit start
     for unit in "${PR_UNITS[@]}"; do
@@ -426,10 +434,6 @@ pr_install() {
     done
     info "Wrote ${#PR_UNITS[@]} units to ${QUADLET_DIR}"
     systemctl --user daemon-reload
-    if ! pr_deploy_cmd check; then
-        warn "A backend is unreachable (above). Fix it, then install again - nothing was started."
-        return 0
-    fi
     start="$(date +%s)"
     # The light worker first, alone: two workers downloading the same model
     # into one cache at once collide. The heavy one starts once it is up.

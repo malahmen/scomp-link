@@ -147,12 +147,15 @@ check "...and built at a fetched commit, not a working copy" has "checkout --qui
 check "the marker engine is built from protocol-droid" has "-t localhost/marker-service:latest $T/src/protocol-droid" "$T/calls"
 check "the worker image goes on the engine's" has "--build-arg BASE=localhost/marker-service:latest -t localhost/protocol-marker:latest" "$T/calls"
 check "every image carries its commit" has "--label org.opencontainers.image.revision=abc1234" "$T/calls"
-check "five units are written" test "$(find "$Q" -name 'protocol-*.container' | wc -l)" -eq 5
 check "an unreachable backend starts nothing" lacks "systemctl --user restart" "$T/calls"
+check "...and writes no unit: a later boot cannot run it (item 95)" test "$(find "$Q" -name 'protocol-*.container' 2>/dev/null | wc -l)" -eq 0
+check "...nor reloads systemd" lacks "daemon-reload" "$T/calls"
 check "...and says so" has "A backend is unreachable" "$T/out"
 
 rm -f "$T/state/backends-down"
 run install yes no yes "← back"
+check "with the backends reachable, five units are written" test "$(find "$Q" -name 'protocol-*.container' | wc -l)" -eq 5
+check "...after the check passed" before "localhost/protocol:latest check" "daemon-reload" "$T/calls"
 check "secrets already stored are not asked again" lacks "secret create" "$T/calls"
 check "present images are not rebuilt unless asked" lacks "podman build" "$T/calls"
 check "the light marker worker starts with the others" has "protocol-markitdown.service protocol-marker-light.service" "$T/calls"
