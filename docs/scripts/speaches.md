@@ -26,7 +26,7 @@ Installs and manages [Speaches](https://speaches.ai), a ready-made speech server
 
 ## Bench
 
-`bench` measures what `test` cannot: speed on this host.
+`bench` measures what `test` cannot: speed on this host. Recordings may have any name (a `,` or `;` in it used to fail every run), and are found on macOS too.
 
 - **Speech to text**: each recording in a folder (default `~/speaches-bench-audio`; wav, mp3, flac, ogg, opus or m4a - ideally real speech of about 1, 5 and 30 minutes) is transcribed several times warm, and the median reported as the **real-time factor**: processing seconds per second of audio, so under 1 is faster than real time. The audio's length is Speaches' own (`verbose_json`), so no ffprobe is needed.
 - **A short command**: Kokoro speaks a one-sentence command first (about 5 s, the length Padme mostly hears), and it is timed like a recording - no recording that short, and no ffmpeg, needed. The report gives what was said beside its transcript.
