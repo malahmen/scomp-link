@@ -198,7 +198,12 @@ nav_use() {
     local name; name=$(pick_profile "Select a profile to wire:") || return
     [[ -n "$name" ]] || return
     local extra=()
-    need_git "to set up a repository"
+    # Not need_git: its error_exit closed the whole TUI from one menu action.
+    # Without git this one action cannot run; the menu still can (item 104).
+    if ! command -v git &>/dev/null; then
+        warn "git is required to set up a repository: apt install git / brew install git"
+        return 0
+    fi
     if ! git -C "${repo/#\~/$HOME}" rev-parse --git-dir &>/dev/null; then
         gum confirm "Not a git repo — initialize one there?" && extra+=(--init) || return
     fi

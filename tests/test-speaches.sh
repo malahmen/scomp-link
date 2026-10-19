@@ -82,7 +82,11 @@ while [[ $# -gt 0 ]]; do
         -o) out="$2"; shift 2 ;;
         -w) wfmt="$2"; shift 2 ;;
         -d) data="$2"; shift 2 ;;
-        -F|-H|--max-time) shift 2 ;;
+        # As curl reads -F: an unquoted , or ; in a file name is form syntax,
+        # and curl fails to open the shortened name (26).
+        -F) if [[ "$2" == file=@* && "${2#file=@}" != \"* && "${2#file=@}" == *[,\;]* ]]; then exit 26; fi
+            shift 2 ;;
+        -H|--max-time) shift 2 ;;
         http*) url="$1"; shift ;;
         *) shift ;;
     esac
@@ -98,7 +102,8 @@ case "$method $url" in
     "GET "*/api/ps)        printf '{"models":['; sed 's/.*/"&"/' "$STUB_STATE/loaded" 2>/dev/null | paste -sd, -; printf ']}\n' ;;
     # A transcription is 10 s while Whisper is not loaded, 2 s once it is.
     *"/v1/audio/transcriptions")
-        echo '{"text":"hello there","language":"en","duration":60.0,"segments":[]}' > "$out"
+        if [[ -f "$STUB_STATE/bare-reply" ]]; then echo '{"text":"hello there","segments":[]}' > "$out"
+        else echo '{"text":"hello there","language":"en","duration":60.0,"segments":[]}' > "$out"; fi
         grep -qxF deepdml/faster-whisper-large-v3-turbo-ct2 "$STUB_STATE/loaded" 2>/dev/null \
             || { echo deepdml/faster-whisper-large-v3-turbo-ct2 >> "$STUB_STATE/loaded"; : > "$STUB_STATE/cold"; } ;;
     *"/v1/audio/speech")
@@ -201,9 +206,9 @@ check "...and is valid JSON" python3 -m json.tool "${REPORT:-/dev/null}" /dev/nu
 check "Whisper not loaded counts as cold" lacks "already loaded" "${REPORT:-/dev/null}"
 check "nothing is unloaded, ever" lacks "-X DELETE" "$T/calls"
 check "Kokoro speaks a short command first" has "Turn off the lights" "$T/state/speech-requests"
-check "...which takes the cold run" test "$(grep -m1 -o 'file=@[^ ]*' "$T/calls")" = "file=@${REPORT%.json}/spoken-command.wav"
+check "...which takes the cold run" test "$(grep -m1 -o 'file=@[^ ]*' "$T/calls" | tr -d '"')" = "file=@${REPORT%.json}/spoken-command.wav"
 check "...and is reported with what was said" has '"file":"spoken-command.wav","spoken_text":"Turn off the lights' "${REPORT:-/dev/null}"
-check "...then the recordings, smallest first" test "$(grep -o 'file=@[^ ]*' "$T/calls" | sed -n 5p)" = "file=@$T/audio/short.wav"
+check "...then the recordings, smallest first" test "$(grep -o 'file=@[^ ]*' "$T/calls" | sed -n 5p | tr -d '"')" = "file=@$T/audio/short.wav"
 check "the load is cold minus the warm median" has '"cold_seconds":10.0,"load_seconds":8.00' "${REPORT:-/dev/null}"
 check "each recording runs the asked number of times" has '"runs_seconds":[2.0,2.0,2.0]' "${REPORT:-/dev/null}"
 check "the real-time factor is median over audio length" has '"realtime_factor":0.0333' "${REPORT:-/dev/null}"
@@ -245,6 +250,21 @@ REPORT="$(bench_report)"
 check "without Kokoro, no command - and says so" has "No short command to time" "$T/out"
 check "...the recordings still run, the smallest cold" has '"file":"short.wav","spoken_text":null' "${REPORT:-/dev/null}"
 mv "$T/state/models.all" "$T/state/models"
+
+# Item 103: a , or ; in a recording's name, and a reply without duration or
+# language.
+rm -rf "${T:?}/bench"/*; mkdir -p "$T/audio2"
+head -c 1000 /dev/zero > "$T/audio2/Dickinson, Because I could not; stop.wav"
+run bench "$T/audio2" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
+REPORT="$(bench_report)"
+check "a recording with a comma and a semicolon in its name is benched (item 103)" has '"file":"Dickinson, Because I could not; stop.wav","spoken_text":null,"audio_seconds":60.0' "${REPORT:-/dev/null}"
+check "...not failed" lacks "every run failed" "${REPORT:-/dev/null}"
+rm -rf "${T:?}/bench"/*; : > "$T/state/bare-reply"
+run bench "$T/audio" 1 deepdml/faster-whisper-large-v3-turbo-ct2 "← back"
+REPORT="$(bench_report)"
+check "a reply without duration or language still gives a report" test -n "$REPORT"
+check "...with the length unknown, not invented" has '"file":"short.wav","spoken_text":null,"audio_seconds":null' "${REPORT:-/dev/null}"
+rm -f "$T/state/bare-reply"
 
 # Another Whisper, not installed: offered for download, then benched.
 rm -rf "${T:?}/bench"/*

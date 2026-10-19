@@ -147,12 +147,15 @@ check "...and built at a fetched commit, not a working copy" has "checkout --qui
 check "the marker engine is built from protocol-droid" has "-t localhost/marker-service:latest $T/src/protocol-droid" "$T/calls"
 check "the worker image goes on the engine's" has "--build-arg BASE=localhost/marker-service:latest -t localhost/protocol-marker:latest" "$T/calls"
 check "every image carries its commit" has "--label org.opencontainers.image.revision=abc1234" "$T/calls"
-check "five units are written" test "$(find "$Q" -name 'protocol-*.container' | wc -l)" -eq 5
 check "an unreachable backend starts nothing" lacks "systemctl --user restart" "$T/calls"
+check "...and writes no unit: a later boot cannot run it (item 95)" test "$(find "$Q" -name 'protocol-*.container' 2>/dev/null | wc -l)" -eq 0
+check "...nor reloads systemd" lacks "daemon-reload" "$T/calls"
 check "...and says so" has "A backend is unreachable" "$T/out"
 
 rm -f "$T/state/backends-down"
 run install yes no yes "← back"
+check "with the backends reachable, five units are written" test "$(find "$Q" -name 'protocol-*.container' | wc -l)" -eq 5
+check "...after the check passed" before "localhost/protocol:latest check" "daemon-reload" "$T/calls"
 check "secrets already stored are not asked again" lacks "secret create" "$T/calls"
 check "present images are not rebuilt unless asked" lacks "podman build" "$T/calls"
 check "the light marker worker starts with the others" has "protocol-markitdown.service protocol-marker-light.service" "$T/calls"
@@ -192,8 +195,23 @@ check "...and removes it again" has "-X DELETE http://127.0.0.1:8090/documents/d
 echo "settings"
 run config "Redis URL" "redis://user:pw@192.168.3.52:6380/0" "done" "← back"
 check "a Redis URL with credentials in it is refused" lacks "user:pw" "$T/config/protocol.conf"
-run config "Qdrant collections" "documents,chunks" "done" yes yes no "← back"
-check "named collections reach the units" has "Environment=QDRANT_COLLECTIONS=documents,chunks" "$Q/protocol-api.container"
+run config "Qdrant collections" "documents, chunks" "done" yes yes no "← back"
+check "named collections reach the units, without the typed space (item 102)" has "Environment=QDRANT_COLLECTIONS=documents,chunks" "$Q/protocol-api.container"
+check "every setting is in the menu: the MariaDB port" has "<option> MariaDB port" "$T/out"
+check "...and the repositories" has "<option> repositories" "$T/out"
+run config "MariaDB host" "meksha lan" "S3 endpoint" "http://nas:3900/50%" "done" "← back"
+check "a value with a space is refused (the file holds it %q-escaped)" lacks "meksha" "$T/config/protocol.conf"
+check "...and one with a %" lacks "50%" "$T/config/protocol.conf"
+check "...saying why" has "no spaces, %, quotes or backslashes" "$T/out"
+run config "MariaDB port" "3307" "done" no "← back"
+check "the MariaDB port can be changed" grep -q "^PR_MARIADB_PORT=3307" "$T/config/protocol.conf"
+run config "repositories" "https://example.test/protocol.git" "https://example.test/protocol-droid.git" "done" yes yes yes "← back"
+check "a changed repository is the one fetched from" has "remote set-url origin https://example.test/protocol.git" "$T/calls"
+check "...set before its clone fetches (protocol-droid is fetched first)" before "remote set-url origin https://example.test/protocol-droid.git" "fetch --quiet origin" "$T/calls"
+printf 'PR_S3_OUTPUTS_BUCKET=%q\n' "out puts" >> "$T/config/protocol.conf"
+run install yes no "← back"
+check "a hand-edited value that would break a unit stops install" has "would break the units" "$T/out"
+check "...before any unit is written" lacks "out puts" <(cat "$Q"/*.container)
 
 # ---- uninstall ---------------------------------------------------------------------
 echo "uninstall"
