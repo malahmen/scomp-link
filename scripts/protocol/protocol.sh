@@ -124,8 +124,23 @@ cfg_save() {
     } > "$CONFIG_FILE"
 }
 
+# _pr_plain VALUE - usable as it is in a unit's Environment= line: no
+# whitespace (Quadlet splits the line there), no % (a systemd specifier), no
+# quote or backslash. Checked as settings come in, and again before anything
+# is written, for a protocol.conf edited by hand (Kamino item 102).
+_pr_plain() { [[ -n "$1" && "$1" != *[[:space:]%\"\'\\]* ]]; }
+
 # The containers' settings that are not secret, one NAME=value per line.
 pr_env() {
+    local line
+    while IFS= read -r line; do
+        _pr_plain "${line#*=}" \
+            || error_exit "Setting ${line%%=*} ('${line#*=}') would break the units: no spaces, %, quotes or backslashes. Fix it under 'config' or in ${CONFIG_FILE}."
+        printf '%s\n' "$line"
+    done < <(_pr_env_lines)
+}
+
+_pr_env_lines() {
     printf '%s\n' \
         "MARIADB_HOST=${PR_MARIADB_HOST}" "MARIADB_PORT=${PR_MARIADB_PORT}" \
         "REDIS_URL=${PR_REDIS_URL}" \
@@ -276,6 +291,9 @@ pr_src_sync() {   # pr_src_sync <dir> <repo> -> prints the commit
         mkdir -p "$(dirname "$dir")"
         git clone --quiet "$repo" "$dir" >&2 || return 1
     fi
+    # The configured repository, not whatever the cached clone was made from:
+    # a changed URL was otherwise ignored and the old repository built.
+    git -C "$dir" remote set-url origin "$repo" >&2 || return 1
     git -C "$dir" fetch --quiet origin "$PR_REF" >&2 || return 1
     git -C "$dir" checkout --quiet --detach FETCH_HEAD >&2 || return 1
     git -C "$dir" rev-parse --short HEAD
@@ -559,36 +577,51 @@ pr_uninstall() {
 }
 
 # Returns 0 when something changed (the caller offers to re-apply).
+# _pr_set NAME VALUE - set a setting, if VALUE can go into a unit as it is.
+_pr_set() {
+    if _pr_plain "$2"; then printf -v "$1" '%s' "$2"
+    else warn "Not changed: '${2}' - no spaces, %, quotes or backslashes, and not empty."; fi
+}
+
 pr_config() {
     local field value before
     before="$(declare -p "${PR_SETTINGS[@]}")"
     while true; do
         header "protocol - settings"
         pr_show_settings
-        field=$(gum choose port "MariaDB host" "Redis URL" "S3 endpoint" "buckets" "Qdrant URL" \
-            "Qdrant collections" "models volume" "branch to build" "reset to defaults" "done" --header "Change:") || break
+        field=$(gum choose port "MariaDB host" "MariaDB port" "Redis URL" "S3 endpoint" "buckets" "Qdrant URL" \
+            "Qdrant collections" "models volume" "branch to build" "repositories" "reset to defaults" "done" \
+            --header "Change:") || break
         case "$field" in
             port) value=$(gum input --value "$PR_PORT" --header "The API's port on this host:") || continue
                   [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 && value < 65536 )) && PR_PORT="$value" || warn "Not a port: ${value}" ;;
             "MariaDB host") value=$(gum input --value "$PR_MARIADB_HOST" --header "MariaDB host:") || continue
-                  [[ -n "$value" ]] && PR_MARIADB_HOST="$value" ;;
+                  _pr_set PR_MARIADB_HOST "$value" ;;
+            "MariaDB port") value=$(gum input --value "$PR_MARIADB_PORT" --header "MariaDB port:") || continue
+                  [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 && value < 65536 )) && PR_MARIADB_PORT="$value" || warn "Not a port: ${value}" ;;
             "Redis URL") value=$(gum input --value "$PR_REDIS_URL" --header "Redis URL (no password in it - that is a secret):") || continue
-                  [[ "$value" == redis://* && "$value" != *@* ]] && PR_REDIS_URL="$value" || warn "A redis:// URL without credentials, please." ;;
+                  [[ "$value" == redis://* && "$value" != *@* ]] && _pr_set PR_REDIS_URL "$value" || warn "A redis:// URL without credentials, please." ;;
             "S3 endpoint") value=$(gum input --value "$PR_S3_ENDPOINT" --header "Garage S3 endpoint:") || continue
-                  [[ -n "$value" ]] && PR_S3_ENDPOINT="$value" ;;
+                  _pr_set PR_S3_ENDPOINT "$value" ;;
             buckets) value=$(gum input --value "$PR_S3_SOURCES_BUCKET" --header "Sources bucket:") || continue
-                  [[ -n "$value" ]] && PR_S3_SOURCES_BUCKET="$value"
+                  _pr_set PR_S3_SOURCES_BUCKET "$value"
                   value=$(gum input --value "$PR_S3_OUTPUTS_BUCKET" --header "Outputs bucket:") || continue
-                  [[ -n "$value" ]] && PR_S3_OUTPUTS_BUCKET="$value" ;;
+                  _pr_set PR_S3_OUTPUTS_BUCKET "$value" ;;
             "Qdrant URL") value=$(gum input --value "$PR_QDRANT_URL" --header "Qdrant URL:") || continue
-                  [[ -n "$value" ]] && PR_QDRANT_URL="$value" ;;
+                  _pr_set PR_QDRANT_URL "$value" ;;
             "Qdrant collections") value=$(gum input --value "$PR_QDRANT_COLLECTIONS" \
                     --header "The collections ingestion writes, comma-separated (removal deletes points only there):") || continue
-                  PR_QDRANT_COLLECTIONS="$value" ;;
+                  # "documents, chunks" is what people type: the spaces go.
+                  value="${value//[[:space:]]/}"
+                  if [[ -z "$value" ]]; then PR_QDRANT_COLLECTIONS=""; else _pr_set PR_QDRANT_COLLECTIONS "$value"; fi ;;
             "models volume") value=$(gum input --value "$PR_MODELS_VOLUME" --header "Named volume for marker's models:") || continue
-                  [[ -n "$value" ]] && PR_MODELS_VOLUME="$value" ;;
+                  _pr_set PR_MODELS_VOLUME "$value" ;;
             "branch to build") value=$(gum input --value "$PR_REF" --header "Branch or tag of protocol and protocol-droid to build:") || continue
-                  [[ -n "$value" ]] && PR_REF="$value" ;;
+                  _pr_set PR_REF "$value" ;;
+            repositories) value=$(gum input --value "$PR_PROTOCOL_REPO" --header "protocol's repository:") || continue
+                  _pr_set PR_PROTOCOL_REPO "$value"
+                  value=$(gum input --value "$PR_DROID_REPO" --header "protocol-droid's repository:") || continue
+                  _pr_set PR_DROID_REPO "$value" ;;
             "reset to defaults") gum confirm "Reset every setting to the script's defaults?" && cfg_defaults ;;
             *) break ;;
         esac
