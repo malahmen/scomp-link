@@ -275,6 +275,20 @@ action_simulate() {
     engine simulate --curve "$curve" -- $temps || return 1
 }
 
+# _walk CURVE — the engine's simulate over the usual temperatures, shown as it
+# comes. SIM_STOPS=1 when the engine warned that the curve reaches 0% (fans on
+# it stop there): the front-end asks before passing --allow-stop, and never
+# works the 0% out itself. An engine older than that warning never sets it.
+SIM_STOPS=0
+_walk() {
+    local out rc=0
+    # shellcheck disable=SC2086
+    out="$(engine simulate --curve "$1" -- $WALK 2>&1)" || rc=$?
+    printf '%s\n' "$out"
+    SIM_STOPS=0; [[ "$out" == *"0% up to"* ]] && SIM_STOPS=1
+    return "$rc"
+}
+
 # The one flow that writes: curve → sensors → pump → fans → floors → confirm.
 action_apply() {
     header "Carbonite — Apply a curve"
@@ -283,8 +297,7 @@ action_apply() {
     local curve sensors pump channels
     curve="$(_pick_curve)" || { info "Cancelled."; return 0; }
     info "This curve would do:"
-    # shellcheck disable=SC2086
-    engine simulate --curve "$curve" -- $WALK || { warn "That curve was rejected — nothing was changed."; return 1; }
+    _walk "$curve" || { warn "That curve was rejected — nothing was changed."; return 1; }
 
     sensors="$(_pick_many sensors "Watch which sensors? The hottest wins" "$SENSORS" "")" \
         || { info "Cancelled."; return 0; }
@@ -323,6 +336,15 @@ action_apply() {
 
     local -a args=(apply --curve "$curve" --sensors "$sensors" --channels "$specs")
     [[ -n "$pump" ]] && args+=(--pin "${pump}@100")
+    # A curve at 0% stops every fan on it without a floor; the engine refuses
+    # that unless told (--allow-stop), so it is asked here, naming the fans.
+    local bare=""
+    for id in $channels; do [[ " $floored " == *" $id "* ]] || bare+="${id} "; done
+    if (( SIM_STOPS )) && [[ -n "$bare" ]]; then
+        warn "This curve is at 0% at low temperatures: ${bare% } would STOP there."
+        _ask "Let them stop? (no cancels - give them a floor instead)" || { info "Cancelled."; return 0; }
+        args+=(--allow-stop)
+    fi
     info "pump: ${pump:-none} · curve: ${specs}"
     # A pin from before that is neither the pump now nor on the curve stays
     # pinned — never released by surprise. Said here so it is not a mystery.
@@ -344,10 +366,15 @@ action_set_curve() {
     curve="$(_pick_curve)" || { info "Cancelled."; return 0; }
     [[ "$curve" == "$CURVE" ]] && { info "That is already the applied curve."; return 0; }
     info "This curve would do:"
-    # shellcheck disable=SC2086
-    engine simulate --curve "$curve" -- $WALK || { warn "That curve was rejected — the applied one is unchanged."; return 1; }
+    _walk "$curve" || { warn "That curve was rejected — the applied one is unchanged."; return 1; }
+    local -a extra=()
+    if (( SIM_STOPS )); then
+        warn "This curve is at 0% at low temperatures: fans on it without a floor would STOP there."
+        _ask "Let them stop? (no cancels - the engine refuses it otherwise)" || { info "Cancelled."; return 0; }
+        extra=(--allow-stop)
+    fi
     _ask "Write this curve?" || { info "Cancelled."; return 0; }
-    engine set-curve "$curve" || true
+    engine set-curve "$curve" "${extra[@]}" || true
     _engine_state
 }
 

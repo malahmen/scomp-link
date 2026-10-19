@@ -165,6 +165,28 @@ check "  not apply"                             no_call "apply --curve"
 tui "change the curve" "keep the applied curve (30:25 50:35 65:55 75:75 85:100)" no
 check "keeping the curve does nothing"          no_call "set-curve"
 
+echo "## 8b. a curve at 0% asks before letting fans stop (--allow-stop)"
+STOPC="30:0 85:100"
+fresh
+tui "apply a curve" "enter my own points" "$STOPC" "$SCPU" "$NOPUMP" "$FAN3" "$NOSTALL" no no
+check "the fans that would stop are named"      has "${NCT8}:fan3 would STOP" "$OUT"
+check "  and declining calls no apply"          no_call "apply --curve"
+check "  and writes nothing"                    bash -c '! grep -qE "^(POST|PUT|DELETE) /(profiles|functions|devices)" "$FAKE_CC/calls"'
+fresh
+tui "apply a curve" "enter my own points" "$STOPC" "$SCPU" "$NOPUMP" "$FAN3" "$NOSTALL" yes yes no
+check "agreeing passes --allow-stop"            calls_with "--allow-stop"
+check "  and the engine applies it"             bash -c '[[ $(setting "$NCT" fan3 profile_uid) == carbonite* ]]'
+fresh
+tui "apply a curve" "enter my own points" "$STOPC" "$SCPU" "$NOPUMP" "$FAN3" "$FAN3" "20" yes no
+check "with every fan floored, nothing is asked" bash -c '! grep -q "would STOP" <<<"$1"' _ "$OUT"
+check "  and no --allow-stop is passed"         no_call "--allow-stop"
+fresh
+tui "apply a curve" "$BAL" "$SCPU" "$NOPUMP" "$FAN3" "$NOSTALL" yes no
+check "a curve that never reaches 0% asks nothing" no_call "--allow-stop"
+bash "${REAL_DIR}/carbonite.sh" apply --curve "30:30 80:100" --channels "${NCT8}:fan3" &>/dev/null
+tui "change the curve" "enter my own points" "$STOPC" yes yes no
+check "change the curve asks too, and passes it" calls_with "set-curve ${STOPC} --allow-stop"
+
 echo "## 9. list fans says what controls each"
 fresh
 bash "${REAL_DIR}/carbonite.sh" apply --curve "30:30 80:100" --pin "${NCT8}:fan1@100" --channels "${NCT8}:fan2@45 ${NCT8}:fan3" &>/dev/null
