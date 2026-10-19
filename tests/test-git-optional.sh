@@ -33,7 +33,9 @@ echo "   ok   - checked every front-end"
 
 # ---- a PATH with everything but git -----------------------------------------
 mkdir -p "$T/nogit"
-for d in /usr/local/bin /usr/bin /bin; do
+# Homebrew's first: the front-ends need bash 4+, and on a Mac the only one in
+# /usr/bin or /bin is 3.2 - three checks failed there for that alone (item 104).
+for d in /opt/homebrew/bin /usr/local/bin /usr/bin /bin; do
     [[ -d "$d" ]] || continue
     for b in "$d"/*; do
         n="${b##*/}"
@@ -43,6 +45,9 @@ for d in /usr/local/bin /usr/bin /bin; do
 done
 NOGIT_PATH="${TEST_DIR}/stubs:$T/nogit"
 PATH="$NOGIT_PATH" command -v git >/dev/null && { echo "git is still on the test PATH" >&2; exit 1; }
+if ! PATH="$NOGIT_PATH" bash -c '(( BASH_VERSINFO[0] >= 4 ))'; then
+    echo "SKIP - no bash 4+ outside git's folders here (the front-ends need it)"; exit 0
+fi
 
 # The astromech front-end in a tree of its own, so no sibling checkout is found
 # next to it, and an empty cache.
@@ -79,6 +84,25 @@ ENGINE_DIR="" run yes Quit; rc=$?
 check "it stops"                        [ "$rc" -ne 0 ]
 check "  saying git is needed to fetch the engine" has "git is required to fetch the astromech engine" "$T/out"
 check "  before offering to clone"      lacks "Clone it from" "$T/out"
+
+echo "## navicomputer: one action needs git, the menu does not"
+# need_git's error_exit used to close the whole TUI from 'use' (item 104).
+mkdir -p "$T/nav-engine" "$T/navtree/x/y/scripts"
+cp -r "$ROOT/scripts/navicomputer" "$ROOT/scripts/_common" "$T/navtree/x/y/scripts/"
+cat > "$T/nav-engine/navicomputer.sh" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    list) printf '{"profiles":{"gh":{}}}\n' ;;
+esac
+exit 0
+EOF
+printf '%s\n' "use     — wire a profile to a git repo" "$T" "gh" yes "── quit" > "$T/answers"; echo 0 > "$T/state"
+env -i HOME="$T" PATH="$NOGIT_PATH" XDG_CACHE_HOME="$T/cache" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" \
+    NAVICOMPUTER_DIR="$T/nav-engine" bash "$T/navtree/x/y/scripts/navicomputer/navicomputer.sh" > "$T/out" 2>&1 < /dev/null
+rc=$?
+check "'use' says git is needed"         has "git is required to set up a repository" "$T/out"
+check "  and the menu comes back"        [ "$(grep -c '<header> Select action:' "$T/out")" -ge 2 ]
+check "  and the TUI ends normally"      [ "$rc" -eq 0 ]
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi
