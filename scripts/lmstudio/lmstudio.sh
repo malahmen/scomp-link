@@ -468,6 +468,193 @@ cmd_status() {
 }
 
 # -----------------------------------------------------------------------------
+# cmd: bench (Kamino item 15)
+# -----------------------------------------------------------------------------
+# How fast each local model runs on THIS host, through LM Studio's own server:
+# generation (tokens/s, which on a unified-memory APU is set by memory
+# bandwidth) and prefill (prompt tokens/s at a RAG-sized context, which is
+# compute-bound and is what a long retrieved context waits on). One model is
+# loaded at a time, at the context asked for, fully on the GPU; every figure is
+# the median of several runs, after an untimed warm-up; each prompt starts with
+# a unique tag so no cached prefix is reused. For a DENSE model every weight is
+# read once per token, so its file size x tokens/s is the bandwidth it
+# actually got - the figure the corelia report (Kamino local-models-2026-10-10)
+# could only estimate. The host's load is checked first and recorded, as in
+# speaches.sh's bench (item 8: a run beside a game came out 1.12x slow).
+LM_URL="${SCOMP_LMSTUDIO_URL:-http://127.0.0.1:1234}"
+LM_BENCH_SCHEMA="scomp-link/lmstudio-bench/1"
+LM_BENCH_OUT="${SCOMP_LMSTUDIO_BENCH_OUT:-$HOME}"
+LM_LOADAVG="${SCOMP_LMSTUDIO_LOADAVG:-/proc/loadavg}"
+# A text file for the prefill prompt. Prefill speed does not depend on what
+# the text says, so by default it is generated.
+LM_BENCH_TEXT="${SCOMP_LMSTUDIO_BENCH_TEXT:-}"
+LM_GEN_PROMPT="Write a detailed, practical explanation of how a write-ahead log makes a database crash-safe. Use plain prose."
+
+# lms, wherever this install keeps it: ~/.lmstudio when install granted the
+# sandbox the home folder, else the Flatpak's own copy, which only finds its
+# key with HOME pointed at the sandbox (corelia, 2026-10-22).
+_lms() {
+    local sandbox="${HOME}/.var/app/${APP_ID}"
+    if [[ -x "${LMSTUDIO_HOME}/bin/lms" ]]; then
+        "${LMSTUDIO_HOME}/bin/lms" "$@"
+    elif [[ -x "${sandbox}/.lmstudio/bin/lms" ]]; then
+        HOME="$sandbox" "${sandbox}/.lmstudio/bin/lms" "$@"
+    elif command -v lms &>/dev/null; then
+        lms "$@"
+    else
+        return 127
+    fi
+}
+
+_lm_median() { sort -g | awk '{v[NR]=$1} END {if (!NR) exit 1; print (NR % 2) ? v[(NR+1)/2] : (v[NR/2] + v[NR/2+1]) / 2}'; }
+
+# _lm_text <approx tokens> - a prompt of about that many tokens (~4 chars each)
+_lm_text() {
+    local chars=$(( $1 * 4 ))
+    if [[ -n "$LM_BENCH_TEXT" && -r "$LM_BENCH_TEXT" ]]; then
+        head -c "$chars" "$LM_BENCH_TEXT"
+    else
+        awk -v n="$chars" 'BEGIN {
+            for (i = 1; out < n; i++) {
+                s = sprintf("Section %d. The record of decision %d was kept beside the change it describes, so that the reason survives the people who made it. ", i, i * 7 % 997)
+                printf "%s", s; out += length(s)
+            }
+        }'
+    fi
+}
+
+# _lm_chat <model> <prompt file> <max tokens> -> "tok_s ttft prompt_tokens completion_tokens"
+_lm_chat() {
+    jq -n --arg m "$1" --rawfile p "$2" --argjson mt "$3" \
+        '{model: $m, messages: [{role: "user", content: $p}], max_tokens: $mt, temperature: 0, stream: false}' \
+    | curl -fsS --max-time 3600 -H 'content-type: application/json' --data-binary @- "${LM_URL}/api/v0/chat/completions" \
+    | jq -r '[.stats.tokens_per_second, .stats.time_to_first_token, .usage.prompt_tokens, .usage.completion_tokens] | map(. // "null") | @tsv'
+}
+
+_lm_gtt_used_gib() {
+    local f
+    for f in /sys/class/drm/card*/device/mem_info_gtt_used; do
+        [[ -r "$f" ]] && { awk '{printf "%.1f", $1 / 1073741824}' "$f"; return; }
+    done
+    echo null
+}
+
+cmd_bench() {
+    header "LM Studio - bench (${LM_URL})"
+    command -v jq &>/dev/null || _ensure_pkg jq jq
+    command -v curl &>/dev/null || _ensure_pkg curl curl
+    local models_json
+    models_json=$(curl -fsS --max-time 10 "${LM_URL}/api/v0/models" 2>/dev/null) \
+        || { warn "LM Studio's server is not answering at ${LM_URL} (service-enable, or start it in the app)."; return 0; }
+
+    local cpus load1 wine busy=false
+    cpus=$(nproc 2>/dev/null || echo 0)
+    load1=$(cut -d' ' -f1 "$LM_LOADAVG" 2>/dev/null || echo 0)
+    wine=$(pgrep -fl '\.exe( |$)' 2>/dev/null | awk '{print $2}' | sort -u | paste -sd, - || true)
+    if [[ -n "$wine" ]] || awk -v l="$load1" -v c="$cpus" 'BEGIN {exit !(l > c / 8)}'; then
+        busy=true
+        warn "The host is not idle: load ${load1} on ${cpus} CPUs${wine:+; running under Wine: ${wine}}."
+        warn "Figures taken beside other work are not this host's."
+        gum confirm "Bench anyway? (the report records it)" --default=false || return 0
+    fi
+
+    local -a all chosen
+    mapfile -t all < <(jq -r '.data[] | select(.type == "llm" or .type == "vlm") | .id' <<< "$models_json")
+    [[ ${#all[@]} -gt 0 ]] || { warn "No generation models installed."; return 0; }
+    mapfile -t chosen < <(gum choose --no-limit --header "Models to bench (space selects, enter confirms):" "${all[@]}")
+    [[ ${#chosen[@]} -gt 0 && -n "${chosen[0]}" ]] || { info "Nothing chosen."; return 0; }
+
+    local loaded
+    loaded=$(jq -r '[.data[] | select(.state == "loaded") | .id] | join(", ")' <<< "$models_json")
+    if [[ -n "$loaded" ]]; then
+        warn "Loaded now: ${loaded}. The bench unloads every model, one model at a time after it, and leaves none loaded."
+        gum confirm "Unload them and bench?" --default=false || return 0
+    fi
+
+    local ctx repeats sizes
+    ctx=$(gum input --value 32768 --header "Context length to load each model with:") || return 0
+    repeats=$(gum input --value 3 --header "Timed runs of each measurement (the median is reported):") || return 0
+    sizes=$(gum input --value "4000 16000" --header "Prefill prompt sizes, in tokens (a RAG-sized context):") || return 0
+    [[ "$ctx" =~ ^[1-9][0-9]*$ && "$repeats" =~ ^[1-9][0-9]*$ && "$sizes" =~ ^[0-9\ ]+$ ]] \
+        || { warn "Not numbers: ${ctx} / ${repeats} / ${sizes}"; return 0; }
+
+    local inventory host when report work
+    inventory=$(_lms ls --json 2>/dev/null || echo '[]')
+    host="$(hostname -s 2>/dev/null || hostname)"
+    when="$(date +%Y%m%d-%H%M)"
+    report="${LM_BENCH_OUT}/lmstudio-bench-${host}-${when}.json"
+    work="$(mktemp -d)"
+    _lm_text 64 > "$work/gen.txt"; printf '%s' "$LM_GEN_PROMPT" >> "$work/gen.txt"
+
+    local model t0 load_s line tok ttft pt med gtt size params arch size_n results="" err
+    local -a gens pres
+    for model in "${chosen[@]}"; do
+        info "${model}: loading at ${ctx} context..."
+        _lms unload --all >/dev/null 2>&1 || true
+        t0=$(date +%s.%N)
+        if ! err=$(_lms load "$model" --context-length "$ctx" --gpu max -y 2>&1); then
+            warn "${model}: load failed"
+            # The end of the message: ${err: -300} is empty when it is shorter.
+            results+="${results:+,}$(jq -nc --arg m "$model" --arg e "$(tail -c 300 <<< "$err")" '{model: $m, error: ("load: " + $e)}')"
+            continue
+        fi
+        load_s=$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN {printf "%.1f", b - a}')
+        _lm_chat "$model" "$work/gen.txt" 32 >/dev/null || true      # warm-up, untimed
+
+        gens=()
+        for ((i = 1; i <= repeats; i++)); do
+            { printf '[%s-%s] ' "$RANDOM$RANDOM" "$i"; cat "$work/gen.txt"; } > "$work/p.txt"
+            line=$(_lm_chat "$model" "$work/p.txt" 300) || { warn "${model}: generation run ${i} failed"; continue; }
+            read -r tok ttft pt _ <<< "$line"
+            [[ "$tok" != null ]] && gens+=("$tok")
+        done
+        local gen_med="null"
+        [[ ${#gens[@]} -gt 0 ]] && gen_med=$(printf '%s\n' "${gens[@]}" | _lm_median)
+
+        local prefill="" n
+        for n in $sizes; do
+            pres=(); local ptok="null"
+            for ((i = 1; i <= repeats; i++)); do
+                { printf '[%s-%s]\nContext:\n' "$RANDOM$RANDOM" "$i"; _lm_text "$n"; printf '\n\nQuestion: in one sentence, what is this text about?'; } > "$work/p.txt"
+                line=$(_lm_chat "$model" "$work/p.txt" 16) || { warn "${model}: prefill ${n} run ${i} failed"; continue; }
+                read -r tok ttft pt _ <<< "$line"
+                [[ "$ttft" != null && "$pt" != null ]] || continue
+                ptok="$pt"
+                pres+=("$(awk -v p="$pt" -v t="$ttft" 'BEGIN {if (t > 0) printf "%.1f", p / t}')")
+            done
+            med="null"; [[ ${#pres[@]} -gt 0 ]] && med=$(printf '%s\n' "${pres[@]}" | _lm_median)
+            prefill+="${prefill:+,}$(jq -nc --argjson n "$n" --argjson pt "$ptok" --argjson m "$med" '{target_tokens: $n, prompt_tokens: $pt, tokens_per_second: $m}')"
+            success "${model}: prefill ${ptok} tokens at ${med} tokens/s"
+        done
+        gtt=$(_lm_gtt_used_gib)
+        size=$(jq -r --arg m "$model" '[.[] | select(.modelKey == $m)][0].sizeBytes // "null"' <<< "$inventory")
+        params=$(jq -r --arg m "$model" '[.[] | select(.modelKey == $m)][0].paramsString // ""' <<< "$inventory")
+        arch=$(jq -r --arg m "$model" '[.[] | select(.modelKey == $m)][0].architecture // ""' <<< "$inventory")
+        size_n="$size"; [[ "$size_n" =~ ^[0-9]+$ ]] || size_n=null
+        success "${model}: generation ${gen_med} tokens/s (median of ${#gens[@]}), load ${load_s} s, GTT ${gtt} GiB"
+        results+="${results:+,}$(jq -nc --arg m "$model" --arg a "$arch" --arg p "$params" --argjson s "$size_n" \
+            --argjson l "$load_s" --argjson g "$gen_med" --argjson runs "[$(IFS=,; echo "${gens[*]}")]" \
+            --argjson pre "[$prefill]" --argjson gtt "$gtt" \
+            '{model: $m, architecture: $a, params: $p, size_bytes: $s, load_seconds: $l,
+              generation: {tokens_per_second: $g, runs: $runs},
+              prefill: $pre, gtt_used_gib: $gtt,
+              gb_per_second_if_dense: (if ($s != null and $g != null) then ($s * $g / 1e9 * 10 | round / 10) else null end)}')"
+    done
+    _lms unload --all >/dev/null 2>&1 || true
+    rm -rf "$work"
+
+    jq -n --arg schema "$LM_BENCH_SCHEMA" --arg host "$host" --arg when "$(date -Iseconds)" --arg url "$LM_URL" \
+        --argjson cpus "${cpus:-0}" --argjson load1 "${load1:-0}" --arg wine "$wine" --argjson busy "$busy" \
+        --argjson ctx "$ctx" --argjson repeats "$repeats" --argjson models "[$results]" \
+        '{schema: $schema, host: $host, when: $when, server: $url,
+          conditions: {cpus: $cpus, load1: $load1, wine: $wine, not_idle: $busy},
+          context_length: $ctx, repeats: $repeats,
+          note: "size_bytes is the model on disk, a vision projector included; gb_per_second_if_dense = size x generation rate, the bandwidth a dense model actually used (an MoE reads only its active experts, so for one it is not a bandwidth)",
+          models: $models}' > "$report"
+    success "Report: ${report}"
+}
+
+# -----------------------------------------------------------------------------
 # cmd: uninstall
 # -----------------------------------------------------------------------------
 
@@ -514,7 +701,8 @@ main() {
             fix-rocm)         cmd_fix_rocm ;;
             service-enable)   cmd_service_enable ;;
             service-disable)  cmd_service_disable ;;
-            *) error_exit "Unknown command: $1 (expected: install|uninstall|status|fix-rocm|service-enable|service-disable)" ;;
+            bench)            cmd_bench ;;
+            *) error_exit "Unknown command: $1 (expected: install|uninstall|status|fix-rocm|service-enable|service-disable|bench)" ;;
         esac
         exit 0
     fi
@@ -523,7 +711,7 @@ main() {
         header "LM Studio Manager"
         local action
         action=$(gum choose \
-            "install" "status" "fix-rocm" "service-enable" "service-disable" "uninstall" "quit" \
+            "install" "status" "bench" "fix-rocm" "service-enable" "service-disable" "uninstall" "quit" \
             --header "Choose an action:") || true
 
         [[ -z "$action" || "$action" == "quit" ]] && { gum style --faint "Bye."; exit 0; }
@@ -531,6 +719,7 @@ main() {
         case "$action" in
             install)         cmd_install ;;
             status)          cmd_status ;;
+            bench)           cmd_bench ;;
             fix-rocm)        cmd_fix_rocm ;;
             service-enable)  cmd_service_enable ;;
             service-disable) cmd_service_disable ;;

@@ -75,7 +75,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 
 | Script                                    | Description                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------- |
-| [`lmstudio.sh`](docs/scripts/lmstudio.md) | Install and manage LM Studio (Flatpak), headless service support included |
+| [`lmstudio.sh`](docs/scripts/lmstudio.md) | Install and manage LM Studio (Flatpak), headless service support included; `bench` measures each model's generation and prefill speed on this host |
 | [`speaches.sh`](docs/scripts/speaches.md) | Speaches speech server (OpenAI-compatible speech-to-text and text-to-speech) - install, models, round-trip test, speed bench; Podman (systemd user service) · Docker · K8s |
 | [`protocol.sh`](docs/scripts/protocol.md) | protocol, the conversion API (marker · markitdown behind one non-blocking API) - build from source, install, status, round-trip test; Podman (systemd user services) |
 
@@ -355,6 +355,7 @@ scomp-link/
 │   ├── test-edcmea.sh                # the EDCMEA front-end (fake engine, recording crontab/systemctl)
 │   ├── test-git-optional.sh          # the front-ends without git: a local engine still runs
 │   ├── test-holo-convert.sh          # the holo-convert front-end (fake engine)
+│   ├── test-lmstudio.sh              # the lmstudio bench (fake server, recording lms)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-speaches.sh              # the speaches front-end
@@ -431,7 +432,7 @@ scomp-link/
     │
     ├── # AI / ML
     ├── lmstudio/
-    │   └── lmstudio.sh               # LM Studio install/manage, headless service
+    │   └── lmstudio.sh               # LM Studio install/manage, headless service, bench
     ├── speaches/
     │   └── speaches.sh               # Speaches speech server (Podman · Docker · K8s)
     ├── protocol/
