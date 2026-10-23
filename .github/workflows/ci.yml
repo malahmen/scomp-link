@@ -19,6 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The engines the front-ends drive, checked out beside this repository
+      # the way a user has them. Without them test-astromech.sh,
+      # test-carbonite.sh and test-thermal-exhaust-port.sh found nothing to
+      # drive, skipped, and run-all.sh printed PASS - 168 of 472 checks had
+      # never run here (Kamino item 24). Their main, not a pin: the question
+      # is whether the front-end works with the engine as it is now.
+      - uses: actions/checkout@v4
+        with: { repository: malahmen/astromech, path: _engines/astromech }
+      - uses: actions/checkout@v4
+        with: { repository: malahmen/carbonite, path: _engines/carbonite }
+      - uses: actions/checkout@v4
+        with: { repository: malahmen/thermal-exhaust-port, path: _engines/thermal-exhaust-port }
+
       - name: Versions
         # Printed because a suite that behaves differently on the runner than
         # on a workstation is the thing hardest to debug from a log alone.
@@ -40,10 +53,15 @@ jobs:
         # on in older releases, so the floor has to be pinned or the runner and
         # the workstation disagree about what passes.
         run: |
-          mapfile -t files < <(find . -name '*.sh' -not -path './.git/*' | sort)
+          mapfile -t files < <(find . -name '*.sh' -not -path './.git/*' -not -path './_engines/*' | sort)
           files+=(tests/stubs/gum)
           printf 'linting %d files\n' "${#files[@]}"
           shellcheck -S warning -x "${files[@]}"
 
       - name: tests
-        run: tests/run-all.sh
+        # --strict: every file has what it needs here, so a skip is a fault.
+        env:
+          ASTROMECH: ${{ github.workspace }}/_engines/astromech/astromech.sh
+          CARBONITE: ${{ github.workspace }}/_engines/carbonite
+          TEP: ${{ github.workspace }}/_engines/thermal-exhaust-port/thermal-exhaust-port.sh
+        run: tests/run-all.sh --strict

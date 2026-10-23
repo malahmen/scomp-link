@@ -179,7 +179,11 @@ check "refused: it is the start directory" has "this TUI was started from" "$T/o
 check "start-directory project kept" test -f "$N/package.json"
 
 echo "# 9. deleting a normal project warns that its pages go with it"
-run "$T/start" "docs-test" "Delete this project" "docs-test" "yes" "── quit ──"
+# Deleting the only site empties the list, so the menu after it is the
+# no-projects one, whose last item is "Quit" - not the list's "── quit ──". The
+# old gum stub returned an answer whether it was offered or not, and this run
+# ended only because the answers ran out.
+run "$T/start" "docs-test" "Delete this project" "docs-test" "yes" "Quit"
 check "pages-go-too warning shown" has "page(s) under src/content/docs/ go too" "$T/out"
 check "normal project deleted" test ! -e "$N"
 

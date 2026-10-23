@@ -9,8 +9,9 @@
 #     unit or onto a command line;
 #   - the images are built from a clean clone of each repository, stamped with
 #     the commit, and each worker image on its engine's;
-#   - the five units: the API publishes its port, both marker workers share the
-#     model volume and one SELinux level, nothing else gets either;
+#   - the six units: the API publishes its port, both marker workers share the
+#     model volume and one SELinux level, nothing else gets either; the
+#     transcription worker runs in the API's image and reaches Speaches;
 #   - an unreachable backend starts nothing, and marker's heavy worker starts
 #     only after the light one is taking jobs;
 #   - a port inside firewalld's open range reads as open (corelia opens
@@ -154,11 +155,11 @@ check "...and says so" has "A backend is unreachable" "$T/out"
 
 rm -f "$T/state/backends-down"
 run install yes no yes "← back"
-check "with the backends reachable, five units are written" test "$(find "$Q" -name 'protocol-*.container' | wc -l)" -eq 5
+check "with the backends reachable, six units are written" test "$(find "$Q" -name 'protocol-*.container' | wc -l)" -eq 6
 check "...after the check passed" before "localhost/protocol:latest check" "daemon-reload" "$T/calls"
 check "secrets already stored are not asked again" lacks "secret create" "$T/calls"
 check "present images are not rebuilt unless asked" lacks "podman build" "$T/calls"
-check "the light marker worker starts with the others" has "protocol-markitdown.service protocol-marker-light.service" "$T/calls"
+check "the light marker worker starts with the others" has "protocol-markitdown.service protocol-transcription.service protocol-marker-light.service" "$T/calls"
 check "...and the heavy one only after it is taking jobs" before "journalctl --user -u protocol-marker-light.service" "restart protocol-marker-heavy.service" "$T/calls"
 check "lingering is enabled" has "loginctl enable-linger" "$T/calls"
 check "a port inside an open range is not offered again" lacks "add-port" "$T/calls"
@@ -178,6 +179,12 @@ check "no secret value is in any unit" lacks "db-pw-111" <(cat "$Q"/*.container)
 check "meksha's protocol Redis, not the podman one" has "Environment=REDIS_URL=redis://192.168.3.52:6380/0" "$Q/protocol-api.container"
 check "the buckets are protocol's" has "Environment=S3_SOURCES_BUCKET=protocol-sources" "$Q/protocol-api.container"
 check "no collections until ingestion names them" lacks "QDRANT_COLLECTIONS" "$Q/protocol-api.container"
+# Kamino item 89: audio had no worker, and waited in its queue for good.
+check "a transcription worker, on the API's image" has "Image=localhost/protocol:latest" "$Q/protocol-transcription.container"
+check "...running the transcription lane" has "Exec=worker transcription" "$Q/protocol-transcription.container"
+check "...with no model volume: Speaches holds the model" lacks "Volume=" "$Q/protocol-transcription.container"
+check "it reaches Speaches as a container can" has "Environment=SPEACHES_URL=http://host.containers.internal:8000" "$Q/protocol-transcription.container"
+check "...and so does the API, which then accepts audio" has "Environment=SPEACHES_URL=http://host.containers.internal:8000" "$Q/protocol-api.container"
 
 # ---- status, test --------------------------------------------------------------------
 echo "status and test"
@@ -198,6 +205,10 @@ check "a Redis URL with credentials in it is refused" lacks "user:pw" "$T/config
 run config "Qdrant collections" "documents, chunks" "done" yes yes no "← back"
 check "named collections reach the units, without the typed space (item 102)" has "Environment=QDRANT_COLLECTIONS=documents,chunks" "$Q/protocol-api.container"
 check "every setting is in the menu: the MariaDB port" has "<option> MariaDB port" "$T/out"
+check "...and Speaches" has "<option> Speaches URL" "$T/out"
+run config "Speaches URL" "" "done" yes yes no "← back"
+check "an empty Speaches URL leaves it out of the units: audio is refused" lacks "SPEACHES_URL" "$Q/protocol-api.container"
+check "...and says so" has "not set (audio is refused)" "$T/out"
 check "...and the repositories" has "<option> repositories" "$T/out"
 run config "MariaDB host" "meksha lan" "S3 endpoint" "http://nas:3900/50%" "done" "← back"
 check "a value with a space is refused (the file holds it %q-escaped)" lacks "meksha" "$T/config/protocol.conf"

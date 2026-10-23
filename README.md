@@ -77,7 +77,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | ----------------------------------------- | ------------------------------------------------------------------------- |
 | [`lmstudio.sh`](docs/scripts/lmstudio.md) | Install and manage LM Studio (Flatpak), headless service support included; `bench` measures each model's generation and prefill speed on this host |
 | [`speaches.sh`](docs/scripts/speaches.md) | Speaches speech server (OpenAI-compatible speech-to-text and text-to-speech) - install, models, round-trip test, speed bench; Podman (systemd user service) · Docker · K8s |
-| [`protocol.sh`](docs/scripts/protocol.md) | protocol, the conversion API (marker · markitdown behind one non-blocking API) - build from source, install, status, round-trip test; Podman (systemd user services) |
+| [`protocol.sh`](docs/scripts/protocol.md) | protocol, the conversion API (marker · markitdown · transcription behind one non-blocking API) - build from source, install, status, round-trip test; Podman (systemd user services) |
 
 ### Gaming
 
@@ -605,13 +605,25 @@ Scomp-Link is evolving into a comprehensive shell scripting framework:
 ### Tests
 
 ```bash
-tests/run-all.sh
+tests/run-all.sh            # a file that cannot run here is reported SKIP
+tests/run-all.sh --strict   # ...and a skip fails the run (what CI does)
 ```
 
 A front-end is driven through `tests/stubs/gum`, which answers `choose`,
 `confirm` and `input` from a scripted list instead of a terminal, and echoes
 the options and headers it was given — so a test can assert on which items a
-menu actually offers. No network and no terminal: `file://` remotes only.
+menu actually offers. Like gum, `choose` takes its options from the arguments
+or, given none, from stdin; and it **refuses an answer that was not offered**,
+logging it so `run-all.sh` fails that file even if its checks passed. It used
+to return the scripted answer whatever the menu held, so a picker listing the
+wrong things passed every test. `esc` (or running out of answers) is the user
+pressing Esc. No network and no terminal: `file://` remotes only.
+
+The astromech, carbonite and thermal-exhaust-port tests drive the real engine,
+found beside this repository (`../astromech`, …) or through `$ASTROMECH`,
+`$CARBONITE` and `$TEP`. Without one the file exits 77 and is reported
+**SKIP** - it used to exit 0 and be reported PASS, which is how those three
+had never run in CI.
 
 What these tests are mostly for is the seam between a front-end and its
 engine. The astromech one, for example, asks with gum and then tells the engine
@@ -635,9 +647,10 @@ wrapper, rather than on what appeared on screen.
   which every front-end looks like a file of undefined helpers. The severity
   floor is pinned because SC2002 is off by default in shellcheck 0.11+ and on
   in older releases.
-- **`tests/run-all.sh`**, which needs no gum: the suite prepends
+- **`tests/run-all.sh --strict`**, which needs no gum: the suite prepends
   `tests/stubs` to `PATH`, so the stub is found whether or not the real thing
-  is installed.
+  is installed. The three engines are checked out beside it (their `main`), so
+  no file skips - and if one did, `--strict` fails the run.
 
 Getting to a clean baseline cleared 18 findings across 9 files. Most were the
 tool being unable to see what the code does — namerefs (`local -n`), array

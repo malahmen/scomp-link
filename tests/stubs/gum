@@ -18,27 +18,51 @@ _pop() {
 cmd="${1:-}"; shift 2>/dev/null || true
 case "$cmd" in
     choose)
-        # Deliberately does NOT read stdin. Real gum reads a list from stdin
-        # only when given no list arguments, and a blind drain here consumes
-        # the test harness's own stdin and hangs the run — the same trap as a
-        # `docker exec -i` in a stub. A piped writer simply gets EPIPE.
+        # Faithful to gum in the two ways a front-end can get wrong (Kamino
+        # item 143). The options are the list arguments - or, given none,
+        # stdin's lines, which is where `printf ... | gum choose` puts them;
+        # real gum reads stdin only then, so stdin is left alone otherwise
+        # (a blind drain would take the harness's own stdin and hang). And an
+        # answer that was not offered is refused: this used to return the
+        # scripted answer whether or not the menu held it, so a picker
+        # listing the wrong things passed every test.
         #
-        # The offered items and the header ARE echoed, because real gum puts
+        # The offered items and the header are echoed, because real gum puts
         # them on the screen and a test about which items a menu offers has
-        # nothing to assert on otherwise. Without this, "an item is NOT
-        # offered" passed for every item, offered or not.
+        # nothing to assert on otherwise.
+        opts=()
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --header|--selected|--limit|--height)
                     [[ "$1" == --header ]] && printf '<header> %s\n' "${2:-}" >&2
                     shift 2 || shift ;;
                 --*) shift ;;
-                *)   printf '<option> %s\n' "$1" >&2; shift ;;
+                *)   opts+=("$1"); shift ;;
             esac
         done
+        (( ${#opts[@]} )) || mapfile -t opts
+        for o in "${opts[@]}"; do printf '<option> %s\n' "$o" >&2; done
+        a="$(_pop)"
+        # "esc", or no scripted answer left, is the user pressing Esc: gum
+        # exits 130 then, as for confirm.
+        if [[ -z "$a" || "$a" == esc ]]; then printf '<choose> (esc)\n' >&2; exit 130; fi
+        printf '<choose> %s\n' "$a" >&2
         # A multi-select (--no-limit) answer is several lines; the answers
         # file has one per prompt, so a literal \n inside one splits it.
-        a="$(_pop)"; printf '<choose> %s\n' "$a" >&2; printf '%s\n' "${a//\\n/$'\n'}" ;;
+        mapfile -t picked <<< "${a//\\n/$'\n'}"
+        for p in "${picked[@]}"; do
+            ok=0
+            for o in "${opts[@]}"; do [[ "$p" == "$o" ]] && { ok=1; break; }; done
+            if (( ! ok )); then
+                printf '<stub-error> choose: "%s" was not offered\n' "$p" >&2
+                # Also to a log run-all.sh reads: a front-end reads gum's
+                # failure as a cancel and carries on, so a refusal on stderr
+                # alone can sit inside a passing test.
+                [[ -n "${GUM_STUB_ERRLOG:-}" ]] && printf 'choose: "%s" was not offered (offered: %s)\n' "$p" "${opts[*]}" >> "$GUM_STUB_ERRLOG"
+                exit 1
+            fi
+        done
+        printf '%s\n' "${a//\\n/$'\n'}" ;;
     confirm)
         a="$(_pop)"; printf '<confirm> %s -> %s\n' "$*" "$a" >&2
         case "$a" in
