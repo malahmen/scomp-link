@@ -17,9 +17,9 @@ FRONT="${TEST_DIR}/../scripts/carbonite/carbonite.sh"
 REAL_DIR="${CARBONITE:-${TEST_DIR}/../../carbonite}"
 if [[ ! -f "${REAL_DIR}/carbonite.sh" || ! -f "${REAL_DIR}/tests/fake-coolercontrol" ]]; then
     echo "SKIP - no carbonite engine at ${REAL_DIR} (set \$CARBONITE)" >&2
-    exit 0
+    exit 77
 fi
-command -v jq &>/dev/null || { echo "SKIP - jq is required" >&2; exit 0; }
+command -v jq &>/dev/null || { echo "SKIP - jq is required" >&2; exit 77; }
 REAL_DIR="$(cd "$REAL_DIR" && pwd)"
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT

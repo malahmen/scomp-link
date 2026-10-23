@@ -46,7 +46,7 @@ done
 NOGIT_PATH="${TEST_DIR}/stubs:$T/nogit"
 PATH="$NOGIT_PATH" command -v git >/dev/null && { echo "git is still on the test PATH" >&2; exit 1; }
 if ! PATH="$NOGIT_PATH" bash -c '(( BASH_VERSINFO[0] >= 4 ))'; then
-    echo "SKIP - no bash 4+ outside git's folders here (the front-ends need it)"; exit 0
+    echo "SKIP - no bash 4+ outside git's folders here (the front-ends need it)"; exit 77
 fi
 
 # The astromech front-end in a tree of its own, so no sibling checkout is found

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# description: protocol - the conversion API (marker · markitdown) on corelia: build, install, status, test (Podman)
+# description: protocol - the conversion API (marker · markitdown · transcription) on corelia: build, install, status, test (Podman)
 # export-setup: curl git
 # -----------------------------------------------------------------------------
 # protocol.sh
 # Installs and manages protocol (https://github.com/malahmen/protocol), the one
 # conversion API every converter sits behind: an HTTP API that answers 202 and
 # an ID at once, and a worker per lane that does the converting - marker's
-# light and heavy lanes, markitdown, and the removals and prunes.
+# light and heavy lanes, markitdown, transcription (through Speaches on this
+# host), and the removals and prunes.
 #
 # Podman only: rootless, a Quadlet unit per process under the user's systemd,
 # with lingering so it starts at boot without a login. The marker worker runs
@@ -62,7 +63,8 @@ PR_REVISION_LABEL="org.opencontainers.image.revision"
 PR_MARKER_SELINUX_LEVEL="s0:c470,c471"
 
 # unit -> image and command (python -m protocol.deploy ...)
-PR_UNITS=(protocol-api protocol-maintenance protocol-markitdown protocol-marker-light protocol-marker-heavy)
+PR_UNITS=(protocol-api protocol-maintenance protocol-markitdown protocol-marker-light protocol-marker-heavy
+    protocol-transcription)
 
 # podman secret -> the variable it becomes in the containers -> its name in kuat's vault
 PR_SECRETS=(
@@ -85,7 +87,7 @@ PURPLE=141
 # -----------------------------------------------------------------------------
 PR_SETTINGS=(PR_PORT PR_MARIADB_HOST PR_MARIADB_PORT PR_REDIS_URL PR_S3_ENDPOINT
     PR_S3_SOURCES_BUCKET PR_S3_OUTPUTS_BUCKET PR_QDRANT_URL PR_QDRANT_COLLECTIONS
-    PR_MODELS_VOLUME PR_PROTOCOL_REPO PR_DROID_REPO PR_REF)
+    PR_SPEACHES_URL PR_MODELS_VOLUME PR_PROTOCOL_REPO PR_DROID_REPO PR_REF)
 
 cfg_defaults() {
     PR_PORT=8090
@@ -102,6 +104,11 @@ cfg_defaults() {
     # Empty until ingestion exists and names its collections: removal then
     # deletes no vectors, and says so in the log and in `status`.
     PR_QDRANT_COLLECTIONS=""
+    # Speaches on this host (speaches.sh), for audio. host.containers.internal,
+    # not the LAN address: from a rootless container on corelia,
+    # 192.168.3.46:8000 is refused and this answers. Empty = audio is refused
+    # at submit rather than queued where nothing transcribes it (Kamino 89).
+    PR_SPEACHES_URL="http://host.containers.internal:8000"
     PR_MODELS_VOLUME="protocol-models"
     PR_PROTOCOL_REPO="https://github.com/malahmen/protocol.git"
     PR_DROID_REPO="https://github.com/malahmen/protocol-droid.git"
@@ -148,6 +155,8 @@ _pr_env_lines() {
         "S3_SOURCES_BUCKET=${PR_S3_SOURCES_BUCKET}" "S3_OUTPUTS_BUCKET=${PR_S3_OUTPUTS_BUCKET}" \
         "QDRANT_URL=${PR_QDRANT_URL}"
     [[ -n "$PR_QDRANT_COLLECTIONS" ]] && echo "QDRANT_COLLECTIONS=${PR_QDRANT_COLLECTIONS}"
+    # The API reads it to accept audio, the transcription worker to reach it.
+    [[ -n "$PR_SPEACHES_URL" ]] && echo "SPEACHES_URL=${PR_SPEACHES_URL}"
     return 0
 }
 
@@ -163,6 +172,8 @@ pr_unit_spec() {
         protocol-markitdown)   echo "${PR_IMAGE_MARKITDOWN}|worker markitdown" ;;
         protocol-marker-light) echo "${PR_IMAGE_MARKER}|worker marker-light" ;;
         protocol-marker-heavy) echo "${PR_IMAGE_MARKER}|worker marker-heavy" ;;
+        # Speaches does the work over HTTP: no engine to import, so the API's image.
+        protocol-transcription) echo "${PR_IMAGE_API}|worker transcription" ;;
         *) return 1 ;;
     esac
 }
@@ -422,6 +433,7 @@ pr_show_settings() {
         "Queues:     ${PR_REDIS_URL}" \
         "Stores:     ${PR_S3_ENDPOINT}  ${PR_S3_SOURCES_BUCKET}, ${PR_S3_OUTPUTS_BUCKET}" \
         "Qdrant:     ${PR_QDRANT_URL}  collections: ${PR_QDRANT_COLLECTIONS:-none yet (removal deletes no vectors)}" \
+        "Speaches:   ${PR_SPEACHES_URL:-not set (audio is refused)}" \
         "Models:     volume ${PR_MODELS_VOLUME}" \
         "Built from: ${PR_REF} of ${PR_PROTOCOL_REPO##*/} and ${PR_DROID_REPO##*/}" \
         "Settings:   ${CONFIG_FILE}"
@@ -456,7 +468,8 @@ pr_install() {
     # The light worker first, alone: two workers downloading the same model
     # into one cache at once collide. The heavy one starts once it is up.
     systemctl --user restart protocol-api.service protocol-maintenance.service \
-        protocol-markitdown.service protocol-marker-light.service || error_exit "Start failed - see 'logs'."
+        protocol-markitdown.service protocol-transcription.service \
+        protocol-marker-light.service || error_exit "Start failed - see 'logs'."
     if pr_wait_listening protocol-marker-light "$start" 240; then
         success "marker's light lane is taking jobs"
     else
@@ -590,7 +603,7 @@ pr_config() {
         header "protocol - settings"
         pr_show_settings
         field=$(gum choose port "MariaDB host" "MariaDB port" "Redis URL" "S3 endpoint" "buckets" "Qdrant URL" \
-            "Qdrant collections" "models volume" "branch to build" "repositories" "reset to defaults" "done" \
+            "Qdrant collections" "Speaches URL" "models volume" "branch to build" "repositories" "reset to defaults" "done" \
             --header "Change:") || break
         case "$field" in
             port) value=$(gum input --value "$PR_PORT" --header "The API's port on this host:") || continue
@@ -614,6 +627,9 @@ pr_config() {
                   # "documents, chunks" is what people type: the spaces go.
                   value="${value//[[:space:]]/}"
                   if [[ -z "$value" ]]; then PR_QDRANT_COLLECTIONS=""; else _pr_set PR_QDRANT_COLLECTIONS "$value"; fi ;;
+            "Speaches URL") value=$(gum input --value "$PR_SPEACHES_URL" \
+                    --header "Speaches, as a container reaches it (empty = refuse audio):") || continue
+                  if [[ -z "$value" ]]; then PR_SPEACHES_URL=""; else _pr_set PR_SPEACHES_URL "$value"; fi ;;
             "models volume") value=$(gum input --value "$PR_MODELS_VOLUME" --header "Named volume for marker's models:") || continue
                   _pr_set PR_MODELS_VOLUME "$value" ;;
             "branch to build") value=$(gum input --value "$PR_REF" --header "Branch or tag of protocol and protocol-droid to build:") || continue

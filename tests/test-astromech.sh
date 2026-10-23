@@ -27,6 +27,11 @@ T="$(cd "$T" && pwd)"
 export PATH="${TEST_DIR}/stubs:$PATH"
 export GUM_ANSWERS="$T/answers" GUM_STATE="$T/state"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+# Section 6 writes the global git config. GIT_CONFIG_GLOBAL is honoured from
+# git 2.32 only; an older git would write the real ~/.gitconfig, so HOME is a
+# throwaway too (Kamino item 143), and the honour check below says which one
+# this git used.
+export HOME="$T/home"; mkdir -p "$HOME"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$T/gitconfig"; : > "$GIT_CONFIG_GLOBAL"
 export ASTROMECH_CONFIG="$T/cfg/astromech.conf"; mkdir -p "$T/cfg"
 export XDG_RUNTIME_DIR="$T/run"; mkdir -p "$T/run"
@@ -40,7 +45,7 @@ has()   { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 REAL_ENGINE="${ASTROMECH:-${TEST_DIR}/../../astromech/astromech.sh}"
 if [[ ! -f "$REAL_ENGINE" ]]; then
     echo "SKIP - no astromech engine at ${REAL_ENGINE} (set \$ASTROMECH)" >&2
-    exit 0
+    exit 77
 fi
 REAL_ENGINE="$(cd "$(dirname "$REAL_ENGINE")" && pwd)/astromech.sh"
 
@@ -194,6 +199,59 @@ mkdir -p "$R/-scratch"
 rec "Edit ignored folders" "-scratch" Quit
 check "set-ignores ends its flags first"      calls_with "set-ignores -- $R -scratch"
 check "  and the folder is ignored"           bash -c 'bash "'"$REAL_ENGINE"'" ignores | grep -qx -- "'"$R"'/-scratch"'
+
+echo "## 10. plain maintenance is plain (Kamino item 143)"
+rec "Trigger maintenance" "Run maintenance" yes Quit
+check "the engine runs maintain"               bash -c 'grep -qx "maintain" <<<"$CALLS"'
+check "  with no --tidy"                       bash -c '! grep -q -- "--tidy" <<<"$CALLS"'
+check "  and no --yes"                         bash -c '! grep -q -- "maintain.*--yes" <<<"$CALLS"'
+
+echo "## 11. the dry run only looks"
+rec "Trigger maintenance" "Dry run (show what would happen)" Quit
+check "the engine gets maintain --dry-run"     bash -c 'grep -qx "maintain --dry-run" <<<"$CALLS"'
+check "  and no real maintenance"              bash -c '! grep -qx "maintain" <<<"$CALLS"'
+
+echo "## 12. first run: No records the answer and maintains nothing"
+printf 'onboarded=0\nroot=%s\n' "$R" > "$ASTROMECH_CONFIG"
+rec no Quit
+check "the question was put"                   has "<confirm> Run maintenance on all repositories now?" "$OUT"
+check "  the answer is recorded"               calls_with "mark-onboarded"
+check "  and nothing is maintained"            bash -c '! grep -q "^maintain" <<<"$CALLS"'
+rec Quit
+check "it is not asked again"                  bash -c '! grep -q "<confirm> Run maintenance on all" <<<"$OUT"'
+
+echo "## 13. tidy: an engine that cannot plan is not 'nothing to tidy'"
+git -C "$R/alpha" branch --no-track held origin/main
+LOCK="${XDG_RUNTIME_DIR}/astromech-$(id -u).lock"; mkdir -p "$LOCK"; echo "$$" > "$LOCK/pid"
+rec "Tidy merged branches" "Every repository" Quit
+rm -rf "$LOCK"
+check "it says the list could not be made"     has "could not make its list" "$OUT"
+check "  not that there is nothing to tidy"    bash -c '! grep -q "Nothing to tidy" <<<"$OUT"'
+check "  and deletes nothing"                  git -C "$R/alpha" show-ref --verify -q refs/heads/held
+
+echo "## 14. tidy: a list that changed after it was shown is asked about again"
+# The wrapper merges a new branch into the list on the SECOND plan, i.e. while
+# the question about the first one was open.
+mkdir -p "$T/fake2"
+cat > "$T/fake2/astromech.sh" <<WRAP
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$T/calls"
+if [[ "\$1 \$2" == "tidy --dry-run" ]]; then
+    n=\$(( \$(cat "$T/plans" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$T/plans"
+    (( n == 2 )) && git -C "$R/alpha" branch sneaked origin/main
+fi
+exec bash "$REAL_ENGINE" "\$@"
+WRAP
+chmod +x "$T/fake2/astromech.sh"; : > "$T/calls"; rm -f "$T/plans"
+printf '%s\n' "Tidy merged branches" "Every repository" yes no Quit > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"
+OUT="$(ASTROMECH_DIR="$T/fake2" limited bash "$FRONT" </dev/null 2>&1)"; ran $?
+CALLS="$(cat "$T/calls")"
+check "the change is shown"                    has "The list changed since it was shown" "$OUT"
+check "  naming the new branch"                has "sneaked" "$OUT"
+check "  and asked about again"                bash -c '[[ "$(grep -c "<confirm> Delete the branch" <<<"$OUT")" -eq 2 ]]'
+check "declining then deletes nothing"         bash -c '! grep -q -- "tidy --yes" <<<"$CALLS"'
+check "  the branch nobody was shown survives" git -C "$R/alpha" show-ref --verify -q refs/heads/sneaked
+check "  and so does the one that was shown"   git -C "$R/alpha" show-ref --verify -q refs/heads/held
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi

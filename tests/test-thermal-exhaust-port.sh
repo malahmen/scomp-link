@@ -28,7 +28,7 @@ export GUM_ANSWERS="$T/answers" GUM_STATE="$T/state"
 REAL_ENGINE="${TEP:-${TEST_DIR}/../../thermal-exhaust-port/thermal-exhaust-port.sh}"
 if [[ ! -f "$REAL_ENGINE" ]]; then
     echo "SKIP - no thermal-exhaust-port engine at ${REAL_ENGINE} (set \$TEP)" >&2
-    exit 0
+    exit 77
 fi
 REAL_ENGINE="$(cd "$(dirname "$REAL_ENGINE")" && pwd)/thermal-exhaust-port.sh"
 

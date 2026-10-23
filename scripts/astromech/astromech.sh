@@ -321,11 +321,18 @@ action_tidy() {
         *) return 0 ;;
     esac
 
-    local tmp plan notes
+    local tmp plan notes rc=0
     tmp="$(mktemp)" || { warn "Could not create a temporary file."; return 0; }
-    plan="$(engine tidy --dry-run "${scope[@]}" 2>"$tmp")" || true
+    plan="$(engine tidy --dry-run "${scope[@]}" 2>"$tmp")" || rc=$?
     notes="$(_engine_notes "$tmp")"; rm -f "$tmp"
     [[ -n "$notes" ]] && printf '%s\n' "$notes"
+    # A plan the engine could not make is not an empty one: with the run lock
+    # held (cron maintaining at that moment) this used to say "Nothing to
+    # tidy" (Kamino item 143).
+    if (( rc != 0 )); then
+        warn "Tidy could not make its list (the engine exited ${rc}) — nothing was deleted."
+        return 0
+    fi
     if [[ -z "$plan" ]]; then
         info "Nothing to tidy — no local branch is already contained in its trunk."
         return 0
@@ -336,6 +343,21 @@ action_tidy() {
         "local one, which can be behind or hold a merge nobody else has." \
         "Deletion is git branch -d, never -D: one git calls unmerged is reported, not forced."
     _ask "Delete the branch(es) listed above?" || { info "Cancelled — nothing deleted."; return 0; }
+    # The engine deletes what IT plans when it runs, not the list shown here:
+    # a branch merged while the question was open would go without having
+    # been seen (Kamino item 143). So the list is made again, and if it is
+    # not the one the user said yes to, it is shown and asked about again.
+    local again
+    while :; do
+        again="$(engine tidy --dry-run "${scope[@]}" 2>/dev/null)" \
+            || { warn "Tidy could not make its list again — nothing was deleted."; return 0; }
+        [[ "$again" == "$plan" ]] && break
+        plan="$again"
+        [[ -n "$plan" ]] || { info "Nothing left to tidy — the list emptied while you were asked."; return 0; }
+        warn "The list changed since it was shown:"
+        printf '%s\n' "$plan"
+        _ask "Delete the branch(es) listed above?" || { info "Cancelled — nothing deleted."; return 0; }
+    done
     # The plan was just shown. The engine prints it again on stdout before
     # deleting, so only its log (stderr) is new here — hence the redirect, not
     # a second copy of a list the user has already read.
