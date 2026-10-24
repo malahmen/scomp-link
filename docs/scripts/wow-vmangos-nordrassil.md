@@ -1,6 +1,6 @@
-# wow-nordrassil (vanilla WoW server)
+# wow-vmangos-nordrassil (vanilla WoW server, VMaNGOS)
 
-`wow-nordrassil/wow-nordrassil.sh`
+`wow-vmangos-nordrassil/wow-vmangos-nordrassil.sh`
 
 A gum front-end for **[nordrassil](https://github.com/malahmen/nordrassil)**, a
 standalone, gum-free engine that builds, containerizes, and deploys a
@@ -10,9 +10,11 @@ as a Docker/K8s deployment for LAN play. scomp-link ships only the interactive
 front-end, auto-discovered in the launcher like any other script; the build /
 deploy / DB / admin logic lives in the engine's own repo — the same split as
 [holo-convert](holo-convert.md), [protocol-droid](protocol-droid.md), and
-[younglings-key](younglings-key.md). It's named `wow-nordrassil` so it sorts
-next to [wow-dark-portal](wow-dark-portal.md) (the client front-end) in the
-launcher.
+[younglings-key](younglings-key.md). It's named `wow-vmangos-nordrassil`: `wow-`
+so the WoW tools sort together in the launcher, then the server it is for.
+cmangos-classic with playerbots (kalimdor) gets its own front-end beside it,
+`wow-cmangos-teldrassil`, and the two are not mixed;
+[wow-dark-portal](wow-dark-portal.md) is the client side and serves both.
 
 ## Engine resolution
 

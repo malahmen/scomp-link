@@ -10,7 +10,7 @@ Date: 2026-09-09. Companion to the working-tree changes made the same day (49 fi
 | LGTM re-install | Run install again | Every config logs `keeping existing …`; nothing overwritten. |
 | MongoDB Docker app user | Install with a **new** container name, then `connect` | Connect logs in as the app user against the app database. Init scripts only run on an empty volume, so an existing volume will not get the user (the script warns). |
 | MongoDB K8s connect | `connect` as root, then as the app user | Root works with auth db `admin`; app user works with auth db = app database (the groundhog2k chart creates it there, `templates/scripts.yaml`). |
-| Export of the two WoW front-ends | `./export.sh wow-nordrassil /tmp/x && bash /tmp/x/wow-nordrassil.sh` (same for wow-dark-portal) | Script starts standalone; previously it failed on `../_common/ui.sh`. |
+| Export of the two WoW front-ends | `./export.sh wow-vmangos-nordrassil /tmp/x && bash /tmp/x/wow-vmangos-nordrassil.sh` (same for wow-dark-portal) | Script starts standalone; previously it failed on `../_common/ui.sh`. |
 | influxdb K8s connect | `connect` on a K8s target | Port-forward now goes through `_k8s_start_port_forward`; tunnel comes up. |
 | README render | Preview README.md | Tables render (cell counts were checked: 2- and 3-column tables only). |
 

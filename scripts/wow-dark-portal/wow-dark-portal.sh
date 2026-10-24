@@ -6,10 +6,12 @@
 # and launches multiple vanilla WoW (1.12.1) clients under Wine (Bottles) for
 # multiboxing on a single Linux PC. The real logic lives in its own repo as a
 # gum-free CLI; this file only resolves that engine, collects options with gum,
-# and drives it by flags. Same split as wow-nordrassil / protocol-droid /
+# and drives it by flags. Same split as wow-vmangos-nordrassil / protocol-droid /
 # navicomputer / holo-convert / mind-trick / younglings-key.
 #
-# Named wow-dark-portal so it sorts next to wow-nordrassil (the server side).
+# Named wow-dark-portal so it sorts with the server front-ends
+# (wow-vmangos-nordrassil, wow-cmangos-teldrassil). It is the client side and
+# serves either: both servers speak the 1.12.1 client.
 #
 # Engine resolution order:
 #   1. $DARK_PORTAL_DIR/dark-portal.sh      (explicit override — a checkout you control)
