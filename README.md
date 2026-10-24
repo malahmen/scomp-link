@@ -86,7 +86,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`bazzite-utils/bazzite-utils.sh`](docs/scripts/bazzite-utils.md)    | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix + per-device keyd keyboard remap |
 | [`comfyengine/comfyengine.sh`](docs/scripts/comfyengine.md)          | -            | Build & install the ComfyEngine memory scanner from source               |
 | [`gameconqueror/gameconqueror.sh`](docs/scripts/gameconqueror.md)    | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
-| [`wow-nordrassil/wow-nordrassil.sh`](docs/scripts/wow-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
+| [`wow-vmangos-nordrassil/wow-vmangos-nordrassil.sh`](docs/scripts/wow-vmangos-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
 | [`wow-dark-portal/wow-dark-portal.sh`](docs/scripts/wow-dark-portal.md) | -            | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) — front-end for the standalone [dark-portal](https://github.com/malahmen/dark-portal) engine |
 
 ### Utilities
@@ -447,8 +447,8 @@ scomp-link/
     │   └── comfyengine.sh            # ComfyEngine memory scanner (build from source)
     ├── gameconqueror/
     │   └── gameconqueror.sh          # GameConqueror/scanmem (build from source)
-    ├── wow-nordrassil/
-    │   └── wow-nordrassil.sh          # front-end for the nordrassil VMaNGOS server engine (Docker · K8s)
+    ├── wow-vmangos-nordrassil/
+    │   └── wow-vmangos-nordrassil.sh  # front-end for the nordrassil VMaNGOS server engine (Docker · K8s)
     ├── wow-dark-portal/
     │   └── wow-dark-portal.sh         # front-end for the dark-portal Wine multibox client engine
     │

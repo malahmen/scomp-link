@@ -7,11 +7,11 @@ standalone, gum-free engine that provisions and launches multiple vanilla WoW
 (1.12.1) game clients under Wine on a single Linux PC, for **multiboxing**.
 scomp-link ships only the interactive front-end, auto-discovered in the launcher
 like any other script; the provisioning/launch logic lives in the engine's own
-repo — the same split as [wow-nordrassil](wow-nordrassil.md) (the server side),
+repo — the same split as [wow-vmangos-nordrassil](wow-vmangos-nordrassil.md) (the server side),
 [holo-convert](holo-convert.md), and [protocol-droid](protocol-droid.md). It's
-named `wow-dark-portal` so it sorts next to `wow-nordrassil`.
+named `wow-dark-portal` so it sorts with the server front-ends. It is the client side and serves either server: VMaNGOS (`wow-vmangos-nordrassil`) and cmangos-classic both speak the 1.12.1 client.
 
-Companion to [Vanilla WoW Server](wow-nordrassil.md) but entirely independent —
+Companion to [Vanilla WoW Server](wow-vmangos-nordrassil.md) but entirely independent —
 it never touches the server, only the client(s) that connect to one (this repo's
 own server or any other vanilla-family realm on the LAN).
 
@@ -118,4 +118,4 @@ dark-portal.sh --help
 See the [engine README](https://github.com/malahmen/dark-portal) for the full
 flag reference.
 
-Companion script: [Vanilla WoW Server](wow-nordrassil.md).
+Companion script: [Vanilla WoW Server (VMaNGOS)](wow-vmangos-nordrassil.md).

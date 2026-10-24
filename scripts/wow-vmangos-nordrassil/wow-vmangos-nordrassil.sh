@@ -9,8 +9,10 @@
 # and drives it by flags. Same split as protocol-droid / navicomputer /
 # holo-convert / mind-trick / younglings-key.
 #
-# Named wow-nordrassil (not just "nordrassil") so it sorts next to
-# wow-dark-portal (the client front-end) in the launcher.
+# Named wow-vmangos-nordrassil: wow- so the WoW tools sort together in the
+# launcher, then the server it is for. kalimdor (cmangos-classic with
+# playerbots, Kamino item 150) gets its own, wow-cmangos-teldrassil, and the
+# two are not mixed; wow-dark-portal is the client side and serves both.
 #
 # Engine resolution order:
 #   1. $NORDRASSIL_DIR/nordrassil.sh        (explicit override — a checkout you control)
