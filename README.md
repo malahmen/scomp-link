@@ -87,7 +87,7 @@ All database scripts follow the same pattern: Docker, kind, or K8s target (picke
 | [`comfyengine/comfyengine.sh`](docs/scripts/comfyengine.md)          | -            | Build & install the ComfyEngine memory scanner from source               |
 | [`gameconqueror/gameconqueror.sh`](docs/scripts/gameconqueror.md)    | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
 | [`wow-vmangos-nordrassil/wow-vmangos-nordrassil.sh`](docs/scripts/wow-vmangos-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
-| [`wow-cmangos-teldrassil/wow-cmangos-teldrassil.sh`](docs/scripts/wow-cmangos-teldrassil.md) | Podman · Docker | Run a cmangos-classic vanilla WoW server with playerbots and shape its bots (roster, guilds, attunements, search) — front-end for the standalone [teldrassil](https://github.com/malahmen/teldrassil) engine |
+| [`wow-cmangos-teldrassil/wow-cmangos-teldrassil.sh`](docs/scripts/wow-cmangos-teldrassil.md) | Podman · Docker | Build, run and manage a cmangos-classic vanilla WoW server with playerbots and shape its bots (roster, guilds, optional LLM chat, attunements, search) — front-end for the standalone [teldrassil](https://github.com/malahmen/teldrassil) engine |
 | [`wow-dark-portal/wow-dark-portal.sh`](docs/scripts/wow-dark-portal.md) | -            | Configure & launch multiple vanilla WoW clients under Wine (multiboxing) — front-end for the standalone [dark-portal](https://github.com/malahmen/dark-portal) engine |
 
 ### Utilities
