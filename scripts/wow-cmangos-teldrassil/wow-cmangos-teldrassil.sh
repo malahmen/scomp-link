@@ -4,10 +4,10 @@
 # -----------------------------------------------------------------------------
 # gum front-end for the standalone, flag-driven `teldrassil` engine: a
 # cmangos-classic vanilla WoW server (1.12.1) built with playerbots, and the
-# bots shaped to live in it. The logic - the containers, the remote console,
-# accounts, the roster, search, attunements, dumps - lives in its own repo as a
-# gum-free CLI; this file only resolves that engine, collects options with
-# gum, and drives it by flags.
+# bots shaped to live in it. The logic - building and installing the server,
+# the containers, the remote console, accounts, the roster, search, LLM chat,
+# attunements, dumps - lives in its own repo as a gum-free CLI; this file only
+# resolves that engine, collects options with gum, and drives it by flags.
 #
 # Named wow-cmangos-teldrassil: wow- so the WoW tools sort together in the
 # launcher, then the server it is for. The VMaNGOS server has its own,
@@ -118,6 +118,103 @@ action_setup() {
     _set_if ROSTER_FILE      "Roster JSON (the shaped bots):"
     _set_if DBC_DIR          "Extracted client dbc directory (zone names in search):"
     success "Saved. 'Status' shows whether the engine can reach it all."
+}
+
+# -----------------------------------------------------------------------------
+# Provision — from nothing to a running server.
+# -----------------------------------------------------------------------------
+
+action_install() {
+    header "teldrassil — Install a server"
+    info "Builds from pinned sources, extracts the client's data, creates the databases"
+    info "and starts it all in containers. Steps already done are skipped."
+    _set_if CLIENT_DIR    "The 1.12.1 client folder (it holds Data/):"
+    _set_if REALM_NAME    "Realm name (in the realm list):"
+    _set_if REALM_ADDRESS "Address players connect to (this machine's LAN address for LAN play):"
+    _set_if BOTS          "How many random bots:"
+    _set_if WORK_DIR      "Where teldrassil keeps its files (blank keeps the current place):"
+    warn "The first install compiles for tens of minutes and extracts for about 20 (~7 GB in all)."
+    gum confirm --default=false "Install now?" || { info "Cancelled."; return 0; }
+    engine_foreground install --yes
+}
+
+action_step() {
+    case "$1" in
+        build)
+            local jobs; jobs="$(_ask "Compile jobs (blank: one per CPU):")"
+            local -a args=(build); [[ -n "$jobs" ]] && args+=(--jobs "$jobs")
+            gum confirm --default=false "Start from a clean build tree (much slower)?" && args+=(--clean)
+            engine_foreground "${args[@]}" ;;
+        extract)
+            local -a args=(extract)
+            gum confirm --default=false "Extract again even if the data is there?" && args+=(--force)
+            engine_foreground "${args[@]}" ;;
+        db-init)
+            warn "This creates the four databases and REPLACES any that exist: every account and character."
+            gum confirm --default=false "Recreate the databases?" || { info "Cancelled."; return 0; }
+            engine_foreground db-init --yes ;;
+        configure)
+            local -a args=(configure)
+            if gum confirm --default=false "Rewrite existing config files from their templates (the roster's settings are lost until it is applied again)?"; then args+=(--force); fi
+            engine_foreground "${args[@]}" ;;
+        create)
+            local -a args=(create)
+            gum confirm --default=false "Recreate the containers if they exist?" && args+=(--force)
+            engine_foreground "${args[@]}" ;;
+        source)
+            local -a args=(source)
+            gum confirm --default=false "Move the checkouts to the pinned commits if they differ?" && args+=(--update)
+            engine_foreground "${args[@]}" ;;
+        build-image) engine_foreground build-image ;;
+    esac
+}
+
+action_remove() {
+    header "teldrassil — Remove the server"
+    warn "This deletes the realm and world server containers; the files stay."
+    gum confirm --default=false "Remove the server's containers?" || { info "Cancelled."; return 0; }
+    local -a args=(remove --yes)
+    if gum confirm --default=false "Also delete the DATABASE - every account and character?"; then
+        if gum confirm --default=false "Really delete every account and character? Dump first if in doubt."; then
+            args+=(--database)
+        else
+            info "Keeping the database."
+        fi
+    fi
+    engine_foreground "${args[@]}"
+}
+
+# -----------------------------------------------------------------------------
+# LLM chat — optional, off on a new server.
+# -----------------------------------------------------------------------------
+
+action_llm() {
+    header "teldrassil — LLM chat"
+    engine_foreground llm status
+    local choice
+    choice=$(gum choose "Turn it on (or change it)" "Turn it off" "Leave it" --header "Bots' chat through a language model:") || return 0
+    case "$choice" in
+        "Turn it off")
+            engine_foreground llm off
+            info "Takes effect at the next restart." ;;
+        "Turn it on"*)
+            local endpoint model tokens effort b2b key
+            endpoint="$(_ask "Endpoint (an OpenAI-style .../v1/chat/completions):" "http://127.0.0.1:1234/v1/chat/completions")"
+            [[ -n "$endpoint" ]] || { info "Cancelled."; return 0; }
+            model="$(_ask "Model name, as the endpoint knows it:")"
+            [[ -n "$model" ]] || { info "Cancelled."; return 0; }
+            tokens="$(_ask "Longest reply, in tokens:" 80)"
+            effort="$(_ask "Reasoning effort (blank to leave out; 'none' stops thinking models from thinking):")"
+            b2b="$(_ask "Chance bots answer each other through it, in % (0 keeps it to players):" 0)"
+            key="$(_ask "File holding an API key (blank for a local endpoint):")"
+            local -a args=(llm on --endpoint "$endpoint" --model "$model")
+            [[ -n "$tokens" ]] && args+=(--max-tokens "$tokens")
+            [[ -n "$effort" ]] && args+=(--reasoning-effort "$effort")
+            [[ -n "$b2b" ]] && args+=(--bot-to-bot "$b2b")
+            [[ -n "$key" ]] && args+=(--api-key-file "$key")
+            engine_foreground "${args[@]}"
+            info "Takes effect at the next restart (Server -> restart)." ;;
+    esac
 }
 
 # -----------------------------------------------------------------------------
@@ -376,6 +473,10 @@ _submenu() {
             save)              engine_foreground save ;;
             console)           action_console || true ;;
             where-is-it)       action_setup || true ;;
+            install)           action_install || true ;;
+            source|build-image|build|extract|db-init|configure|create) action_step "$action" || true ;;
+            remove)            action_remove || true ;;
+            llm)               action_llm || true ;;
             settings)          engine_foreground config ;;
             create-account)    action_create_account || true ;;
             list-accounts)     engine_foreground list-accounts ;;
@@ -403,17 +504,18 @@ main() {
         "teldrassil" "vanilla WoW (cmangos + playerbots) — where the bots live"
     while true; do
         local category
-        category=$(printf '%s\n' Server Settings Accounts Characters Search Roster Bots Administration Quit \
+        category=$(printf '%s\n' Server Provision Settings Accounts Characters Search Roster Bots Administration Quit \
             | gum choose --header "Choose a category:") || true
         [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
         case "$category" in
             Server)         _submenu "Server"         status start stop restart save console ;;
+            Provision)      _submenu "Provision"      install source build-image build extract db-init configure create remove ;;
             Settings)       _submenu "Settings"       where-is-it settings ;;
             Accounts)       _submenu "Accounts"       create-account list-accounts set-account-level delete-account ;;
             Characters)     _submenu "Characters"     rename-character ;;
             Search)         action_search || true ;;
             Roster)         _submenu "Roster"         show plan check apply ;;
-            Bots)           _submenu "Bots"           attunements commands ;;
+            Bots)           _submenu "Bots"           llm attunements commands ;;
             Administration) _submenu "Administration" dump restore apply-sql ;;
         esac
     done

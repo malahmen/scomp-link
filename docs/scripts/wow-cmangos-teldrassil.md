@@ -30,19 +30,20 @@ matching flag-driven subcommand. The engine itself never prompts.
 
 ## What it does
 
-teldrassil's first slice manages a server that is already built and running in
-containers (a MariaDB container, a realm server and a world server); building,
-client-data extraction and the database bootstrap come later.
+teldrassil builds a server from nothing - pinned sources, the client's data,
+the databases - and runs it in containers (a MariaDB container, a realm server
+and a world server); then it manages it and its bots.
 
 | Category | Actions |
 | --- | --- |
+| **Provision** | install (a short wizard - the client folder, realm name and address, how many bots - then one confirmation; steps already done are skipped), or one step at a time: sources, image, build, extract, databases, configure, containers; remove |
 | **Server** | status (containers, ports, who is online, the LLM endpoint), start, stop, restart (now, or graceful: players warned, the world saved), save, the remote console |
 | **Settings** | where the server is - container names, the config directory, the console's password file, the roster, the client's dbc directory - and the current settings |
 | **Accounts** | create, list, set the level (0 player to 3 administrator), delete |
 | **Characters** | rename (refused while the character is online) |
 | **Search** | bots and characters (filters: zone, level range, class, race, guild, online, roster or random), guilds, items, NPCs, objects (herbs, ore, chests - with spawn counts), quests, teleport locations |
 | **Roster** | show the shaped bots as the server has them, plan (what applying would change), check, apply |
-| **Bots** | attunements (grant bots the raid attunements they cannot earn), the commands bots obey and who may use them |
+| **Bots** | LLM chat (status, on with an endpoint and model, off - optional, and off on a new server), attunements (grant bots the raid attunements they cannot earn), the commands bots obey and who may use them |
 | **Administration** | dump (all databases, one, or the accounts only), restore, apply SQL |
 
 ## Safety
@@ -53,6 +54,11 @@ client-data extraction and the database bootstrap come later.
 - **Every destructive action asks, and defaults to no:** stop, restart,
   deleting an account, applying the roster or attunements (both stop the world
   server for about a minute), restore, apply SQL.
+- **Deleting the database takes two separate yeses** (Provision -> remove), and
+  recreating it (db-init) one more, each defaulting to no.
+- **LLM chat is optional.** A new server starts with it off; turning it on asks
+  for an OpenAI-style endpoint and a model, and an API key is given as a file
+  path, never typed in.
 - **Replacing the whole bot population takes two separate yeses.** Applying
   the roster can first delete every random bot, and every guild a bot leads,
   and create a new population at the roster's counts; declining the second
@@ -69,5 +75,8 @@ client-data extraction and the database bootstrap come later.
 `tests/test-wow-cmangos-teldrassil.sh` drives the menus through the gum stub
 against a fake engine that records each call: the password reaches the engine
 on stdin and in no argument; declined actions call nothing; the population is
-replaced only after both yeses; search filters arrive as flags; a table-subset
-dump is restored with `--db`.
+replaced only after both yeses, and the database deleted only after both of
+its own; the install wizard saves its answers and installs only when
+confirmed; LLM chat is switched on with exactly the fields given, a key as a
+file; search filters arrive as flags; a table-subset dump is restored with
+`--db`.

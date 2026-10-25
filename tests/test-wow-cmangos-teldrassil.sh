@@ -102,4 +102,36 @@ check "attunements: the plan, then nothing without a yes" bash -c 'grep -qxF "at
 drive Bots attunements yes back Quit
 check "attunements confirmed: apply --yes" called "attune|apply|--yes"
 
+echo "# provision"
+drive Provision install /wow/client "My Realm" 192.168.1.5 40 "" no back Quit
+check "the wizard saves its answers" bash -c 'grep -qxF "set|CLIENT_DIR|/wow/client" "$1" && grep -qxF "set|REALM_NAME|My Realm" "$1" && grep -qxF "set|REALM_ADDRESS|192.168.1.5" "$1" && grep -qxF "set|BOTS|40" "$1"' _ "$T/calls"
+check "  a blank answer keeps the setting" not_called "set|WORK_DIR"
+check "  and declining installs nothing" not_called "install"
+drive Provision install "" "" "" "" "" yes back Quit
+check "confirmed: install --yes" called "install|--yes"
+drive Provision db-init no back Quit
+check "db-init declined: nothing" not_called "db-init"
+drive Provision db-init yes back Quit
+check "db-init confirmed: --yes" called "db-init|--yes"
+drive Provision build 16 no back Quit
+check "build with jobs, not clean" called "build|--jobs|16"
+drive Provision remove yes yes no back Quit
+check "remove, second database yes missing: the database is kept" called "remove|--yes"
+drive Provision remove yes yes yes back Quit
+check "remove with both database yeses: --database" called "remove|--yes|--database"
+drive Provision remove no back Quit
+check "remove declined: nothing" not_called "remove"
+
+echo "# llm: optional"
+drive Bots llm "Leave it" back Quit
+check "status is shown, nothing changes" bash -c 'grep -qxF "llm|status" "$1" && ! grep -q "llm|o" "$1"' _ "$T/calls"
+drive Bots llm "Turn it off" back Quit
+check "off" called "llm|off"
+drive Bots llm "Turn it on (or change it)" http://127.0.0.1:1234/v1/chat/completions qwen 80 none 0 "" back Quit
+check "on, with the endpoint, model and extras" called "llm|on|--endpoint|http://127.0.0.1:1234/v1/chat/completions|--model|qwen|--max-tokens|80|--reasoning-effort|none|--bot-to-bot|0"
+drive Bots llm "Turn it on (or change it)" https://api.example/v1/chat/completions gpt "" "" "" /keys/llm.txt back Quit
+check "a hosted endpoint: the key FILE is passed, blanks left out" called "llm|on|--endpoint|https://api.example/v1/chat/completions|--model|gpt|--api-key-file|/keys/llm.txt"
+drive Bots llm "Turn it on (or change it)" http://x/v1/chat/completions "" back Quit
+check "no model: cancelled" not_called "llm|on"
+
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi
