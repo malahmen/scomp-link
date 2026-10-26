@@ -48,6 +48,20 @@ TELDRASSIL_REPO="${TELDRASSIL_REPO:-https://github.com/malahmen/teldrassil.git}"
 TELDRASSIL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/teldrassil"
 ENGINE=""
 
+# Which server everything acts on: an engine profile, or the base config.
+# $TELDRASSIL_PROFILE would be read by the engine itself at every call, so it
+# is taken once as this session's starting point and cleared: from then on
+# PROFILE_FLAGS alone says where a command goes, and choosing "base config"
+# really means the base config.
+INITIAL_PROFILE="${TELDRASSIL_PROFILE:-}"
+unset TELDRASSIL_PROFILE
+PROFILE_FLAGS=()
+PROFILE_LABEL="base config"
+_set_profile() {
+    if [[ -n "$1" ]]; then PROFILE_FLAGS=(--profile "$1"); PROFILE_LABEL="$1"
+    else PROFILE_FLAGS=(); PROFILE_LABEL="base config"; fi
+}
+
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
 resolve_engine() {
@@ -79,10 +93,10 @@ resolve_engine() {
 # the menu. eget reads one setting, for pre-filling a prompt.
 engine_foreground() {
     trap ':' INT
-    bash "$ENGINE" "$@" || true
+    bash "$ENGINE" "${PROFILE_FLAGS[@]}" "$@" || true
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 }
-eget() { bash "$ENGINE" get "$1" 2>/dev/null || true; }
+eget() { bash "$ENGINE" "${PROFILE_FLAGS[@]}" get "$1" 2>/dev/null || true; }
 
 # _ask <header> [current] — a gum input; empty output means cancelled or blank.
 _ask() { gum input --value "${2:-}" --header "$1" || true; }
@@ -107,17 +121,68 @@ _pick_gm_level() {
 # -----------------------------------------------------------------------------
 
 action_setup() {
-    header "teldrassil — Where the server is"
+    header "teldrassil — Where the server is (${PROFILE_LABEL})"
     info "Each answer is saved with the engine's 'set'; leave one blank to keep it."
-    _set_if PODMAN           "Container runtime (podman or docker):"
-    _set_if DB_CONTAINER     "MariaDB container name:"
-    _set_if SERVER_CONTAINER "World server (mangosd) container name:"
-    _set_if REALM_CONTAINER  "Realm server (realmd) container name:"
-    _set_if ETC_DIR          "Server config directory on this host (holds aiplayerbot.conf):"
-    _set_if RA_PASS_FILE     "File with the remote-console account's password (this host):"
-    _set_if ROSTER_FILE      "Roster JSON (the shaped bots):"
-    _set_if DBC_DIR          "Extracted client dbc directory (zone names in search):"
+    local where
+    where=$(gum choose --header "Where does this server run?" \
+        "Here, in containers" \
+        "Another machine, in containers (over ssh)" \
+        "Another machine, in Kubernetes (over ssh)") || return 0
+    case "$where" in
+        Here*)
+            engine_foreground set SSH_HOST ""
+            engine_foreground set SERVER_KIND podman ;;
+        *)
+            _set_if SSH_HOST "ssh host (a ~/.ssh/config alias or user@host; key login, no prompts):"
+            if [[ "$where" == *Kubernetes* ]]; then engine_foreground set SERVER_KIND kube
+            else engine_foreground set SERVER_KIND podman; fi ;;
+    esac
+    _set_if DB_CONTAINER "MariaDB container name:"
+    _set_if DB_USER      "MariaDB user:"
+    _set_if DB_PASS_ENV  "Variable holding that user's password inside the MariaDB container (blank: the file below):"
+    _set_if DB_PASS_FILE "Password file inside the MariaDB container:"
+    if [[ "$where" == *Kubernetes* ]]; then
+        _set_if KUBE_NAMESPACE       "Namespace:"
+        _set_if SERVER_CONTAINER     "World server Deployment:"
+        _set_if BOT_SECRET           "Secret holding aiplayerbot.conf and the card file:"
+        _set_if WORLD_PORT           "World server port:"
+        _set_if CARDS_FILE_IN_SERVER "The card file's path as the server sees it:"
+    else
+        _set_if PODMAN           "Container runtime (podman or docker):"
+        _set_if SERVER_CONTAINER "World server (mangosd) container name:"
+        _set_if REALM_CONTAINER  "Realm server (realmd) container name:"
+        [[ "$where" == Here* ]] && _set_if ETC_DIR "Server config directory on this host (holds aiplayerbot.conf):"
+    fi
+    _set_if RA_PASS_FILE "File with the remote-console account's password (this machine; blank: none yet):"
+    _set_if ROSTER_FILE  "Roster JSON (the shaped bots):"
+    _set_if DBC_DIR      "Extracted client dbc directory (zone names in search):"
     success "Saved. 'Status' shows whether the engine can reach it all."
+    [[ -n "$(eget RA_PASS_FILE)" ]] && return 0
+    info "No console account yet: stop, save and the console need one."
+    gum confirm --default=false "Create teldrassil's console account (TELDRASSIL, level 3) on ${PROFILE_LABEL} now?" \
+        && engine_foreground console-account
+    return 0
+}
+
+# action_profile — which server the rest of the menus act on.
+action_profile() {
+    header "teldrassil — Profile (now: ${PROFILE_LABEL})"
+    local -a names; mapfile -t names < <(bash "$ENGINE" profiles 2>/dev/null | sed -E 's/^[*[:space:]]+//' | grep -vE '^$|=' || true)
+    local choice name
+    choice=$(printf '%s\n' "${names[@]}" "new profile..." "base config (no profile)" \
+        | gum choose --header "Act on which server?") || return 0
+    case "$choice" in
+        "base config (no profile)") _set_profile "" ;;
+        "new profile...")
+            name="$(_ask "New profile name (letters, digits, then . _ -):")"
+            [[ -n "$name" ]] || return 0
+            [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ && "$name" != *..* ]] || { warn "'${name}' is not a valid profile name."; return 0; }
+            _set_profile "$name"
+            info "Profile ${name} is created by its first setting."
+            action_setup ;;
+        *) _set_profile "$choice" ;;
+    esac
+    success "Acting on: ${PROFILE_LABEL}"
 }
 
 # -----------------------------------------------------------------------------
@@ -151,7 +216,7 @@ action_step() {
             engine_foreground "${args[@]}" ;;
         db-init)
             warn "This creates the four databases and REPLACES any that exist: every account and character."
-            gum confirm --default=false "Recreate the databases?" || { info "Cancelled."; return 0; }
+            gum confirm --default=false "Recreate the databases on ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
             engine_foreground db-init --yes ;;
         configure)
             local -a args=(configure)
@@ -172,7 +237,7 @@ action_step() {
 action_remove() {
     header "teldrassil — Remove the server"
     warn "This deletes the realm and world server containers; the files stay."
-    gum confirm --default=false "Remove the server's containers?" || { info "Cancelled."; return 0; }
+    gum confirm --default=false "Remove the server's containers on ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
     local -a args=(remove --yes)
     if gum confirm --default=false "Also delete the DATABASE - every account and character?"; then
         if gum confirm --default=false "Really delete every account and character? Dump first if in doubt."; then
@@ -223,7 +288,7 @@ action_llm() {
 
 action_stop() {
     warn "Stopping saves the world, then disconnects everyone."
-    gum confirm --default=false "Stop the world server?" || { info "Cancelled."; return 0; }
+    gum confirm --default=false "Stop the world server on ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
     engine_foreground stop
 }
 
@@ -269,7 +334,7 @@ action_create_account() {
     level="$(_pick_gm_level "Account level:")" || { info "Cancelled."; return 0; }
     # On stdin: an argument would show in the process list and shell history.
     trap ':' INT
-    printf '%s\n' "$pass" | bash "$ENGINE" create-account --name "$name" --pass-stdin --level "$level" || true
+    printf '%s\n' "$pass" | bash "$ENGINE" "${PROFILE_FLAGS[@]}" create-account --name "$name" --pass-stdin --level "$level" || true
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
     unset pass
 }
@@ -289,7 +354,7 @@ action_delete_account() {
     engine_foreground list-accounts
     local name; name="$(_ask "Account to delete (only one with no characters):")"
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
-    gum confirm --default=false "Delete account '${name}' for good?" || { info "Cancelled."; return 0; }
+    gum confirm --default=false "Delete account '${name}' on ${PROFILE_LABEL} for good?" || { info "Cancelled."; return 0; }
     engine_foreground delete-account --name "$name" --yes
 }
 
@@ -360,7 +425,7 @@ action_roster_apply() {
     engine_foreground roster plan
     echo ""
     warn "Applying stops the world server for about a minute (everyone is disconnected)."
-    gum confirm --default=false "Apply the roster?" || { info "Cancelled."; return 0; }
+    gum confirm --default=false "Apply the roster to ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
     local -a extra=()
     if gum confirm --default=false "Also replace the WHOLE random-bot population first (new bots at the roster's counts)?"; then
         warn "Every random bot, and every guild a bot leads, is deleted and created anew. The roster's own are rebuilt."
@@ -449,7 +514,7 @@ action_restore() {
         dbflag=(--db "$into")
     fi
     warn "RESTORE REPLACES DATA and cannot be undone. The world server must be stopped first."
-    gum confirm --default=false "Restore $(basename "$file")?" || { info "Cancelled."; return 0; }
+    gum confirm --default=false "Restore $(basename "$file") onto ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
     engine_foreground restore --file "$file" "${dbflag[@]}" --yes
 }
 
@@ -461,7 +526,7 @@ _submenu() {
     local title="$1"; shift
     local -a opts=("$@")
     while true; do
-        header "Vanilla WoW (cmangos) — ${title}"
+        header "Vanilla WoW (cmangos) — ${title} · ${PROFILE_LABEL}"
         local action
         action=$(printf '%s\n' "${opts[@]}" "back" | gum choose --header "Choose an action:") || true
         [[ -z "$action" || "$action" == "back" ]] && return
@@ -473,6 +538,8 @@ _submenu() {
             save)              engine_foreground save ;;
             console)           action_console || true ;;
             where-is-it)       action_setup || true ;;
+            profile)           action_profile || true ;;
+            console-account)   gum confirm --default=false "Create (or renew) the console account TELDRASSIL on ${PROFILE_LABEL}?" && engine_foreground console-account ;;
             install)           action_install || true ;;
             source|build-image|build|extract|db-init|configure|create) action_step "$action" || true ;;
             remove)            action_remove || true ;;
@@ -499,18 +566,19 @@ _submenu() {
 
 main() {
     resolve_engine
+    _set_profile "$INITIAL_PROFILE"
     gum style --foreground "$CYAN" --border-foreground "$CYAN" --border double \
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "teldrassil" "vanilla WoW (cmangos + playerbots) — where the bots live"
     while true; do
         local category
         category=$(printf '%s\n' Server Provision Settings Accounts Characters Search Roster Bots Administration Quit \
-            | gum choose --header "Choose a category:") || true
+            | gum choose --header "Choose a category (acting on: ${PROFILE_LABEL}):") || true
         [[ -z "$category" || "$category" == "Quit" ]] && { gum style --faint "Bye."; exit 0; }
         case "$category" in
             Server)         _submenu "Server"         status start stop restart save console ;;
             Provision)      _submenu "Provision"      install source build-image build extract db-init configure create remove ;;
-            Settings)       _submenu "Settings"       where-is-it settings ;;
+            Settings)       _submenu "Settings"       profile where-is-it console-account settings ;;
             Accounts)       _submenu "Accounts"       create-account list-accounts set-account-level delete-account ;;
             Characters)     _submenu "Characters"     rename-character ;;
             Search)         action_search || true ;;

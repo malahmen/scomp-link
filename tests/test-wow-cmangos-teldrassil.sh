@@ -134,4 +134,18 @@ check "a hosted endpoint: the key FILE is passed, blanks left out" called "llm|o
 drive Bots llm "Turn it on (or change it)" http://x/v1/chat/completions "" back Quit
 check "no model: cancelled" not_called "llm|on"
 
+echo "# profiles: every call carries the chosen one"
+drive Settings profile "new profile..." far "Another machine, in Kubernetes (over ssh)" meksha "" "" MARIADB_ROOT_PASSWORD "" kalimdor kalimdor-world kalimdor-bots 8086 "" "" "" "" no back Server status back Quit
+check "the remote answers go to the new profile" bash -c 'grep -qxF -- "--profile|far|set|SSH_HOST|meksha" "$1" && grep -qxF -- "--profile|far|set|SERVER_KIND|kube" "$1" && grep -qxF -- "--profile|far|set|BOT_SECRET|kalimdor-bots" "$1"' _ "$T/calls"
+check "  the console account is offered, and declining makes none" not_called "console-account"
+check "  and a later command acts on it" called "--profile|far|status"
+drive Settings profile "base config (no profile)" back Server status back Quit
+check "base config: no --profile" called "status"
+printf '%s\n' Accounts create-account Bob 's3cret!' "3 - Administrator" back Quit > "$T/answers"; : > "$T/calls"
+PATH="$T/bin:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state.p" TELDRASSIL_DIR="$T/engine" TELDRASSIL_PROFILE=far \
+    XDG_CONFIG_HOME="$T/config" "$BASH" "$FRONT" > "$T/out" 2>&1
+check "\$TELDRASSIL_PROFILE starts the session, the password still on stdin" called "--profile|far|create-account|--name|Bob|--pass-stdin|--level|3"
+drive Settings console-account yes back Quit
+check "console account, confirmed" called "console-account"
+
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi
