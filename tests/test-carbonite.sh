@@ -206,6 +206,16 @@ tui "unpin a fan" "$FAN1" yes no
 check "unpin carries --yes"                     calls_with "unpin ${NCT8}:fan1 --yes"
 check "the pump went back to the board"         bash -c '[[ $(setting "$NCT" fan1 profile_uid) == 0 ]]'
 
+echo "## 11. the access token reaches the engine on stdin, never on a command line"
+# ps shows every process's argv to every user, and this token can set any fan.
+SECRET="cc_FrontEndS3cret"
+fresh; printf '%s\n' "$SECRET" > "$FAKE_CC/token"
+CARB_TOKEN="" tui "set the access token" "$SECRET" no
+check "login is called"                         calls_with "^login"
+check "  without the token among its arguments" bash -c '! grep -qF -- "$1" "$2"' _ "$SECRET" "$T/calls"
+check "the engine saved the token it was given" grep -qx "token=${SECRET}" "$CARB_CONFIG_DIR/config"
+check "  and curl never had it on its argv"     bash -c '! grep -qF -- "$1" "$2" 2>/dev/null' _ "$SECRET" "$FAKE_CC/argv"
+
 echo
 (( FAILS == 0 )) && { echo "all passed"; exit 0; }
 echo "${FAILS} failed"; exit 1
