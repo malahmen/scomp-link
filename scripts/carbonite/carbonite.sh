@@ -259,7 +259,10 @@ action_token() {
     local tok
     tok=$(gum input --password --placeholder "cc_…" --prompt "token > ") || { info "Cancelled."; return 0; }
     [[ -n "$tok" ]] || { info "Cancelled."; return 0; }
-    engine login --token "$tok" || true
+    # On stdin, never as an argument: argv is public (ps), and this token can
+    # set any fan's duty. printf is a builtin, so it is no process's argv
+    # either. The engine's login reads stdin (Kamino item 182).
+    printf '%s\n' "$tok" | engine login || true
     _engine_state
 }
 
