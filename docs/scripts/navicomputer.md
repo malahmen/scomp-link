@@ -44,7 +44,7 @@ picked up unchanged.
 | **edit** | Change a profile's HostName/User/Port/Key/options |
 | **use** | Wire a profile to a git repo (`core.sshCommand` uses its key; optional remote + git identity) |
 | **test** | Verify SSH auth for selected hosts or all |
-| **remove** | Delete a profile (optionally its key files) |
+| **remove** | Delete a profile, optionally its key files - named in the question, and refused by the engine when another profile, any `IdentityFile` or ssh's defaults still use them, or when navicomputer did not generate them for that profile (the TUI then offers to remove the profile and keep the keys) |
 
 The **profile name is the Host alias** — the thing you type after `ssh`. To
 rename, remove and re-add.

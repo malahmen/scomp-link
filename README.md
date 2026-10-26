@@ -358,6 +358,7 @@ scomp-link/
 │   ├── test-holo-convert.sh          # the holo-convert front-end (fake engine)
 │   ├── test-lmstudio.sh              # the lmstudio bench (fake server, recording lms)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
+│   ├── test-navicomputer.sh          # the navicomputer front-end (real engine, temp ~/.ssh): key deletion
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
@@ -622,9 +623,9 @@ to return the scripted answer whatever the menu held, so a picker listing the
 wrong things passed every test. `esc` (or running out of answers) is the user
 pressing Esc. No network and no terminal: `file://` remotes only.
 
-The astromech, carbonite and thermal-exhaust-port tests drive the real engine,
-found beside this repository (`../astromech`, …) or through `$ASTROMECH`,
-`$CARBONITE` and `$TEP`. Without one the file exits 77 and is reported
+The astromech, carbonite, thermal-exhaust-port and navicomputer tests drive
+the real engine, found beside this repository (`../astromech`, …) or through
+`$ASTROMECH`, `$CARBONITE`, `$TEP` and `$NAVICOMPUTER`. Without one the file exits 77 and is reported
 **SKIP** - it used to exit 0 and be reported PASS, which is how those three
 had never run in CI.
 
