@@ -222,9 +222,11 @@ check "it is not asked again"                  bash -c '! grep -q "<confirm> Run
 
 echo "## 13. tidy: an engine that cannot plan is not 'nothing to tidy'"
 git -C "$R/alpha" branch --no-track held origin/main
-LOCK="${XDG_RUNTIME_DIR}/astromech-$(id -u).lock"; mkdir -p "$LOCK"; echo "$$" > "$LOCK/pid"
+# astromech's run lock (since astromech #11, Kamino 193): a file under $HOME -
+# this test's own - holding a live pid; a blank boot id is accepted as current.
+LOCK="${HOME}/.local/state/astromech/run.lock"; mkdir -p "${LOCK%/*}"; printf '%s\n' "$$" > "$LOCK"
 rec "Tidy merged branches" "Every repository" Quit
-rm -rf "$LOCK"
+rm -f "$LOCK"
 check "it says the list could not be made"     has "could not make its list" "$OUT"
 check "  not that there is nothing to tidy"    bash -c '! grep -q "Nothing to tidy" <<<"$OUT"'
 check "  and deletes nothing"                  git -C "$R/alpha" show-ref --verify -q refs/heads/held
