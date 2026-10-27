@@ -202,10 +202,10 @@ drive Provision remove yes no back Quit
 check "remove, database declined: remove --yes only" called "remove|--yes"
 drive Provision remove yes enter back Quit
 check "remove, Enter on the database: remove --yes only" called "remove|--yes"
-# A yes waits behind that Enter: if the database question ever defaulted to yes,
-# it would reach the second question and delete every account and character.
-drive Provision remove yes enter yes back Quit
-check "remove, Enter on the database then yes: still no --database" not_called "remove|--yes|--database"
+# The second question is the only thing behind a default-yes on the first: Enter
+# on "Also delete the DATABASE?" must not even reach "Really delete ...?".
+drive Provision remove yes enter back Quit
+check "remove, Enter on the database: the second question is never asked" bash -c '! grep -q "<confirm>.*Really delete every account" "$1"' _ "$T/out"
 drive Provision remove yes yes enter back Quit
 check "remove, Enter on the second database yes: remove --yes only" called "remove|--yes"
 
