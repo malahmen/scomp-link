@@ -9,7 +9,12 @@
 #     as an argument;
 #   - the schedule: a crontab line carrying a marker, replaced not duplicated,
 #     removed without touching the user's other lines; or a systemd user
-#     timer where systemd runs the session; refused without rules or recipient.
+#     timer where systemd runs the session; refused without rules or recipient;
+#   - a scheduled run finds everything with cron's PATH and none of this
+#     shell's variables: python3, the engine, pop and both folders are written
+#     in as absolute paths, quoted, a space or a % in them included (Kamino
+#     167, 179) - the crontab line is run here the way cron runs it;
+#   - a failing `crontab -l` is not an empty crontab (Kamino 197).
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,28 +31,49 @@ check() { local d="$1"; shift; if "$@"; then echo "   ok   - $d"; else echo "   
 has()   { grep -qF -- "$1" "$2"; }
 lacks() { ! grep -qF -- "$1" "$2"; }
 
-mkdir -p "$T/engine" "$T/bin"
+# The engine, python3 and the folders live where a space, a %, a ' and a $
+# are: each breaks an unquoted crontab line or ExecStart=.
+ENG="$T/my engine 100%"
+CFG="$T/cmdr's cfg dir"
+STATE="$T/state dir 100%"
+PYDIR="$T/py \$bin"
+mkdir -p "$ENG" "$T/bin" "$PYDIR" "$STATE" "$T/home"
 # The fake engine: one line per call ("ARGS | stdin"), and the answers the
 # front-end reads.
-cat > "$T/engine/edcmea.sh" <<EOF
+cat > "$ENG/edcmea.sh" <<EOF
 #!/usr/bin/env bash
 input=""
 [[ "\$1" == pop-env && -n "\${2:-}" && "\$2" != --* ]] && input="\$(cat)"
 printf '%s | %s\n' "\$*" "\$input" >> "$T/calls"
 case "\$1" in
-    config) printf 'rules=%s\nemail_to=%s\npop=/bin/pop\npop_env=POP_FROM\nconfig_file=/x/config.json\nrealert_increase_percent=5.0\n' \
-                "\$(cat "$T/rules-count" 2>/dev/null || echo 0)" "\$(cat "$T/email-to" 2>/dev/null)" ;;
+    config) pop="$T/bin/pop"; [[ -z "\${STUB_POP_MISSING:-}" ]] || pop=missing
+            printf 'rules=%s\nemail_to=%s\npop=%s\npop_env=POP_FROM\nconfig_file=%s\nstate_file=%s\nrealert_increase_percent=5.0\n' \
+                "\$(cat "$T/rules-count" 2>/dev/null || echo 0)" "\$(cat "$T/email-to" 2>/dev/null)" "\$pop" \
+                "$CFG/config.json" "$STATE/state.json" ;;
+    check) [[ "\${2:-}" == --help && -z "\${STUB_NO_QUIET:-}" ]] && echo "usage: edcmea check [-h] [--dry-run] [--rule RULE] [--quiet]" ;;
     commodities) printf 'lowtemperaturediamond\tbest sell 523,200 cr\nlowtemp.diamonds\tbest sell 1 cr\n' ;;
     rules) [[ "\$2" == list ]] && printf 'ltd\tlowtemperaturediamond >= 600,000 cr\nvoid\tvoidopal >= 1 cr\n' ;;
 esac
 exit 0
 EOF
+touch "$ENG/edcmea.py"
+# python3 as a scheduled run meets it: what it was given, and the EDCMEA_*
+# variables it got, recorded.
+cat > "$PYDIR/python3" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" > "$T/py-argv"
+env | grep '^EDCMEA_' | sort > "$T/py-env"
+echo "[alert] from the scheduled run"
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/pop"
 cp "${TEST_DIR}/stubs/gum" "$T/bin/gum"
 # crontab keeps its table in a file; systemctl and uname record and answer.
+# STUB_CRONTAB_FAIL: -l fails the way an unreadable spool does.
 cat > "$T/bin/crontab" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
-    -l) [[ -f "$T/crontab" ]] && cat "$T/crontab" || { echo "no crontab for user" >&2; exit 1; } ;;
+    -l) if [[ -n "\${STUB_CRONTAB_FAIL:-}" ]]; then echo "crontab: cannot open your crontab: Permission denied" >&2; exit 1; fi
+        [[ -f "$T/crontab" ]] && cat "$T/crontab" || { echo "no crontab for user" >&2; exit 1; } ;;
     -)  cat > "$T/crontab" ;;
 esac
 EOF
@@ -58,12 +84,29 @@ echo "systemctl \$*" >> "$T/calls"
 exit 0
 EOF
 printf '#!/usr/bin/env bash\necho "${STUB_UNAME:-Darwin}"\n' > "$T/bin/uname"
-chmod +x "$T/engine/edcmea.sh" "$T/bin/"*
+chmod +x "$ENG/edcmea.sh" "$T/bin/"* "$PYDIR/python3"
 
 run() {
     printf '%s\n' "$@" > "$T/answers"; echo 0 > "$T/state"; : > "$T/calls"
-    PATH="$T/bin:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" EDCMEA_DIR="$T/engine" \
+    PATH="$T/bin:$PYDIR:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" EDCMEA_DIR="$ENG" \
+        EDCMEA_PYTHON="${STUB_PYTHON-$PYDIR/python3}" \
         XDG_STATE_HOME="$T/xstate" SCOMP_EDCMEA_UNIT_DIR="$T/units" "$BASH" "$FRONT" > "$T/out" 2>&1 < /dev/null
+}
+
+# The marked crontab line's command as cron runs it: % up to the first
+# unescaped one (\% is a %), handed to /bin/sh with cron's bare environment.
+cron_run() {
+    local line cmd="" rest i c
+    line="$(grep -F 'edcmea (scomp-link)' "$T/crontab")" || return 1
+    rest="$(cut -d' ' -f6- <<< "$line")"
+    for (( i = 0; i < ${#rest}; i++ )); do
+        c="${rest:i:1}"
+        if [[ "$c" == '\' && "${rest:i+1:1}" == % ]]; then cmd+=%; (( i++ )) || true
+        elif [[ "$c" == % ]]; then break
+        else cmd+="$c"; fi
+    done
+    rm -f "$T/py-argv" "$T/py-env"
+    env -i PATH=/usr/bin:/bin HOME="$T/home" /bin/sh -c "$cmd"
 }
 
 echo "# the menu"
@@ -106,21 +149,59 @@ check "no rules yet: not scheduled" lacks "edcmea (scomp-link)" "$T/crontab"
 check "...and says why" has "No watch rules yet" "$T/out"
 echo 2 > "$T/rules-count"; echo cmdr@example.com > "$T/email-to"
 run schedule "run it every few minutes" 10 Quit
-check "a crontab line runs check every 10 minutes" grep -qE "^\*/10 \* \* \* \* $T/engine/edcmea.sh check >> .* # edcmea \(scomp-link\)$" "$T/crontab"
+check "a crontab line runs check every 10 minutes" grep -qE "^\*/10 \* \* \* \* .* check --quiet >> .* # edcmea \(scomp-link\)$" "$T/crontab"
 check "...the user's own line kept" has "/usr/bin/backup  # mine" "$T/crontab"
+cron_run
+check "...cron runs it: python3 by its full path, on the engine's edcmea.py" \
+    test "$(cat "$T/py-argv" 2>/dev/null)" == "$ENG/edcmea.py"$'\n'check$'\n'--quiet
+check "...with pop and both folders, a space and a % in them intact" \
+    test "$(cat "$T/py-env" 2>/dev/null)" == "EDCMEA_CONFIG_DIR=$CFG"$'\n'"EDCMEA_POP=$T/bin/pop"$'\n'"EDCMEA_STATE_DIR=$STATE"
+check "...logging to the engine's state folder" has "[alert] from the scheduled run" "$STATE/check.log"
+run schedule "stop running it" Quit
+STUB_PYTHON=python3 run schedule "run it every few minutes" 10 Quit
+check "python3 found on this PATH is written in by its full path" has "'$PYDIR/python3'" "$T/crontab"
+STUB_NO_QUIET=1 run schedule "run it every few minutes" 10 Quit
+check "an engine without --quiet is not given it" grep -qE " check >> .*# edcmea \(scomp-link\)$" "$T/crontab"
 run schedule "run it every few minutes" 30 Quit
 check "rescheduling replaces the line, never adds a second" test "$(grep -c 'edcmea (scomp-link)' "$T/crontab")" -eq 1
 check "...at the new interval" has "*/30 * * * *" "$T/crontab"
 run status Quit
 check "status shows the schedule" has "crontab: */30 * * * *" "$T/out"
+check "...not the paths and variables after it" lacks "EDCMEA_POP" "$T/out"
 run schedule "stop running it" Quit
 check "stopping removes the line" lacks "edcmea (scomp-link)" "$T/crontab"
 check "...and only that line" has "/usr/bin/backup  # mine" "$T/crontab"
 
+echo "# the schedule: what it refuses"
+cp "$T/crontab" "$T/crontab.before"
+STUB_POP_MISSING=1 run schedule "run it every few minutes" 10 Quit
+check "without pop: not scheduled" lacks "edcmea (scomp-link)" "$T/crontab"
+check "...and says why" has "pop is not installed here" "$T/out"
+run schedule "run it every few minutes" 10 Quit
+cp "$T/crontab" "$T/crontab.before"
+STUB_CRONTAB_FAIL=1 run schedule "run it every few minutes" 30 Quit
+check "crontab -l failing: the crontab is not rewritten" cmp -s "$T/crontab" "$T/crontab.before"
+check "...and it says so" has "crontab -l failed" "$T/out"
+STUB_CRONTAB_FAIL=1 run schedule "stop running it" Quit
+check "...nor emptied by stopping" cmp -s "$T/crontab" "$T/crontab.before"
+STUB_CRONTAB_FAIL=1 run status Quit
+check "...and status does not call it unscheduled" has "unknown (crontab -l failed)" "$T/out"
+run schedule "stop running it" Quit
+rm -f "$T/crontab"
+run schedule "run it every few minutes" 10 Quit
+check "no crontab yet: one is started" has "edcmea (scomp-link)" "$T/crontab"
+run schedule "stop running it" Quit
+
 echo "# the schedule: a systemd user timer"
 STUB_UNAME=Linux run schedule "run it every few minutes" 15 Quit
 check "a timer every 15 minutes" has "OnCalendar=*:0/15" "$T/units/edcmea-check.timer"
-check "...running check on the engine" has "ExecStart=$T/engine/edcmea.sh check" "$T/units/edcmea-check.service"
+check "...running check: python3 and edcmea.py by full path, quoted, % doubled" \
+    has "ExecStart=\"${PYDIR//\$/\$\$}/python3\" \"${ENG//%/%%}/edcmea.py\" check" "$T/units/edcmea-check.service"
+check "...with pop" has "Environment=\"EDCMEA_POP=$T/bin/pop\"" "$T/units/edcmea-check.service"
+check "...and both folders" has "Environment=\"EDCMEA_STATE_DIR=${STATE//%/%%}\"" "$T/units/edcmea-check.service"
+check "...the config one too" has "Environment=\"EDCMEA_CONFIG_DIR=$CFG\"" "$T/units/edcmea-check.service"
+check "...a run cannot take all day" has "TimeoutStartSec=" "$T/units/edcmea-check.service"
+check "...and a stop lets it record the email it is sending" has "KillMode=mixed" "$T/units/edcmea-check.service"
 check "...enabled and started" has "systemctl --user enable --now edcmea-check.timer" "$T/calls"
 STUB_UNAME=Linux run schedule "stop running it" Quit
 check "stopping disables it and removes the units" test ! -e "$T/units/edcmea-check.timer"
