@@ -4,8 +4,11 @@
 # line, and what it read on stdin.
 #
 # What it protects: a password reaches the engine on stdin and never as an
-# argument; every destructive action does nothing unless confirmed, and
-# replacing the whole bot population needs a second, separate yes; the search
+# argument; every destructive action does nothing unless confirmed - each
+# prompt is driven declined, with Enter (the stub answers its --default, so a
+# prompt that flipped to default-yes fails here) and confirmed - and replacing
+# the whole bot population needs a second, separate yes; a console command
+# reaches the engine as one argument, however many words it has; the search
 # filters arrive as the engine's flags; a table-subset dump is restored with
 # --db.
 set -uo pipefail
@@ -147,5 +150,91 @@ PATH="$T/bin:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state.p" TELDRASSIL_D
 check "\$TELDRASSIL_PROFILE starts the session, the password still on stdin" called "--profile|far|create-account|--name|Bob|--pass-stdin|--level|3"
 drive Settings console-account yes back Quit
 check "console account, confirmed" called "console-account"
+
+echo "# every destructive prompt: declined, Enter (its default) and confirmed (Kamino 178)"
+# Enter answers the prompt's --default; each of these is --default=false, so
+# Enter must act as a no. A flag the user did not choose is never passed.
+drive Server stop enter back Quit
+check "stop, Enter: no stop" not_called "stop"
+drive Server restart "Now (stop and start)" no back Quit
+check "restart now, declined: no restart" not_called "restart"
+drive Server restart "Now (stop and start)" enter back Quit
+check "restart now, Enter: no restart" not_called "restart"
+drive Server restart "Now (stop and start)" yes back Quit
+check "restart now, confirmed: restart" called "restart"
+drive Server restart "Graceful (warn players first)" 30 no back Quit
+check "graceful restart, declined: no restart" not_called "restart"
+drive Server restart "Graceful (warn players first)" 30 enter back Quit
+check "graceful restart, Enter: no restart" not_called "restart"
+
+drive Accounts delete-account Bob no back Quit
+check "delete-account, declined: nothing deleted" not_called "delete-account"
+drive Accounts delete-account Bob enter back Quit
+check "delete-account, Enter: nothing deleted" not_called "delete-account"
+drive Accounts delete-account Bob yes back Quit
+check "delete-account, confirmed: --name Bob --yes" called "delete-account|--name|Bob|--yes"
+
+drive Administration apply-sql /srv/fix.sql classicmangos no back Quit
+check "apply-sql, declined: nothing applied" not_called "apply-sql"
+drive Administration apply-sql /srv/fix.sql classicmangos enter back Quit
+check "apply-sql, Enter: nothing applied" not_called "apply-sql"
+drive Administration apply-sql /srv/fix.sql classicmangos yes back Quit
+check "apply-sql, confirmed: the file onto the database" called "apply-sql|--file|/srv/fix.sql|--db|classicmangos"
+drive Administration restore "classiccharacters-tables-20261025-000000.sql" classiccharacters enter back Quit
+check "restore, Enter: no restore" not_called "restore"
+
+drive Roster apply enter back Quit
+check "roster apply, Enter: no apply" not_called "apply"
+drive Roster apply yes enter back Quit
+check "roster apply, Enter on the population: apply --yes only" called "roster|apply|--yes"
+drive Roster apply yes yes enter back Quit
+check "roster apply, Enter on the second population yes: apply --yes only" called "roster|apply|--yes"
+drive Bots attunements enter back Quit
+check "attunements, Enter: no apply" not_called "attune|apply"
+
+drive Provision install "" "" "" "" "" enter back Quit
+check "install, Enter: nothing installed" not_called "install"
+drive Provision db-init enter back Quit
+check "db-init, Enter: the databases are kept" not_called "db-init"
+drive Provision remove enter back Quit
+check "remove, Enter: nothing removed" not_called "remove"
+drive Provision remove yes no back Quit
+check "remove, database declined: remove --yes only" called "remove|--yes"
+drive Provision remove yes enter back Quit
+check "remove, Enter on the database: remove --yes only" called "remove|--yes"
+drive Provision remove yes yes enter back Quit
+check "remove, Enter on the second database yes: remove --yes only" called "remove|--yes"
+
+# A flag that only the user may choose: declined and Enter run the step
+# without it, a yes adds it. `called` matches the whole line, so a flag
+# passed regardless fails the first two.
+for step in "source --update" "extract --force" "configure --force" "create --force"; do
+    s="${step% *}" flag="${step#* }"
+    drive Provision "$s" no back Quit
+    check "${s}, declined: no ${flag}" called "$s"
+    drive Provision "$s" enter back Quit
+    check "${s}, Enter: no ${flag}" called "$s"
+    drive Provision "$s" yes back Quit
+    check "${s}, confirmed: ${flag}" called "${s}|${flag}"
+done
+drive Provision build "" enter back Quit
+check "build, Enter: no --clean" called "build"
+drive Provision build "" yes back Quit
+check "build, confirmed: --clean" called "build|--clean"
+
+drive Settings console-account no back Quit
+check "console account, declined: none made" not_called "console-account"
+drive Settings console-account enter back Quit
+check "console account, Enter: none made" not_called "console-account"
+here=(Settings where-is-it "Here, in containers" "" "" "" "" "" "" "" "" "" "" "")
+drive "${here[@]}" enter back Quit
+check "the wizard's console account, Enter: none made" not_called "console-account"
+drive "${here[@]}" yes back Quit
+check "the wizard's console account, confirmed: made" called "console-account"
+
+echo "# console: one command is one argument, however many words"
+drive Server console "account onlinelist" "server info" "" back Quit
+check "a two-word command arrives whole" called "console|account onlinelist"
+check "  and the next one as its own call" called "console|server info"
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi
