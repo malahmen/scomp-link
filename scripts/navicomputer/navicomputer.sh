@@ -184,11 +184,29 @@ nav_remove() {
     local name; name=$(pick_profile "Select a profile to remove:") || return
     [[ -n "$name" ]] || return
     gum confirm "Remove profile '$name'?" || return
-    local del=(); gum confirm "Also delete its key files?" && del=(--delete-keys)
+    # The question names the exact files: "its key files" read as harmless
+    # when the profile pointed at ~/.ssh/id_ed25519, the main key other
+    # profiles used too (Kamino item 177). Asked only when there are some.
+    local key files=() f
+    key=$(engine view --name "$name" --json | jq -r '.key // empty') || key=""
+    if [[ -n "$key" ]]; then
+        for f in "$key" "${key}.pub"; do if [[ -f "$f" ]]; then files+=("$f"); fi; done
+    fi
+    local del=()
+    if (( ${#files[@]} )); then
+        gum confirm "Also delete these key files? ${files[*]}" && del=(--delete-keys)
+    fi
     # ${arr[@]+"${arr[@]}"} — an empty array expanded as "${arr[@]}" is an
     # unbound-variable error under set -u before bash 4.4 (the header only
     # requires 4+).
-    engine remove --name "$name" ${del[@]+"${del[@]}"}
+    engine remove --name "$name" ${del[@]+"${del[@]}"} && return 0
+    (( ${#del[@]} )) || return 1
+    # The engine refuses to delete a key anything else still uses, or one it
+    # did not generate for this profile, and then changes nothing. Its reason
+    # is on the screen above; the profile itself can still go.
+    warn "Nothing was removed: the engine would not delete the key files (see above)."
+    gum confirm "Remove profile '$name' and keep its key files?" || return 0
+    engine remove --name "$name"
 }
 
 nav_use() {

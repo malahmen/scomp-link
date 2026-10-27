@@ -31,6 +31,8 @@ jobs:
         with: { repository: malahmen/carbonite, path: _engines/carbonite }
       - uses: actions/checkout@v4
         with: { repository: malahmen/thermal-exhaust-port, path: _engines/thermal-exhaust-port }
+      - uses: actions/checkout@v4
+        with: { repository: malahmen/navicomputer, path: _engines/navicomputer }
 
       - name: Versions
         # Printed because a suite that behaves differently on the runner than
@@ -64,4 +66,5 @@ jobs:
           ASTROMECH: ${{ github.workspace }}/_engines/astromech/astromech.sh
           CARBONITE: ${{ github.workspace }}/_engines/carbonite
           TEP: ${{ github.workspace }}/_engines/thermal-exhaust-port/thermal-exhaust-port.sh
+          NAVICOMPUTER: ${{ github.workspace }}/_engines/navicomputer/navicomputer.sh
         run: tests/run-all.sh --strict

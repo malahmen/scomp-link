@@ -361,6 +361,7 @@ scomp-link/
 │   ├── test-holo-convert.sh          # the holo-convert front-end (fake engine)
 │   ├── test-lmstudio.sh              # the lmstudio bench (fake server, recording lms)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
+│   ├── test-navicomputer.sh          # the navicomputer front-end (real engine, temp ~/.ssh): key deletion
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-service-credentials.sh   # the service scripts keep a kept volume's / release's credentials
 │   ├── test-service-kube-context.sh  # the service scripts act only on the chosen kube-context
@@ -639,9 +640,9 @@ recording stubs of `docker`, `docker-compose`, `podman`, `kubectl`, `helm` and
 `kind` (`tests/lib/service-stubs.sh`) on a `PATH` without `/usr/local/bin` or
 `/opt/homebrew/bin`, so no container runtime or cluster is ever reached.
 
-The astromech, carbonite and thermal-exhaust-port tests drive the real engine,
-found beside this repository (`../astromech`, …) or through `$ASTROMECH`,
-`$CARBONITE` and `$TEP`. Without one the file exits 77 and is reported
+The astromech, carbonite, thermal-exhaust-port and navicomputer tests drive
+the real engine, found beside this repository (`../astromech`, …) or through
+`$ASTROMECH`, `$CARBONITE`, `$TEP` and `$NAVICOMPUTER`. Without one the file exits 77 and is reported
 **SKIP** - it used to exit 0 and be reported PASS, which is how those three
 had never run in CI.
 
