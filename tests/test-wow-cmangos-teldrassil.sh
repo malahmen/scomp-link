@@ -202,6 +202,10 @@ drive Provision remove yes no back Quit
 check "remove, database declined: remove --yes only" called "remove|--yes"
 drive Provision remove yes enter back Quit
 check "remove, Enter on the database: remove --yes only" called "remove|--yes"
+# A yes waits behind that Enter: if the database question ever defaulted to yes,
+# it would reach the second question and delete every account and character.
+drive Provision remove yes enter yes back Quit
+check "remove, Enter on the database then yes: still no --database" not_called "remove|--yes|--database"
 drive Provision remove yes yes enter back Quit
 check "remove, Enter on the second database yes: remove --yes only" called "remove|--yes"
 
