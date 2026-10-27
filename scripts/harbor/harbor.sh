@@ -295,18 +295,42 @@ harbor_install_k8s() {
 
     _ensure_helm_repo "$HARBOR_HELM_REPO_NAME" "$HARBOR_HELM_REPO_URL"
 
-    HARBOR_ADMIN_PASSWORD=$(gum input \
-        --placeholder "leave empty to auto-generate" \
-        --password \
-        --header "Harbor admin password (leave empty to auto-generate):") || true
-
-    if [[ -z "$HARBOR_ADMIN_PASSWORD" ]]; then
-        HARBOR_ADMIN_PASSWORD=$(_gen_secret 24)
+    # An existing release keeps its admin password: Harbor wrote it to its
+    # database on first start and ignores harborAdminPassword after that, so
+    # an upgrade asks for none, reuses the release's values and does not print
+    # one (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated admin password: ${HARBOR_ADMIN_PASSWORD}" \
-            "Save this — it will not be shown again."
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${HARBOR_HELM_RELEASE}' already exists in '${HARBOR_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep admin password, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing admin password (helm --reuse-values)."
+    else
+        HARBOR_ADMIN_PASSWORD=$(gum input \
+            --placeholder "leave empty to auto-generate" \
+            --password \
+            --header "Harbor admin password (leave empty to auto-generate):") || true
+
+        if [[ -z "$HARBOR_ADMIN_PASSWORD" ]]; then
+            HARBOR_ADMIN_PASSWORD=$(_gen_secret 24)
+            gum style \
+                --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+                --align center --width 60 --margin "1 0" --padding "0 4" \
+                "Generated admin password: ${HARBOR_ADMIN_PASSWORD}" \
+                "Save this — it will not be shown again."
+        fi
     fi
 
     local port_input
@@ -322,32 +346,20 @@ harbor_install_k8s() {
         --set "expose.clusterIP.name=${HARBOR_HELM_RELEASE}"
         --set expose.tls.enabled=false
         --set "externalURL=http://localhost:${port}"
-        --set "harborAdminPassword=${HARBOR_ADMIN_PASSWORD}"
         --set persistence.enabled=true
         --wait --timeout 10m
     )
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
+    else
+        helm_args+=(--set "harborAdminPassword=${HARBOR_ADMIN_PASSWORD}")
+    fi
 
     _prompt_storage helm_args
 
     _k8s_ensure_namespace
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${HARBOR_HELM_RELEASE}' already exists in '${HARBOR_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
         if ! gum spin --spinner dot --title "Upgrading Harbor (this may take several minutes)..." -- \
             helm upgrade "${helm_args[@]}"; then
             warn "Upgrade failed. Check 'helm status ${HARBOR_HELM_RELEASE} -n ${HARBOR_NAMESPACE}'."
@@ -363,6 +375,8 @@ harbor_install_k8s() {
         success "Harbor installed."
     fi
 
+    local shown_pw="$HARBOR_ADMIN_PASSWORD"
+    [[ "$upgrade" == true ]] && shown_pw="(unchanged - the password it was installed with)"
     echo ""
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
@@ -370,7 +384,7 @@ harbor_install_k8s() {
         "Harbor installed." \
         "" \
         "Use 'connect' to start port-forward → http://localhost:${port}" \
-        "Login: admin / ${HARBOR_ADMIN_PASSWORD}" \
+        "Login: admin / ${shown_pw}" \
         "" \
         "To push images, add localhost:${port} as an insecure registry" \
         "in your Docker daemon (or use HTTP in your registry config)."

@@ -172,11 +172,10 @@ influxdb_install_docker() {
         --header "Host port (leave empty for ${IDB_DEFAULT_PORT}):") || true
     IDB_PORT="${port_input:-$IDB_DEFAULT_PORT}"
 
-    _prompt_admin_config
-
     local image="influxdb:${IDB_IMAGE_TAG}"
     local volume="${IDB_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$IDB_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -190,11 +189,31 @@ influxdb_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$IDB_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$IDB_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # DOCKER_INFLUXDB_INIT_* run the initial setup only on an empty data dir:
+    # on a kept volume the old user, password, org and token stay in force, so
+    # nothing new is asked for; the old container's values are carried over
+    # for connect, and no setup mode is requested (Kamino 174).
+    local kept=false
+    if docker volume inspect "$volume" &>/dev/null; then
+        kept=true
+        _kept_data_notice "$volume" "$old"
+        IDB_ADMIN_USER="$(_container_env "$old" DOCKER_INFLUXDB_INIT_USERNAME)"
+        IDB_ADMIN_PASSWORD="$(_container_env "$old" DOCKER_INFLUXDB_INIT_PASSWORD)"
+        IDB_ORG="$(_container_env "$old" DOCKER_INFLUXDB_INIT_ORG)"
+        IDB_BUCKET="$(_container_env "$old" DOCKER_INFLUXDB_INIT_BUCKET)"
+        IDB_TOKEN="$(_container_env "$old" DOCKER_INFLUXDB_INIT_ADMIN_TOKEN)"
+    else
+        _prompt_admin_config
+    fi
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$IDB_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -205,18 +224,15 @@ influxdb_install_docker() {
         run -d
         --name "$IDB_CONTAINER_NAME"
         -p "${IDB_PORT}:8086"
-        -e DOCKER_INFLUXDB_INIT_MODE=setup
-        -e DOCKER_INFLUXDB_INIT_USERNAME="$IDB_ADMIN_USER"
-        -e DOCKER_INFLUXDB_INIT_PASSWORD="$IDB_ADMIN_PASSWORD"
-        -e DOCKER_INFLUXDB_INIT_ORG="$IDB_ORG"
-        -e DOCKER_INFLUXDB_INIT_BUCKET="$IDB_BUCKET"
         -v "${volume}:/var/lib/influxdb2"
         --restart unless-stopped
     )
-
-    if [[ -n "$IDB_TOKEN" ]]; then
-        docker_args+=(-e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN="$IDB_TOKEN")
-    fi
+    [[ "$kept" == true ]] || docker_args+=(-e DOCKER_INFLUXDB_INIT_MODE=setup)
+    local kv
+    for kv in "USERNAME=${IDB_ADMIN_USER}" "PASSWORD=${IDB_ADMIN_PASSWORD}" \
+              "ORG=${IDB_ORG}" "BUCKET=${IDB_BUCKET}" "ADMIN_TOKEN=${IDB_TOKEN}"; do
+        [[ -n "${kv#*=}" ]] && docker_args+=(-e "DOCKER_INFLUXDB_INIT_${kv}")
+    done
 
     docker_args+=("$image")
 
@@ -241,9 +257,9 @@ influxdb_install_docker() {
         "InfluxDB running" \
         "" \
         "Web UI:   http://localhost:${IDB_PORT}" \
-        "User:     ${IDB_ADMIN_USER}" \
-        "Org:      ${IDB_ORG}" \
-        "Bucket:   ${IDB_BUCKET}" \
+        "User:     ${IDB_ADMIN_USER:-(unchanged)}" \
+        "Org:      ${IDB_ORG:-(unchanged)}" \
+        "Bucket:   ${IDB_BUCKET:-(unchanged)}" \
         "Volume:   ${volume}"
 }
 
@@ -429,7 +445,30 @@ influxdb_install_k8s() {
     header "Install InfluxDB — Kubernetes"
     _k8s_check_cluster || return 0
 
-    _prompt_admin_config
+    # An existing release keeps its credentials: InfluxDB ran its setup with
+    # them on the data in its PVC and ignores new ones, so an upgrade asks for
+    # none and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${IDB_HELM_RELEASE}' already exists in '${IDB_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing credentials (helm --reuse-values): the data in its volume keeps the ones it was set up with."
+    else
+        _prompt_admin_config
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -448,36 +487,24 @@ influxdb_install_k8s() {
         --namespace "$IDB_NAMESPACE"
         --set fullnameOverride="$IDB_HELM_RELEASE"
         --set service.port=8086
-        --set adminUser.user="$IDB_ADMIN_USER"
-        --set adminUser.password="$IDB_ADMIN_PASSWORD"
-        --set adminUser.organization="$IDB_ORG"
-        --set adminUser.bucket="$IDB_BUCKET"
         --set persistence.enabled=true
         --set persistence.size="$storage_size"
         --wait --timeout 5m
     )
 
-    if [[ -n "$IDB_TOKEN" ]]; then
-        helm_args+=(--set adminUser.token="$IDB_TOKEN")
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
+    else
+        helm_args+=(
+            --set adminUser.user="$IDB_ADMIN_USER"
+            --set adminUser.password="$IDB_ADMIN_PASSWORD"
+            --set adminUser.organization="$IDB_ORG"
+            --set adminUser.bucket="$IDB_BUCKET"
+        )
+        [[ -n "$IDB_TOKEN" ]] && helm_args+=(--set adminUser.token="$IDB_TOKEN")
     fi
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${IDB_HELM_RELEASE}' already exists in '${IDB_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
         if ! gum spin --spinner dot --title "Upgrading InfluxDB (this may take a few minutes)..." -- \
             helm upgrade "${helm_args[@]}"; then
             warn "Upgrade failed. Check 'helm status ${IDB_HELM_RELEASE} -n ${IDB_NAMESPACE}' for details."

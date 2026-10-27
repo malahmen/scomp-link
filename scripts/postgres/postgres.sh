@@ -142,11 +142,10 @@ postgres_install_docker() {
         --header "Host port (leave empty for ${PG_DEFAULT_PORT}):") || true
     PG_PORT="${port_input:-$PG_DEFAULT_PORT}"
 
-    _prompt_db_credentials
-
     local image="postgres:${PG_IMAGE_TAG}"
     local volume="${PG_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$PG_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -160,11 +159,27 @@ postgres_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$PG_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$PG_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # The image applies POSTGRES_* only to an empty data dir: on a kept volume
+    # the old credentials stay in force, so they are carried over, not asked
+    # for again (Kamino 174). Read before the old container is removed.
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        _keep_credential PG_DB       "$old" POSTGRES_DB       "database name" "=${PG_DEFAULT_DB}" \
+            && _keep_credential PG_USER     "$old" POSTGRES_USER     "username"      "=${PG_DEFAULT_USER}" \
+            && _keep_credential PG_PASSWORD "$old" POSTGRES_PASSWORD "password"      "secret?" \
+            || { warn "Cancelled."; return; }
+    else
+        _prompt_db_credentials
+    fi
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$PG_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -336,7 +351,31 @@ _k8s_check_cluster() {
 postgres_install_k8s() {
     header "Install PostgreSQL — Kubernetes"
     _k8s_check_cluster || return 0
-    _prompt_db_credentials
+
+    # An existing release keeps its credentials: the database in its PVC was
+    # initialised with them and ignores new ones, so an upgrade asks for none
+    # and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${PG_HELM_RELEASE}' already exists in '${PG_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing credentials (helm --reuse-values): the database in its volume keeps the ones it was created with."
+    else
+        _prompt_db_credentials
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -354,40 +393,29 @@ postgres_install_k8s() {
         "$PG_HELM_RELEASE" "$PG_HELM_CHART"
         --namespace "$PG_NAMESPACE"
         --set fullnameOverride="$PG_HELM_RELEASE"
-        --set settings.superuserPassword="$PG_PASSWORD"
-        --set userDatabase.name="$PG_DB"
-        --set userDatabase.user="$PG_USER"
-        --set userDatabase.password="$PG_PASSWORD"
         --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${PG_HELM_RELEASE}' already exists in '${PG_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading PostgreSQL via Helm..." -- \
             helm upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${PG_NAMESPACE}"
     else
+        helm_args+=(
+            --set settings.superuserPassword="$PG_PASSWORD"
+            --set userDatabase.name="$PG_DB"
+            --set userDatabase.user="$PG_USER"
+            --set userDatabase.password="$PG_PASSWORD"
+        )
         gum spin --spinner dot --title "Installing PostgreSQL via Helm (may take a few minutes)..." -- \
             helm install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl get pods -n ${PG_NAMESPACE}"
     fi
 
+    local shown_db="$PG_DB" shown_user="$PG_USER"
+    [[ "$upgrade" == true ]] && shown_db="(unchanged)" shown_user="(unchanged)"
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
         --align center --width 60 --margin "1 2" --padding "1 4" \
@@ -395,8 +423,8 @@ postgres_install_k8s() {
         "" \
         "Release:    ${PG_HELM_RELEASE}" \
         "Namespace:  ${PG_NAMESPACE}" \
-        "Database:   ${PG_DB}" \
-        "User:       ${PG_USER}" \
+        "Database:   ${shown_db}" \
+        "User:       ${shown_user}" \
         "" \
         "Use 'port-forward' or 'connect' from the menu to access it."
 }

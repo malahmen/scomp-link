@@ -159,12 +159,10 @@ mysql_install_docker() {
         --header "Host port (leave empty for ${MY_DEFAULT_PORT}):") || true
     MY_PORT="${port_input:-$MY_DEFAULT_PORT}"
 
-    _prompt_root_password
-    _prompt_db_credentials
-
     local image="mysql:${MY_IMAGE_TAG}"
     local volume="${MY_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$MY_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -178,11 +176,29 @@ mysql_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$MY_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$MY_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # The image applies MYSQL_* only to an empty data dir: on a kept volume the
+    # old credentials stay in force, so they are carried over, not asked for
+    # again (Kamino 174). Read before the old container is removed.
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        _keep_credential MY_ROOT_PASSWORD "$old" MYSQL_ROOT_PASSWORD "root password" "secret?" \
+            && _keep_credential MY_DB       "$old" MYSQL_DATABASE "database name" "=${MY_DEFAULT_DB}" \
+            && _keep_credential MY_USER     "$old" MYSQL_USER     "username"      "=${MY_DEFAULT_USER}" \
+            && _keep_credential MY_PASSWORD "$old" MYSQL_PASSWORD "password"      "secret?" \
+            || { warn "Cancelled."; return; }
+    else
+        _prompt_root_password
+        _prompt_db_credentials
+    fi
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$MY_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -357,8 +373,31 @@ mysql_install_k8s() {
     header "Install MySQL — Kubernetes"
     _k8s_check_cluster || return 0
 
-    _prompt_root_password
-    _prompt_db_credentials
+    # An existing release keeps its credentials: the database in its PVC was
+    # initialised with them and ignores new ones, so an upgrade asks for none
+    # and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${MY_HELM_RELEASE}' already exists in '${MY_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing credentials (helm --reuse-values): the database in its volume keeps the ones it was created with."
+    else
+        _prompt_root_password
+        _prompt_db_credentials
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -375,40 +414,29 @@ mysql_install_k8s() {
         "$MY_HELM_RELEASE" "$MY_HELM_CHART"
         --namespace "$MY_NAMESPACE"
         --set fullnameOverride="$MY_HELM_RELEASE"
-        --set settings.rootPassword="$MY_ROOT_PASSWORD"
-        --set userDatabase.name="$MY_DB"
-        --set userDatabase.user="$MY_USER"
-        --set userDatabase.password="$MY_PASSWORD"
         --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${MY_HELM_RELEASE}' already exists in '${MY_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading MySQL via Helm..." -- \
             helm upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${MY_NAMESPACE}"
     else
+        helm_args+=(
+            --set settings.rootPassword="$MY_ROOT_PASSWORD"
+            --set userDatabase.name="$MY_DB"
+            --set userDatabase.user="$MY_USER"
+            --set userDatabase.password="$MY_PASSWORD"
+        )
         gum spin --spinner dot --title "Installing MySQL via Helm (may take a few minutes)..." -- \
             helm install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl get pods -n ${MY_NAMESPACE}"
     fi
 
+    local shown_db="$MY_DB" shown_user="$MY_USER"
+    [[ "$upgrade" == true ]] && shown_db="(unchanged)" shown_user="(unchanged)"
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
         --align center --width 60 --margin "1 2" --padding "1 4" \
@@ -416,8 +444,8 @@ mysql_install_k8s() {
         "" \
         "Release:    ${MY_HELM_RELEASE}" \
         "Namespace:  ${MY_NAMESPACE}" \
-        "Database:   ${MY_DB}" \
-        "User:       ${MY_USER}" \
+        "Database:   ${shown_db}" \
+        "User:       ${shown_user}" \
         "" \
         "Use 'port-forward' or 'connect' from the menu to access it."
 }

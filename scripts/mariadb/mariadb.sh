@@ -172,12 +172,10 @@ mariadb_install_docker() {
         --header "Host port (leave empty for ${MDB_DEFAULT_PORT}):") || true
     MDB_PORT="${port_input:-$MDB_DEFAULT_PORT}"
 
-    _prompt_root_password
-    _prompt_db_credentials
-
     local image="mariadb:${MDB_IMAGE_TAG}"
     local volume="${MDB_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$MDB_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -191,11 +189,29 @@ mariadb_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$MDB_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$MDB_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # The image applies MARIADB_* only to an empty data dir: on a kept volume the
+    # old credentials stay in force, so they are carried over, not asked for
+    # again (Kamino 174). Read before the old container is removed.
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        _keep_credential MDB_ROOT_PASSWORD "$old" MARIADB_ROOT_PASSWORD "root password" "secret?" \
+            && _keep_credential MDB_DB       "$old" MARIADB_DATABASE "database name" "=${MDB_DEFAULT_DB}" \
+            && _keep_credential MDB_USER     "$old" MARIADB_USER     "username"      "=${MDB_DEFAULT_USER}" \
+            && _keep_credential MDB_PASSWORD "$old" MARIADB_PASSWORD "password"      "secret?" \
+            || { warn "Cancelled."; return; }
+    else
+        _prompt_root_password
+        _prompt_db_credentials
+    fi
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$MDB_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -381,8 +397,31 @@ mariadb_install_k8s() {
     header "Install MariaDB — Kubernetes"
     _k8s_check_cluster || return 0
 
-    _prompt_root_password
-    _prompt_db_credentials
+    # An existing release keeps its credentials: the database in its PVC was
+    # initialised with them and ignores new ones, so an upgrade asks for none
+    # and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${MDB_HELM_RELEASE}' already exists in '${MDB_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing credentials (helm --reuse-values): the database in its volume keeps the ones it was created with."
+    else
+        _prompt_root_password
+        _prompt_db_credentials
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -400,40 +439,29 @@ mariadb_install_k8s() {
         "$MDB_HELM_RELEASE" "$MDB_HELM_CHART"
         --namespace "$MDB_NAMESPACE"
         --set fullnameOverride="$MDB_HELM_RELEASE"
-        --set settings.rootPassword="$MDB_ROOT_PASSWORD"
-        --set userDatabase.name="$MDB_DB"
-        --set userDatabase.user="$MDB_USER"
-        --set userDatabase.password="$MDB_PASSWORD"
         --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${MDB_HELM_RELEASE}' already exists in '${MDB_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading MariaDB via Helm..." -- \
             helm upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${MDB_NAMESPACE}"
     else
+        helm_args+=(
+            --set settings.rootPassword="$MDB_ROOT_PASSWORD"
+            --set userDatabase.name="$MDB_DB"
+            --set userDatabase.user="$MDB_USER"
+            --set userDatabase.password="$MDB_PASSWORD"
+        )
         gum spin --spinner dot --title "Installing MariaDB via Helm (may take a few minutes)..." -- \
             helm install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl get pods -n ${MDB_NAMESPACE}"
     fi
 
+    local shown_db="$MDB_DB" shown_user="$MDB_USER"
+    [[ "$upgrade" == true ]] && shown_db="(unchanged)" shown_user="(unchanged)"
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
         --align center --width 60 --margin "1 2" --padding "1 4" \
@@ -441,8 +469,8 @@ mariadb_install_k8s() {
         "" \
         "Release:    ${MDB_HELM_RELEASE}" \
         "Namespace:  ${MDB_NAMESPACE}" \
-        "Database:   ${MDB_DB}" \
-        "User:       ${MDB_USER}" \
+        "Database:   ${shown_db}" \
+        "User:       ${shown_user}" \
         "" \
         "Use 'port-forward' or 'connect' from the menu to access it."
 }

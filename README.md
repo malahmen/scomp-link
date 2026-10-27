@@ -45,6 +45,8 @@ Scomp-Link comes with several ready-to-use scripts organized by category. Each l
 
 All database scripts follow the same pattern: Docker, kind, or K8s target (picked at runtime), multiple named instances (container name or namespace/release prompted per session), install/status/connect/uninstall actions plus a K8s `port-forward` toggle. Exceptions: Qdrant has `health-check` instead of `connect`; Redis adds `list-queues`. K8s connect/port-forward paths use `nc` for readiness checks.
 
+Credentials are asked for (or generated, if left empty) only for **new** data. Recreating a container on a kept data volume, or upgrading an existing Helm release, keeps the credentials the data was created with - read back from the old container, or reused with `helm upgrade --reuse-values` - because the images apply them only to an empty data directory and would ignore new ones. A volume whose container is gone asks for the existing credentials instead of generating any. The same holds for Grafana's admin, Harbor's admin password and n8n's encryption key.
+
 | Script                                    | Targets      | Description                                    |
 | ----------------------------------------- | ------------ | ---------------------------------------------- |
 | [`postgres.sh`](docs/scripts/postgres.md) | Docker · K8s | PostgreSQL - install, connect, manage          |
@@ -360,6 +362,7 @@ scomp-link/
 │   ├── test-lmstudio.sh              # the lmstudio bench (fake server, recording lms)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
 │   ├── test-protocol.sh              # the protocol front-end
+│   ├── test-service-credentials.sh   # the service scripts keep a kept volume's / release's credentials
 │   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end

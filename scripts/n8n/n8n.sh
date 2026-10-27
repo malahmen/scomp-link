@@ -189,12 +189,10 @@ n8n_install_docker() {
         --header "Timezone (leave empty for '${N8N_DEFAULT_TIMEZONE}'):") || true
     local timezone="${tz_input:-$N8N_DEFAULT_TIMEZONE}"
 
-    _prompt_encryption_key
-    _prompt_db_backend
-
     local image="n8nio/n8n:${N8N_IMAGE_TAG}"
     local volume="${N8N_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$N8N_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -208,11 +206,30 @@ n8n_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$N8N_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$N8N_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # n8n saves its encryption key in the volume (.n8n/config) on first start
+    # and refuses to start when N8N_ENCRYPTION_KEY differs from it - a new key
+    # on a kept volume breaks the instance and every stored credential. So on
+    # a kept volume the old container's key is carried over, or, with no
+    # container to read it from, none is passed and n8n uses the saved one
+    # (Kamino 174).
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        N8N_ENCRYPTION_KEY="$(_container_env "$old" N8N_ENCRYPTION_KEY)"
+        [[ -n "$N8N_ENCRYPTION_KEY" ]] \
+            || info "No key in the old container's env: n8n will use the one saved in '${volume}'."
+    else
+        _prompt_encryption_key
+    fi
+    _prompt_db_backend
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$N8N_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -223,11 +240,11 @@ n8n_install_docker() {
         run -d
         --name "$N8N_CONTAINER_NAME"
         -p "${N8N_PORT}:5678"
-        -e N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY"
         -e GENERIC_TIMEZONE="$timezone"
         -v "${volume}:/home/node/.n8n"
         --restart unless-stopped
     )
+    [[ -n "$N8N_ENCRYPTION_KEY" ]] && docker_args+=(-e N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY")
 
     if [[ "$N8N_DB_TYPE" == "postgresdb" ]]; then
         docker_args+=(
@@ -428,7 +445,32 @@ n8n_install_k8s() {
     _k8s_check_cluster || return 0
 
     _ensure_helm_repo "$N8N_HELM_REPO_NAME" "$N8N_HELM_REPO_URL"
-    _prompt_encryption_key
+
+    # An existing release keeps its encryption key: n8n saved it on its PVC
+    # and refuses to start with a different one, which would also make every
+    # stored credential unreadable. So an upgrade asks for none and reuses the
+    # release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${N8N_HELM_RELEASE}' already exists in '${N8N_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep encryption key, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing encryption key (helm --reuse-values)."
+    else
+        _prompt_encryption_key
+    fi
     _prompt_db_backend
 
     local storage_size
@@ -447,7 +489,6 @@ n8n_install_k8s() {
     local helm_args=(
         "$N8N_HELM_RELEASE" "$N8N_HELM_CHART"
         --namespace "$N8N_NAMESPACE"
-        --set config.n8n.encryptionKey="$N8N_ENCRYPTION_KEY"
         --set persistence.enabled=true
         --set persistence.size="$storage_size"
         --wait --timeout 5m
@@ -466,23 +507,8 @@ n8n_install_k8s() {
         )
     fi
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${N8N_HELM_RELEASE}' already exists in '${N8N_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
         if ! gum spin --spinner dot --title "Upgrading n8n..." -- \
             helm upgrade "${helm_args[@]}"; then
             warn "Upgrade failed. Check 'helm status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
@@ -490,6 +516,7 @@ n8n_install_k8s() {
         fi
         success "n8n upgraded."
     else
+        helm_args+=(--set config.n8n.encryptionKey="$N8N_ENCRYPTION_KEY")
         if ! gum spin --spinner dot --title "Installing n8n..." -- \
             helm install "${helm_args[@]}"; then
             warn "Install failed. Check 'helm status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."

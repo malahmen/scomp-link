@@ -224,12 +224,10 @@ mongodb_install_docker() {
         --header "Host port (leave empty for ${MNG_DEFAULT_PORT}):") || true
     MNG_PORT="${port_input:-$MNG_DEFAULT_PORT}"
 
-    _prompt_root_credentials
-    _prompt_db_credentials
-
     local image="mongo:${MNG_IMAGE_TAG}"
     local volume="${MNG_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$MNG_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -243,11 +241,34 @@ mongodb_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$MNG_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$MNG_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # The image applies MONGO_INITDB_* (and runs the app-user init script) only
+    # on an empty data dir: on a kept volume the old root and app credentials
+    # stay in force, so they are carried over, not asked for again (Kamino
+    # 174). The root pair is required - with it the image starts mongod with
+    # --auth. Read before the old container is removed.
+    local kept=false
+    if docker volume inspect "$volume" &>/dev/null; then
+        kept=true
+        _kept_data_notice "$volume" "$old"
+        _keep_credential MNG_ROOT_USER         "$old" MONGO_INITDB_ROOT_USERNAME "root username" "=${MNG_DEFAULT_ROOT_USER}" \
+            && _keep_credential MNG_ROOT_PASSWORD "$old" MONGO_INITDB_ROOT_PASSWORD "root password" "secret" \
+            && _keep_credential MNG_DB            "$old" MONGO_INITDB_DATABASE      "database name" "=${MNG_DEFAULT_DB}" \
+            && _keep_credential MNG_USER          "$old" SCOMP_APP_USERNAME         "app username"  "?" \
+            && _keep_credential MNG_PASSWORD      "$old" SCOMP_APP_PASSWORD         "app password"  "secret?" \
+            || { warn "Cancelled: the existing root password is needed (the data keeps it)."; return; }
+    else
+        _prompt_root_credentials
+        _prompt_db_credentials
+    fi
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$MNG_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -268,17 +289,18 @@ mongodb_install_docker() {
     # created by an init script on first start. Its credentials are also kept in
     # the container env (alongside MONGO_INITDB_ROOT_*) so connect can reuse them.
     local init_dir=""
-    if [[ -n "$MNG_USER" && -n "$MNG_PASSWORD" ]]; then
+    if [[ "$kept" == true ]]; then
+        # No init script: it would not run on kept data. The app user's
+        # existing credentials stay in the env for connect.
+        [[ -n "$MNG_USER" ]] && docker_args+=(-e SCOMP_APP_USERNAME="$MNG_USER")
+        [[ -n "$MNG_PASSWORD" ]] && docker_args+=(-e SCOMP_APP_PASSWORD="$MNG_PASSWORD")
+    elif [[ -n "$MNG_USER" && -n "$MNG_PASSWORD" ]]; then
         if init_dir=$(_docker_write_init_script); then
             docker_args+=(
                 -e SCOMP_APP_USERNAME="$MNG_USER"
                 -e SCOMP_APP_PASSWORD="$MNG_PASSWORD"
                 -v "${init_dir}:/docker-entrypoint-initdb.d:ro"
             )
-            if docker volume inspect "$volume" &>/dev/null 2>&1; then
-                warn "Volume '${volume}' already exists — init scripts only run on an empty data dir,"
-                warn "so app user '${MNG_USER}' will not be (re)created. Remove the volume for a fresh init."
-            fi
         else
             init_dir=""
             warn "Database/username/password contain control characters — skipping app user init script."
@@ -316,7 +338,9 @@ mongodb_install_docker() {
         "Root user:  ${MNG_ROOT_USER}" \
         "Port:       localhost:${MNG_PORT}" \
         "Volume:     ${volume}"
-    [[ -n "$init_dir" ]] && info "App user init script: ${init_dir}/create-app-user.js"
+    # An if, not `[[ ]] && info`: as the last command that would make the
+    # function return 1 without an init script, and set -e end the script.
+    if [[ -n "$init_dir" ]]; then info "App user init script: ${init_dir}/create-app-user.js"; fi
 }
 
 mongodb_status_docker() {
@@ -476,8 +500,31 @@ mongodb_install_k8s() {
     header "Install MongoDB — Kubernetes"
     _k8s_check_cluster || return 0
 
-    _prompt_root_credentials
-    _prompt_db_credentials
+    # An existing release keeps its credentials: the database in its PVC was
+    # initialised with them and ignores new ones, so an upgrade asks for none
+    # and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${MNG_HELM_RELEASE}' already exists in '${MNG_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing credentials (helm --reuse-values): the database in its volume keeps the ones it was created with."
+    else
+        _prompt_root_credentials
+        _prompt_db_credentials
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -495,41 +542,30 @@ mongodb_install_k8s() {
         "$MNG_HELM_RELEASE" "$MNG_HELM_CHART"
         --namespace "$MNG_NAMESPACE"
         --set fullnameOverride="$MNG_HELM_RELEASE"
-        --set settings.rootUsername="$MNG_ROOT_USER"
-        --set settings.rootPassword="$MNG_ROOT_PASSWORD"
-        --set userDatabase.name="$MNG_DB"
-        --set userDatabase.user="$MNG_USER"
-        --set userDatabase.password="$MNG_PASSWORD"
         --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${MNG_HELM_RELEASE}' already exists in '${MNG_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading MongoDB via Helm..." -- \
             helm upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${MNG_NAMESPACE}"
     else
+        helm_args+=(
+            --set settings.rootUsername="$MNG_ROOT_USER"
+            --set settings.rootPassword="$MNG_ROOT_PASSWORD"
+            --set userDatabase.name="$MNG_DB"
+            --set userDatabase.user="$MNG_USER"
+            --set userDatabase.password="$MNG_PASSWORD"
+        )
         gum spin --spinner dot --title "Installing MongoDB via Helm (may take a few minutes)..." -- \
             helm install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl get pods -n ${MNG_NAMESPACE}"
     fi
 
+    local shown_db="$MNG_DB" shown_user="$MNG_USER" shown_root="$MNG_ROOT_USER"
+    [[ "$upgrade" == true ]] && shown_db="(unchanged)" shown_user="(unchanged)" shown_root="(unchanged)"
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
         --align center --width 60 --margin "1 2" --padding "1 4" \
@@ -537,9 +573,9 @@ mongodb_install_k8s() {
         "" \
         "Release:    ${MNG_HELM_RELEASE}" \
         "Namespace:  ${MNG_NAMESPACE}" \
-        "Database:   ${MNG_DB}" \
-        "User:       ${MNG_USER}" \
-        "Root user:  ${MNG_ROOT_USER}" \
+        "Database:   ${shown_db}" \
+        "User:       ${shown_user}" \
+        "Root user:  ${shown_root}" \
         "" \
         "Use 'port-forward' or 'connect' from the menu to access it."
 }

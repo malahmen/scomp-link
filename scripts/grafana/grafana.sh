@@ -352,18 +352,12 @@ grafana_install_docker() {
         --header "Host port (leave empty for ${GRF_DEFAULT_PORT}):") || true
     GRF_PORT="${port_input:-$GRF_DEFAULT_PORT}"
 
-    _prompt_admin_credentials
-
-    local plugins_input
-    plugins_input=$(gum input \
-        --placeholder "leave empty for no extra plugins" \
-        --header "Plugins to pre-install (comma-separated, e.g. grafana-piechart-panel):") || true
-
     local image="grafana/grafana:${GRF_IMAGE_TAG}"
     local volume="${GRF_CONTAINER_NAME}-data"
     local prov_dir
     prov_dir=$(_docker_provisioning_dir)
 
+    local old=""
     if _docker_container_exists "$GRF_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -377,11 +371,30 @@ grafana_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$GRF_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$GRF_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # GF_SECURITY_ADMIN_* only create the admin in an empty grafana.db: on a
+    # kept volume the old admin password stays in force, so nothing new is
+    # asked for; the old container's values are carried over (Kamino 174).
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        GRF_ADMIN_USER="$(_container_env "$old" GF_SECURITY_ADMIN_USER)"
+        GRF_ADMIN_PASSWORD="$(_container_env "$old" GF_SECURITY_ADMIN_PASSWORD)"
+    else
+        _prompt_admin_credentials
+    fi
+
+    local plugins_input
+    plugins_input=$(gum input \
+        --placeholder "leave empty for no extra plugins" \
+        --header "Plugins to pre-install (comma-separated, e.g. grafana-piechart-panel):") || true
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$GRF_CONTAINER_NAME"
     fi
 
     _docker_write_datasources
@@ -394,11 +407,11 @@ grafana_install_docker() {
         run -d
         --name "$GRF_CONTAINER_NAME"
         -p "${GRF_PORT}:3000"
-        -e "GF_SECURITY_ADMIN_USER=${GRF_ADMIN_USER}"
-        -e "GF_SECURITY_ADMIN_PASSWORD=${GRF_ADMIN_PASSWORD}"
         -v "${volume}:/var/lib/grafana"
         --restart unless-stopped
     )
+    [[ -n "$GRF_ADMIN_USER" ]]     && docker_args+=(-e "GF_SECURITY_ADMIN_USER=${GRF_ADMIN_USER}")
+    [[ -n "$GRF_ADMIN_PASSWORD" ]] && docker_args+=(-e "GF_SECURITY_ADMIN_PASSWORD=${GRF_ADMIN_PASSWORD}")
 
     [[ -n "$plugins_input" ]] && docker_args+=(-e "GF_INSTALL_PLUGINS=${plugins_input}")
 
@@ -431,7 +444,7 @@ grafana_install_docker() {
         "Grafana running" \
         "" \
         "Web UI:   http://localhost:${GRF_PORT}" \
-        "Username: ${GRF_ADMIN_USER}" \
+        "Username: ${GRF_ADMIN_USER:-(unchanged)}" \
         "Volume:   ${volume}"
 }
 
@@ -595,7 +608,31 @@ grafana_install_k8s() {
     _k8s_check_cluster || return 0
 
     _ensure_helm_repo "$GRF_HELM_REPO_NAME" "$GRF_HELM_REPO_URL"
-    _prompt_admin_credentials
+
+    # An existing release keeps its admin credentials: Grafana created the
+    # admin with them in the grafana.db on its PVC and ignores new ones, so an
+    # upgrade asks for none and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${GRF_HELM_RELEASE}' already exists in '${GRF_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing admin credentials (helm --reuse-values)."
+    else
+        _prompt_admin_credentials
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -626,8 +663,6 @@ grafana_install_k8s() {
     local helm_args=(
         "$GRF_HELM_RELEASE" "$GRF_HELM_CHART"
         --namespace "$GRF_NAMESPACE"
-        --set "adminUser=${GRF_ADMIN_USER}"
-        --set "adminPassword=${GRF_ADMIN_PASSWORD}"
         --set persistence.enabled=true
         --set persistence.size="$storage_size"
         --wait --timeout 5m
@@ -641,23 +676,13 @@ grafana_install_k8s() {
         helm_args+=(-f "$values_file")
     fi
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${GRF_HELM_RELEASE}' already exists in '${GRF_NAMESPACE}'."
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
+    else
+        helm_args+=(--set "adminUser=${GRF_ADMIN_USER}" --set "adminPassword=${GRF_ADMIN_PASSWORD}")
+    fi
 
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
         if ! gum spin --spinner dot --title "Upgrading Grafana..." -- \
             helm upgrade "${helm_args[@]}"; then
             warn "Upgrade failed. Check 'helm status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
@@ -674,9 +699,16 @@ grafana_install_k8s() {
     fi
 
     echo ""
-    gum style --foreground "$CYAN" \
-        "Use 'connect' to open the web UI via port-forward." \
-        "Login: ${GRF_ADMIN_USER} / ${GRF_ADMIN_PASSWORD}"
+    if [[ "$upgrade" == true ]]; then
+        gum style --foreground "$CYAN" \
+            "Use 'connect' to open the web UI via port-forward." \
+            "Login: unchanged - the admin credentials the release was installed with" \
+            "(Secret '${GRF_HELM_RELEASE}' in '${GRF_NAMESPACE}', key admin-password)."
+    else
+        gum style --foreground "$CYAN" \
+            "Use 'connect' to open the web UI via port-forward." \
+            "Login: ${GRF_ADMIN_USER} / ${GRF_ADMIN_PASSWORD}"
+    fi
 }
 
 grafana_status_k8s() {
