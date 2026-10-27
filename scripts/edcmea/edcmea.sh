@@ -41,7 +41,8 @@ EDCMEA_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/edcmea"
 ENGINE=""
 
 # The schedule: a systemd user timer, or a crontab line carrying this marker.
-UNIT_DIR="${SCOMP_EDCMEA_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
+# UNIT_DIR is set by _use_systemd, from the user manager's own environment.
+UNIT_DIR=""
 UNIT="edcmea-check"
 CRON_MARK="# edcmea (scomp-link)"
 LOG_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/edcmea/check.log"
@@ -209,7 +210,16 @@ action_settings() {
 # -----------------------------------------------------------------------------
 # Schedule
 # -----------------------------------------------------------------------------
-_use_systemd() { [[ "$(uname -s)" == Linux ]] && command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; }
+_use_systemd() {
+    [[ "$(uname -s)" == Linux ]] && command -v systemctl &>/dev/null || return 1
+    local env xdg
+    env="$(systemctl --user show-environment 2>/dev/null)" || return 1
+    # Where the user manager looks for units: under its XDG_CONFIG_HOME, which
+    # need not be this shell's (a unit written beside this shell's is never seen).
+    xdg="$(sed -n 's/^XDG_CONFIG_HOME=//p' <<< "$env" | head -1)"
+    [[ "$xdg" == /* ]] || xdg="$HOME/.config"
+    UNIT_DIR="${SCOMP_EDCMEA_UNIT_DIR:-${xdg}/systemd/user}"
+}
 
 # crontab -l, or nothing when the user has no crontab yet. Any other failure
 # returns 1: read as an empty table, it would have the rewrite wipe every

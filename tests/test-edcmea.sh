@@ -80,6 +80,7 @@ EOF
 cat > "$T/bin/systemctl" <<EOF
 #!/usr/bin/env bash
 echo "systemctl \$*" >> "$T/calls"
+[[ "\$*" == "--user show-environment" ]] && printf 'HOME=%s\nXDG_CONFIG_HOME=%s\n' "$T/home" "$T/manager config"
 [[ "\$*" == "--user is-active edcmea-check.timer" ]] && echo active
 exit 0
 EOF
@@ -91,6 +92,14 @@ run() {
     PATH="$T/bin:$PYDIR:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" EDCMEA_DIR="$ENG" \
         EDCMEA_PYTHON="${STUB_PYTHON-$PYDIR/python3}" \
         XDG_STATE_HOME="$T/xstate" SCOMP_EDCMEA_UNIT_DIR="$T/units" "$BASH" "$FRONT" > "$T/out" 2>&1 < /dev/null
+}
+
+# run, without the test's unit folder: the front-end finds it itself.
+run_unit_default() {
+    printf '%s\n' "$@" > "$T/answers"; echo 0 > "$T/state"; : > "$T/calls"
+    PATH="$T/bin:$PYDIR:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" EDCMEA_DIR="$ENG" \
+        EDCMEA_PYTHON="$PYDIR/python3" XDG_STATE_HOME="$T/xstate" XDG_CONFIG_HOME="$T/shell config" \
+        "$BASH" "$FRONT" > "$T/out" 2>&1 < /dev/null
 }
 
 # The marked crontab line's command as cron runs it: % up to the first
@@ -206,5 +215,10 @@ check "...enabled and started" has "systemctl --user enable --now edcmea-check.t
 STUB_UNAME=Linux run schedule "stop running it" Quit
 check "stopping disables it and removes the units" test ! -e "$T/units/edcmea-check.timer"
 check "...through systemctl" has "systemctl --user disable --now edcmea-check.timer" "$T/calls"
+STUB_UNAME=Linux run_unit_default schedule "run it every few minutes" 15 Quit
+check "the unit goes where the user manager looks (its XDG_CONFIG_HOME, not this shell's)" \
+    test -f "$T/manager config/systemd/user/edcmea-check.service"
+STUB_UNAME=Linux run_unit_default schedule "stop running it" Quit
+check "...and is removed from there" test ! -e "$T/manager config/systemd/user/edcmea-check.timer"
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi
