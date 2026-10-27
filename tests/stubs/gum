@@ -64,7 +64,19 @@ case "$cmd" in
         done
         printf '%s\n' "${a//\\n/$'\n'}" ;;
     confirm)
+        # "enter" is the user pressing Enter on the highlighted button: gum's
+        # default, which is yes unless --default=false says otherwise (Kamino
+        # item 178). Without it the stub could not see a default at all, and a
+        # destructive prompt that flipped to default-yes passed every test.
+        dflt=yes
+        for f in "$@"; do
+            case "$f" in
+                --default|--default=true) dflt=yes ;;
+                --default=false)          dflt=no ;;
+            esac
+        done
         a="$(_pop)"; printf '<confirm> %s -> %s\n' "$*" "$a" >&2
+        [[ "$a" == enter ]] && { a="$dflt"; printf '<confirm> (enter: the default, %s)\n' "$a" >&2; }
         case "$a" in
             yes) exit 0 ;;
             esc) exit 130 ;;   # what gum returns on Esc/Ctrl-C, which _ask reads as "cancelled"
