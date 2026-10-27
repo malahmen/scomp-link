@@ -41,10 +41,16 @@ EDCMEA_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/scomp-link/edcmea"
 ENGINE=""
 
 # The schedule: a systemd user timer, or a crontab line carrying this marker.
-UNIT_DIR="${SCOMP_EDCMEA_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
+# UNIT_DIR is set by _use_systemd, from the user manager's own environment.
+UNIT_DIR=""
 UNIT="edcmea-check"
 CRON_MARK="# edcmea (scomp-link)"
 LOG_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/edcmea/check.log"
+
+# What a scheduled run is given, resolved when the schedule is written
+# (schedule_resolve): cron runs with PATH=/usr/bin:/bin and none of this
+# shell's XDG_*/EDCMEA_* variables, the systemd user manager with its own.
+RUN_PYTHON="" RUN_ENTRY="" RUN_POP="" RUN_CONFIG_DIR="" RUN_STATE_DIR="" RUN_QUIET=""
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -204,7 +210,33 @@ action_settings() {
 # -----------------------------------------------------------------------------
 # Schedule
 # -----------------------------------------------------------------------------
-_use_systemd() { [[ "$(uname -s)" == Linux ]] && command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; }
+_use_systemd() {
+    [[ "$(uname -s)" == Linux ]] && command -v systemctl &>/dev/null || return 1
+    local env xdg
+    env="$(systemctl --user show-environment 2>/dev/null)" || return 1
+    # Where the user manager looks for units: under its XDG_CONFIG_HOME, which
+    # need not be this shell's (a unit written beside this shell's is never seen).
+    xdg="$(sed -n 's/^XDG_CONFIG_HOME=//p' <<< "$env" | head -1)"
+    [[ "$xdg" == /* ]] || xdg="$HOME/.config"
+    UNIT_DIR="${SCOMP_EDCMEA_UNIT_DIR:-${xdg}/systemd/user}"
+}
+
+# crontab -l, or nothing when the user has no crontab yet. Any other failure
+# returns 1: read as an empty table, it would have the rewrite wipe every
+# line the user has.
+read_crontab() {
+    local out err rc=0
+    err="$(mktemp)"
+    out="$(crontab -l 2>"$err")" || rc=$?
+    if (( rc == 0 )); then
+        rm -f "$err"; [[ -z "$out" ]] || printf '%s\n' "$out"; return 0
+    fi
+    if grep -q '^no crontab for' "$err"; then
+        rm -f "$err"; return 0
+    fi
+    warn "crontab -l failed (exit ${rc}): $(head -c 300 "$err") - the crontab is left as it is."
+    rm -f "$err"; return 1
+}
 
 schedule_state() {
     if _use_systemd; then
@@ -214,9 +246,54 @@ schedule_state() {
             echo "not scheduled"
         fi
     else
-        local line; line="$(crontab -l 2>/dev/null | grep -F "$CRON_MARK" || true)"
-        [[ -n "$line" ]] && echo "crontab: ${line%% /*}" || echo "not scheduled"
+        local table line
+        table="$(read_crontab 2>/dev/null)" || { echo "unknown (crontab -l failed)"; return 0; }
+        line="$(grep -F "$CRON_MARK" <<< "$table" | head -1 || true)"
+        [[ -n "$line" ]] && echo "crontab: $(awk '{print $1, $2, $3, $4, $5}' <<< "$line")" || echo "not scheduled"
     fi
+}
+
+# Everything a scheduled run needs, as absolute paths, from this session:
+# python3 ($EDCMEA_PYTHON first, as edcmea.sh does), the engine's entry point,
+# pop and the two folders as the engine resolves them here. 1 if one is
+# missing - a schedule without pop would fail on its first alert.
+schedule_resolve() {
+    load_config
+    local py="${EDCMEA_PYTHON:-python3}" value
+    RUN_PYTHON="$(command -v "$py" 2>/dev/null || true)"
+    [[ "$RUN_PYTHON" == /* ]] || { warn "No ${py} found - EDCMEA needs Python 3.9+."; return 1; }
+    RUN_ENTRY="$(dirname "$ENGINE")/edcmea.py"
+    [[ -f "$RUN_ENTRY" ]] || { warn "No edcmea.py beside ${ENGINE} - update EDCMEA."; return 1; }
+    RUN_POP="$(cfg pop)"
+    [[ "$RUN_POP" == /* ]] || {
+        warn "pop is not installed here (brew install pop, or set EDCMEA_POP to its full path) - a schedule would fail on its first alert."
+        return 1
+    }
+    value="$(cfg config_file)"; RUN_CONFIG_DIR="$(dirname "$value")"
+    value="$(cfg state_file)";  RUN_STATE_DIR="$(dirname "$value")"
+    [[ "$RUN_CONFIG_DIR" == /* && "$RUN_STATE_DIR" == /* ]] || { warn "The engine did not say where its files are."; return 1; }
+    LOG_FILE="${RUN_STATE_DIR}/check.log"
+    # --quiet (alerts and errors only) where the engine has it: a cron log
+    # otherwise grows by a line per rule per run, ~6 MB a year each.
+    local help; help="$(engine check --help 2>/dev/null || true)"
+    RUN_QUIET=""; [[ "$help" != *--quiet* ]] || RUN_QUIET=1
+    return 0
+}
+
+# One word of a crontab line: single-quoted for /bin/sh, then every % escaped
+# - cron turns an unescaped % into a newline (and drops the backslash).
+_cron_word() {
+    local q="'${1//\'/\'\\\'\'}'"
+    printf '%s' "${q//%/\\%}"
+}
+
+# One quoted word of a unit file: \ and " escaped, % doubled (a specifier
+# otherwise); with `exec`, $ doubled too (ExecStart= expands $VAR).
+_unit_word() {
+    local w="$1"
+    w="${w//\\/\\\\}"; w="${w//\"/\\\"}"; w="${w//%/%%}"
+    [[ "${2:-}" != exec ]] || w="${w//\$/\$\$}"
+    printf '"%s"' "$w"
 }
 
 render_service() {
@@ -227,8 +304,24 @@ Description=EDCMEA: check Elite Dangerous markets once
 
 [Service]
 Type=oneshot
-ExecStart=${ENGINE} check
+Environment=$(_unit_word "EDCMEA_POP=${RUN_POP}")
+Environment=$(_unit_word "EDCMEA_CONFIG_DIR=${RUN_CONFIG_DIR}")
+Environment=$(_unit_word "EDCMEA_STATE_DIR=${RUN_STATE_DIR}")
+ExecStart=$(_unit_word "$RUN_PYTHON" exec) $(_unit_word "$RUN_ENTRY" exec) check
+# check stops asking Ardent after its run_deadline_minutes; this is the backstop.
+TimeoutStartSec=15min
+# SIGTERM to check alone: it finishes recording an email being sent, and pop
+# is not killed half-way through sending it.
+KillMode=mixed
+TimeoutStopSec=150
 EOF
+}
+
+render_cron_line() {   # render_cron_line MINUTES
+    printf '*/%s * * * * EDCMEA_POP=%s EDCMEA_CONFIG_DIR=%s EDCMEA_STATE_DIR=%s %s %s check%s >> %s 2>&1 %s' \
+        "$1" "$(_cron_word "$RUN_POP")" "$(_cron_word "$RUN_CONFIG_DIR")" "$(_cron_word "$RUN_STATE_DIR")" \
+        "$(_cron_word "$RUN_PYTHON")" "$(_cron_word "$RUN_ENTRY")" "${RUN_QUIET:+ --quiet}" \
+        "$(_cron_word "$LOG_FILE")" "$CRON_MARK"
 }
 
 render_timer() {   # render_timer MINUTES
@@ -248,7 +341,11 @@ EOF
 }
 
 schedule_install() {   # schedule_install MINUTES
-    local every="$1"
+    local every="$1" path
+    schedule_resolve || return 1
+    for path in "$RUN_PYTHON" "$RUN_ENTRY" "$RUN_POP" "$RUN_CONFIG_DIR" "$RUN_STATE_DIR"; do
+        [[ "$path" != *$'\n'* ]] || { warn "A path with a line break cannot be scheduled: ${path}"; return 1; }
+    done
     if _use_systemd; then
         mkdir -p "$UNIT_DIR"
         render_service > "${UNIT_DIR}/${UNIT}.service"
@@ -257,11 +354,17 @@ schedule_install() {   # schedule_install MINUTES
         systemctl --user enable --now "${UNIT}.timer" || { warn "Could not start the timer."; return 1; }
         success "Every ${every} minutes (systemd user timer). Logs: journalctl --user -u ${UNIT}"
     else
+        for path in "$RUN_PYTHON" "$RUN_ENTRY" "$RUN_POP" "$RUN_CONFIG_DIR" "$RUN_STATE_DIR" "$LOG_FILE"; do
+            # cron reads \% as % and leaves other backslashes: one before a % cannot be written.
+            [[ "$path" != *\\* ]] || { warn "A path with a backslash cannot go into a crontab line: ${path}"; return 1; }
+        done
         mkdir -p "$(dirname "$LOG_FILE")"
-        local line="*/${every} * * * * ${ENGINE} check >> ${LOG_FILE} 2>&1 ${CRON_MARK}" current
+        local line current
+        line="$(render_cron_line "$every")"
         # Read whole before writing: the user's own lines must survive.
-        current="$(crontab -l 2>/dev/null | grep -vF "$CRON_MARK" || true)"
-        { [[ -z "$current" ]] || printf '%s\n' "$current"; echo "$line"; } | crontab - \
+        current="$(read_crontab)" || return 1
+        current="$(grep -vF "$CRON_MARK" <<< "$current" || true)"
+        { [[ -z "$current" ]] || printf '%s\n' "$current"; printf '%s\n' "$line"; } | crontab - \
             || { warn "Could not write the crontab."; return 1; }
         success "Every ${every} minutes (crontab). Log: ${LOG_FILE}"
     fi
@@ -274,7 +377,8 @@ schedule_remove() {
         systemctl --user daemon-reload || true
     else
         local current
-        current="$(crontab -l 2>/dev/null | grep -vF "$CRON_MARK" || true)"
+        current="$(read_crontab)" || return 1
+        current="$(grep -vF "$CRON_MARK" <<< "$current" || true)"
         { [[ -z "$current" ]] || printf '%s\n' "$current"; } | crontab - || { warn "Could not write the crontab."; return 1; }
     fi
     success "No longer scheduled."
@@ -291,8 +395,8 @@ action_schedule() {
             [[ "$(cfg rules)" != 0 ]] || { warn "No watch rules yet - add one first."; return 0; }
             [[ -n "$(cfg email_to)" ]] || { warn "No recipient yet - set one under Email first."; return 0; }
             every=$(gum choose 5 10 15 30 60 --header "Every how many minutes?" --selected 10) || return 0
-            [[ -n "$every" ]] && schedule_install "$every" ;;
-        stop*) schedule_remove ;;
+            [[ -n "$every" ]] && { schedule_install "$every" || true; } ;;
+        stop*) schedule_remove || true ;;
         *) return 0 ;;
     esac
 }
