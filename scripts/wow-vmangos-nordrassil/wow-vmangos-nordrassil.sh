@@ -753,9 +753,32 @@ action_restore() {
         warn "Only the tables in the dump are replaced; the rest of '${intodb}' is left alone."
     fi
 
+    # Asked only once the engine has said what it would overwrite (Kamino
+    # item 178): the question used to come first, and the engine's
+    # 'OVERWRITES:' and 'target:' lines only after the yes - a blind
+    # confirmation. Without --yes the engine's restore reads the dump,
+    # resolves the target, prints both lines and refuses before it touches
+    # anything, so it is run that way first and its own words are what the
+    # operator says yes to. No OVERWRITES line means it refused for another
+    # reason (an unreadable file, --db on a self-describing dump, no target
+    # reachable), and there is nothing to confirm.
+    info "What this restore would do (nothing is changed yet):"
+    local preview
+    trap ':' INT
+    # Its closing "refusing without --yes" is the expected end of a preview,
+    # not something to show the operator as an error.
+    preview="$(engine restore --file "$file" "${dbflag[@]}" 2>&1 \
+               | grep --line-buffered -v 'refusing without --yes' | tee /dev/stderr)" || true
+    trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
+    local overwrites target
+    overwrites="$(grep -m1 -E '\[warn\].{0,12}OVERWRITES:' <<<"$preview" | sed -E 's/^.*(OVERWRITES:)/\1/' || true)"
+    target="$(grep -m1 -E '\[warn\].{0,12}target:' <<<"$preview" | sed -E 's/^.*(target:)/\1/' || true)"
+    [[ -n "$overwrites" ]] || { warn "The engine would not restore this (above); nothing was changed."; return 0; }
+
     warn "RESTORE REPLACES DATA on ${PROFILE_LABEL}. It cannot be undone."
-    warn "The engine prints which databases the dump will overwrite before it starts."
-    gum confirm --default=false "Restore $(basename "$file") onto ${PROFILE_LABEL}?" \
+    gum confirm --default=false "Restore $(basename "$file") onto ${PROFILE_LABEL}?
+${target:+${target}
+}${overwrites}" \
         || { info "Cancelled."; return 0; }
     engine_foreground restore --file "$file" "${dbflag[@]}" --yes
 }

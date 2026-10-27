@@ -368,7 +368,9 @@ scomp-link/
 │   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
-│   └── test-thermal-exhaust-port.sh  # the thermal-exhaust-port front-end
+│   ├── test-thermal-exhaust-port.sh  # the thermal-exhaust-port front-end
+│   ├── test-wow-cmangos-teldrassil.sh # the teldrassil front-end (fake engine)
+│   └── test-wow-vmangos-nordrassil.sh # the nordrassil front-end's restore (fake engine)
 │
 └── scripts/                          # All runnable scripts live here
     │

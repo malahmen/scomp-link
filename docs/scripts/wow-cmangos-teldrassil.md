@@ -88,7 +88,11 @@ it for such a profile.
 
 `tests/test-wow-cmangos-teldrassil.sh` drives the menus through the gum stub
 against a fake engine that records each call: the password reaches the engine
-on stdin and in no argument; declined actions call nothing; the population is
+on stdin and in no argument; every confirmation is driven declined, with
+Enter (the stub answers the prompt's `--default`, so a prompt that flipped to
+default-yes fails) and confirmed, and declined or Enter calls nothing - or,
+for an optional `--force`/`--update`/`--clean`, runs the step without it; a
+console command of several words reaches the engine as one argument; the population is
 replaced only after both yeses, and the database deleted only after both of
 its own; the install wizard saves its answers and installs only when
 confirmed; LLM chat is switched on with exactly the fields given, a key as a
