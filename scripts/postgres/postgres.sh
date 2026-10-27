@@ -29,6 +29,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -110,7 +112,7 @@ _prompt_db_credentials() {
         --header "Password (leave empty to auto-generate):") || true
 
     if [[ -z "$PG_PASSWORD" ]]; then
-        PG_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
+        PG_PASSWORD=$(_gen_secret 20)
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
             --align center --width 60 --margin "1 0" --padding "0 4" \
@@ -140,11 +142,10 @@ postgres_install_docker() {
         --header "Host port (leave empty for ${PG_DEFAULT_PORT}):") || true
     PG_PORT="${port_input:-$PG_DEFAULT_PORT}"
 
-    _prompt_db_credentials
-
     local image="postgres:${PG_IMAGE_TAG}"
     local volume="${PG_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$PG_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -158,11 +159,27 @@ postgres_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$PG_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$PG_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # The image applies POSTGRES_* only to an empty data dir: on a kept volume
+    # the old credentials stay in force, so they are carried over, not asked
+    # for again (Kamino 174). Read before the old container is removed.
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        _keep_credential PG_DB       "$old" POSTGRES_DB       "database name" "=${PG_DEFAULT_DB}" \
+            && _keep_credential PG_USER     "$old" POSTGRES_USER     "username"      "=${PG_DEFAULT_USER}" \
+            && _keep_credential PG_PASSWORD "$old" POSTGRES_PASSWORD "password"      "secret?" \
+            || { warn "Cancelled."; return; }
+    else
+        _prompt_db_credentials
+    fi
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$PG_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -299,32 +316,31 @@ postgres_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$PG_HELM_RELEASE" -n "$PG_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$PG_HELM_RELEASE" -n "$PG_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$PG_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$PG_NAMESPACE" &>/dev/null; then
         info "Namespace '${PG_NAMESPACE}' already exists."
     else
         info "Creating namespace '${PG_NAMESPACE}'..."
-        kubectl create namespace "$PG_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$PG_NAMESPACE"
     fi
 }
 
-# Switches to the selected context and verifies the cluster is reachable.
-# Must be called at the start of every K8s operation.
+# Sets KUBE_CONTEXT to the chosen context and verifies the cluster is
+# reachable. Must be called at the start of every K8s operation.
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -334,7 +350,31 @@ _k8s_check_cluster() {
 postgres_install_k8s() {
     header "Install PostgreSQL — Kubernetes"
     _k8s_check_cluster || return 0
-    _prompt_db_credentials
+
+    # An existing release keeps its credentials: the database in its PVC was
+    # initialised with them and ignores new ones, so an upgrade asks for none
+    # and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${PG_HELM_RELEASE}' already exists in '${PG_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing credentials (helm --reuse-values): the database in its volume keeps the ones it was created with."
+    else
+        _prompt_db_credentials
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -352,40 +392,29 @@ postgres_install_k8s() {
         "$PG_HELM_RELEASE" "$PG_HELM_CHART"
         --namespace "$PG_NAMESPACE"
         --set fullnameOverride="$PG_HELM_RELEASE"
-        --set settings.superuserPassword="$PG_PASSWORD"
-        --set userDatabase.name="$PG_DB"
-        --set userDatabase.user="$PG_USER"
-        --set userDatabase.password="$PG_PASSWORD"
         --set storage.requestedSize="$storage_size"
         --wait --timeout 5m
     )
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${PG_HELM_RELEASE}' already exists in '${PG_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading PostgreSQL via Helm..." -- \
-            helm upgrade "${helm_args[@]}" \
-            || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${PG_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
+            || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${PG_NAMESPACE}"
     else
+        helm_args+=(
+            --set settings.superuserPassword="$PG_PASSWORD"
+            --set userDatabase.name="$PG_DB"
+            --set userDatabase.user="$PG_USER"
+            --set userDatabase.password="$PG_PASSWORD"
+        )
         gum spin --spinner dot --title "Installing PostgreSQL via Helm (may take a few minutes)..." -- \
-            helm install "${helm_args[@]}" \
-            || error_exit "Helm install failed. Check: kubectl get pods -n ${PG_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
+            || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${PG_NAMESPACE}"
     fi
 
+    local shown_db="$PG_DB" shown_user="$PG_USER"
+    [[ "$upgrade" == true ]] && shown_db="(unchanged)" shown_user="(unchanged)"
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
         --align center --width 60 --margin "1 2" --padding "1 4" \
@@ -393,8 +422,8 @@ postgres_install_k8s() {
         "" \
         "Release:    ${PG_HELM_RELEASE}" \
         "Namespace:  ${PG_NAMESPACE}" \
-        "Database:   ${PG_DB}" \
-        "User:       ${PG_USER}" \
+        "Database:   ${shown_db}" \
+        "User:       ${shown_user}" \
         "" \
         "Use 'port-forward' or 'connect' from the menu to access it."
 }
@@ -409,15 +438,15 @@ postgres_status_k8s() {
     fi
 
     gum style --foreground "$CYAN" --bold "── Helm release ──"
-    helm status "$PG_HELM_RELEASE" -n "$PG_NAMESPACE" 2>/dev/null || true
+    helm --kube-context "$KUBE_CONTEXT" status "$PG_HELM_RELEASE" -n "$PG_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Pods ──"
-    kubectl get pods -n "$PG_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$PG_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Services ──"
-    kubectl get svc -n "$PG_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$PG_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
@@ -449,7 +478,7 @@ postgres_port_forward_k8s() {
         --header "Local port (leave empty for ${PG_DEFAULT_PORT}):") || true
     local port="${port_input:-$PG_DEFAULT_PORT}"
 
-    kubectl -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_PG_PF_PID"
 
     local attempts=0
@@ -499,7 +528,7 @@ postgres_connect_k8s() {
     db="${db:-$PG_DEFAULT_DB}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
     local pf_pid=$!
 
     # Wait for the port-forward to bind before handing off to psql.
@@ -540,7 +569,7 @@ postgres_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "Delete them manually to fully purge data:" \
-        "  kubectl delete pvc --all -n ${PG_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${PG_NAMESPACE}"
 
     if ! gum confirm "Uninstall PostgreSQL?"; then
         warn "Cancelled."
@@ -548,11 +577,11 @@ postgres_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$PG_HELM_RELEASE" -n "$PG_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$PG_HELM_RELEASE" -n "$PG_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${PG_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${PG_NAMESPACE}'..." -- \
-            kubectl delete namespace "$PG_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$PG_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

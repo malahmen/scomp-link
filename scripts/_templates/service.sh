@@ -104,13 +104,16 @@ foo_uninstall_docker() {
 # -----------------------------------------------------------------------------
 # Kubernetes target
 # -----------------------------------------------------------------------------
-_k8s_detect_installed() { helm status "$FOO_HELM_RELEASE" -n "$FOO_NAMESPACE" &>/dev/null 2>&1; }
-_k8s_ensure_namespace() { kubectl get namespace "$FOO_NAMESPACE" &>/dev/null || kubectl create namespace "$FOO_NAMESPACE"; }
+_k8s_detect_installed() { helm --kube-context "$KUBE_CONTEXT" status "$FOO_HELM_RELEASE" -n "$FOO_NAMESPACE" &>/dev/null 2>&1; }
+_k8s_ensure_namespace() { kubectl --context "$KUBE_CONTEXT" get namespace "$FOO_NAMESPACE" &>/dev/null || kubectl --context "$KUBE_CONTEXT" create namespace "$FOO_NAMESPACE"; }
 
+# Never `kubectl config use-context` (it changes the user's kubeconfig for every
+# terminal): every kubectl/helm call names --context/--kube-context
+# "$KUBE_CONTEXT" instead (Kamino 175).
 _k8s_check_cluster() {
-    local ctx="$TARGET_CONTEXT"; [[ "$TARGET_TYPE" == "kind" ]] && ctx="kind-${TARGET_CONTEXT}"
-    kubectl config use-context "$ctx" &>/dev/null || error_exit "Cannot switch to context '${ctx}'."
-    gum spin --spinner dot --title "Verifying cluster..." -- kubectl cluster-info &>/dev/null \
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
+    gum spin --spinner dot --title "Verifying cluster..." -- kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null \
         || { warn "Cannot reach cluster '${TARGET_CONTEXT}'."; return 1; }
 }
 
@@ -129,9 +132,9 @@ foo_install_k8s() {
     )
     if _k8s_detect_installed; then
         gum confirm "Release exists — upgrade?" || return
-        gum spin --spinner dot --title "Upgrading..." -- helm upgrade "${helm_args[@]}" || error_exit "upgrade failed."
+        gum spin --spinner dot --title "Upgrading..." -- helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" || error_exit "upgrade failed."
     else
-        gum spin --spinner dot --title "Installing..." -- helm install "${helm_args[@]}" || error_exit "install failed."
+        gum spin --spinner dot --title "Installing..." -- helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" || error_exit "install failed."
     fi
     success "Installed. Use port-forward / connect to reach it."
 }
@@ -139,7 +142,7 @@ foo_install_k8s() {
 foo_status_k8s() {
     header "Foo — Kubernetes Status"; _k8s_check_cluster || return 0
     _k8s_detect_installed || { warn "Not installed in '${FOO_NAMESPACE}'."; return; }
-    kubectl get pods,svc -n "$FOO_NAMESPACE"
+    kubectl --context "$KUBE_CONTEXT" get pods,svc -n "$FOO_NAMESPACE"
 }
 
 foo_port_forward_k8s() {
@@ -150,7 +153,7 @@ foo_port_forward_k8s() {
     fi
     local port; port=$(gum input --value "$FOO_DEFAULT_PORT" --header "Local port:") || return
     port="${port:-$FOO_DEFAULT_PORT}"
-    kubectl -n "$FOO_NAMESPACE" port-forward "svc/${FOO_HELM_RELEASE}" "${port}:${FOO_DEFAULT_PORT}" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$FOO_NAMESPACE" port-forward "svc/${FOO_HELM_RELEASE}" "${port}:${FOO_DEFAULT_PORT}" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_FOO_PF_PID"
     pf_is_running "$_FOO_PF_PID" && success "Port-forward: localhost:${port}" || { warn "Failed."; rm -f "$_FOO_PF_PID"; }
 }
@@ -159,7 +162,7 @@ foo_uninstall_k8s() {
     header "Uninstall Foo — Kubernetes"; _k8s_check_cluster || return 0
     _k8s_detect_installed || { warn "Not installed."; return; }
     gum confirm "Uninstall release '${FOO_HELM_RELEASE}'? (PVCs are NOT auto-removed)" || return
-    helm uninstall "$FOO_HELM_RELEASE" -n "$FOO_NAMESPACE" || true
+    helm --kube-context "$KUBE_CONTEXT" uninstall "$FOO_HELM_RELEASE" -n "$FOO_NAMESPACE" || true
     success "Uninstalled."
 }
 

@@ -31,6 +31,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -91,7 +93,7 @@ _prompt_admin_credentials() {
         --header "Admin password (leave empty to auto-generate):") || true
 
     if [[ -z "$GRF_ADMIN_PASSWORD" ]]; then
-        GRF_ADMIN_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
+        GRF_ADMIN_PASSWORD=$(_gen_secret 20)
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
             --align center --width 60 --margin "1 0" --padding "0 4" \
@@ -350,18 +352,12 @@ grafana_install_docker() {
         --header "Host port (leave empty for ${GRF_DEFAULT_PORT}):") || true
     GRF_PORT="${port_input:-$GRF_DEFAULT_PORT}"
 
-    _prompt_admin_credentials
-
-    local plugins_input
-    plugins_input=$(gum input \
-        --placeholder "leave empty for no extra plugins" \
-        --header "Plugins to pre-install (comma-separated, e.g. grafana-piechart-panel):") || true
-
     local image="grafana/grafana:${GRF_IMAGE_TAG}"
     local volume="${GRF_CONTAINER_NAME}-data"
     local prov_dir
     prov_dir=$(_docker_provisioning_dir)
 
+    local old=""
     if _docker_container_exists "$GRF_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -375,11 +371,30 @@ grafana_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$GRF_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$GRF_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # GF_SECURITY_ADMIN_* only create the admin in an empty grafana.db: on a
+    # kept volume the old admin password stays in force, so nothing new is
+    # asked for; the old container's values are carried over (Kamino 174).
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        GRF_ADMIN_USER="$(_container_env "$old" GF_SECURITY_ADMIN_USER)"
+        GRF_ADMIN_PASSWORD="$(_container_env "$old" GF_SECURITY_ADMIN_PASSWORD)"
+    else
+        _prompt_admin_credentials
+    fi
+
+    local plugins_input
+    plugins_input=$(gum input \
+        --placeholder "leave empty for no extra plugins" \
+        --header "Plugins to pre-install (comma-separated, e.g. grafana-piechart-panel):") || true
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$GRF_CONTAINER_NAME"
     fi
 
     _docker_write_datasources
@@ -392,11 +407,11 @@ grafana_install_docker() {
         run -d
         --name "$GRF_CONTAINER_NAME"
         -p "${GRF_PORT}:3000"
-        -e "GF_SECURITY_ADMIN_USER=${GRF_ADMIN_USER}"
-        -e "GF_SECURITY_ADMIN_PASSWORD=${GRF_ADMIN_PASSWORD}"
         -v "${volume}:/var/lib/grafana"
         --restart unless-stopped
     )
+    [[ -n "$GRF_ADMIN_USER" ]]     && docker_args+=(-e "GF_SECURITY_ADMIN_USER=${GRF_ADMIN_USER}")
+    [[ -n "$GRF_ADMIN_PASSWORD" ]] && docker_args+=(-e "GF_SECURITY_ADMIN_PASSWORD=${GRF_ADMIN_PASSWORD}")
 
     [[ -n "$plugins_input" ]] && docker_args+=(-e "GF_INSTALL_PLUGINS=${plugins_input}")
 
@@ -429,7 +444,7 @@ grafana_install_docker() {
         "Grafana running" \
         "" \
         "Web UI:   http://localhost:${GRF_PORT}" \
-        "Username: ${GRF_ADMIN_USER}" \
+        "Username: ${GRF_ADMIN_USER:-(unchanged)}" \
         "Volume:   ${volume}"
 }
 
@@ -554,30 +569,29 @@ grafana_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$GRF_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$GRF_NAMESPACE" &>/dev/null; then
         info "Namespace '${GRF_NAMESPACE}' already exists."
     else
         info "Creating namespace '${GRF_NAMESPACE}'..."
-        kubectl create namespace "$GRF_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$GRF_NAMESPACE"
     fi
 }
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -593,7 +607,31 @@ grafana_install_k8s() {
     _k8s_check_cluster || return 0
 
     _ensure_helm_repo "$GRF_HELM_REPO_NAME" "$GRF_HELM_REPO_URL"
-    _prompt_admin_credentials
+
+    # An existing release keeps its admin credentials: Grafana created the
+    # admin with them in the grafana.db on its PVC and ignores new ones, so an
+    # upgrade asks for none and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${GRF_HELM_RELEASE}' already exists in '${GRF_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing admin credentials (helm --reuse-values)."
+    else
+        _prompt_admin_credentials
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -624,8 +662,6 @@ grafana_install_k8s() {
     local helm_args=(
         "$GRF_HELM_RELEASE" "$GRF_HELM_CHART"
         --namespace "$GRF_NAMESPACE"
-        --set "adminUser=${GRF_ADMIN_USER}"
-        --set "adminPassword=${GRF_ADMIN_PASSWORD}"
         --set persistence.enabled=true
         --set persistence.size="$storage_size"
         --wait --timeout 5m
@@ -639,42 +675,39 @@ grafana_install_k8s() {
         helm_args+=(-f "$values_file")
     fi
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${GRF_HELM_RELEASE}' already exists in '${GRF_NAMESPACE}'."
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
+    else
+        helm_args+=(--set "adminUser=${GRF_ADMIN_USER}" --set "adminPassword=${GRF_ADMIN_PASSWORD}")
+    fi
 
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
         if ! gum spin --spinner dot --title "Upgrading Grafana..." -- \
-            helm upgrade "${helm_args[@]}"; then
-            warn "Upgrade failed. Check 'helm status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
+            warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
             return
         fi
         success "Grafana upgraded."
     else
         if ! gum spin --spinner dot --title "Installing Grafana..." -- \
-            helm install "${helm_args[@]}"; then
-            warn "Install failed. Check 'helm status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
+            warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
             return
         fi
         success "Grafana installed."
     fi
 
     echo ""
-    gum style --foreground "$CYAN" \
-        "Use 'connect' to open the web UI via port-forward." \
-        "Login: ${GRF_ADMIN_USER} / ${GRF_ADMIN_PASSWORD}"
+    if [[ "$upgrade" == true ]]; then
+        gum style --foreground "$CYAN" \
+            "Use 'connect' to open the web UI via port-forward." \
+            "Login: unchanged - the admin credentials the release was installed with" \
+            "(Secret '${GRF_HELM_RELEASE}' in '${GRF_NAMESPACE}', key admin-password)."
+    else
+        gum style --foreground "$CYAN" \
+            "Use 'connect' to open the web UI via port-forward." \
+            "Login: ${GRF_ADMIN_USER} / ${GRF_ADMIN_PASSWORD}"
+    fi
 }
 
 grafana_status_k8s() {
@@ -687,19 +720,19 @@ grafana_status_k8s() {
     fi
 
     info "Helm release:"
-    helm status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" 2>/dev/null | head -10
+    helm --kube-context "$KUBE_CONTEXT" status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" 2>/dev/null | head -10
     echo ""
 
     info "Pods:"
-    kubectl get pods -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "Services:"
-    kubectl get svc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "PersistentVolumeClaims:"
-    kubectl get pvc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pvc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
 grafana_connect_k8s() {
@@ -729,11 +762,11 @@ grafana_connect_k8s() {
     local port="${port_input:-$GRF_DEFAULT_PORT}"
 
     local svc="${GRF_HELM_RELEASE}-grafana"
-    if ! kubectl get svc "$svc" -n "$GRF_NAMESPACE" &>/dev/null 2>&1; then
+    if ! kubectl --context "$KUBE_CONTEXT" get svc "$svc" -n "$GRF_NAMESPACE" &>/dev/null 2>&1; then
         svc="$GRF_HELM_RELEASE"
     fi
 
-    kubectl -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_GRF_PF_PID"
 
     local attempts=0
@@ -767,7 +800,7 @@ grafana_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "Delete manually to fully purge:" \
-        "  kubectl delete pvc --all -n ${GRF_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${GRF_NAMESPACE}"
 
     if ! gum confirm "Uninstall Grafana?"; then
         warn "Cancelled."
@@ -775,11 +808,11 @@ grafana_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${GRF_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${GRF_NAMESPACE}'..." -- \
-            kubectl delete namespace "$GRF_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$GRF_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

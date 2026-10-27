@@ -13,7 +13,7 @@ Lightweight real-time log viewer for Docker / Kubernetes / kind, installs from r
 - **Readiness / liveness probes** on `/healthz` to survive kind control-plane warm-up
 - **Port-forward** auto-reconnects across pod restarts; `stop` tears it down with the deployment
 - **Import**: adopt an existing Dozzle install that was deployed outside this script (docker container or k8s Service named `dozzle`). Detected automatically, if you run any command without a saved config, the script offers to adopt the existing install inline. Marks the conf with `INSTALL_METHOD=external` so `uninstall` double-confirms before acting on something it didn't deploy.
-- **Uninstall** (Docker): `docker-compose down -v` followed by `rm -rf` of the storage path
+- **Uninstall** (Docker): `docker-compose down -v`; the bind-mounted data folder is deleted only if `dozzle.sh` created it (it marks the folders it creates), and the confirm names it. A folder that already existed is kept; `/` and `$HOME` are refused at install and at uninstall
 - Config: `~/.config/dozzle/{dozzle.conf,pf/,workdir/}` (workdir holds the rendered compose file / manifests)
 - Commands: `install`, `import`, `uninstall`, `status`, `start`, `stop`, `port-forward`
 

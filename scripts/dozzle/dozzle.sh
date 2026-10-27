@@ -10,7 +10,8 @@
 # Unlike lgtm.sh, Dozzle has no meaningful long-term data to "purge": /data
 # only holds the optional auth users file and notification rules, so there
 # is no separate purge subcommand. `uninstall` removes everything, including
-# that /data volume/PVC.
+# that /data volume/PVC - and on Docker the bind-mounted folder, but only if
+# dozzle.sh created it (a folder that already existed is kept).
 #
 # Sourced helpers (scripts/_common/):
 #   ui.sh          — header/info/success/warn/error_exit
@@ -18,6 +19,7 @@
 #   deps.sh        — _check_docker, _check_kubectl
 #   gh_releases.sh — select_version
 #   portforward.sh — pf_is_running / pf_port / pf_stop (PID-file based)
+#   owned_dirs.sh  — owned_dir_create / owned_dir_plan / owned_dir_remove
 #
 # Config: ~/.config/dozzle/dozzle.conf (XDG-style, key=value, one per line)
 # -----------------------------------------------------------------------------
@@ -42,6 +44,8 @@ source "${COMMON_DIR}/deps.sh"
 source "${COMMON_DIR}/gh_releases.sh"
 # shellcheck source=../_common/portforward.sh
 source "${COMMON_DIR}/portforward.sh"
+# shellcheck source=../_common/owned_dirs.sh
+source "${COMMON_DIR}/owned_dirs.sh"
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -273,15 +277,25 @@ _prompt_auth() {
 # install — storage
 # -----------------------------------------------------------------------------
 
+# The folder is created only if it does not exist, and then marked as
+# dozzle.sh's (owned_dirs.sh): uninstall deletes it only in that case. A folder
+# that already existed is used and left alone on uninstall (Kamino 176).
 _prompt_storage_docker() {
     local default_path="${CONFIG_DIR}/data"
     STORAGE_PATH=$(gum input \
         --value "$default_path" \
         --header "Host path to bind-mount as Dozzle's /data:") || true
-    STORAGE_PATH="${STORAGE_PATH:-$default_path}"
+    STORAGE_PATH="$(owned_dir_abs "${STORAGE_PATH:-$default_path}")"
     STORAGE_MODE="bind"
-    mkdir -p "$STORAGE_PATH"
+    owned_dir_forbidden "$STORAGE_PATH" \
+        && error_exit "Refusing '${STORAGE_PATH}' as Dozzle's data folder: it is / or your home folder (or contains it)."
+    local existed=false
+    [[ -e "$STORAGE_PATH" ]] && existed=true
+    owned_dir_create "$STORAGE_PATH" "dozzle.sh" || error_exit "Could not create '${STORAGE_PATH}'."
     info "Using bind mount: ${STORAGE_PATH} -> /data"
+    if [[ "$existed" == true ]]; then
+        warn "'${STORAGE_PATH}' already existed: it is used as is and kept on uninstall."
+    fi
 }
 
 _prompt_storage_k8s() {
@@ -622,13 +636,33 @@ cmd_uninstall() {
         fi
     fi
 
-    gum confirm "This removes Dozzle AND its /data (auth users, notification rules). Continue?" \
-        || { info "Cancelled."; return; }
+    # Docker: the bind-mounted data folder is deleted only if dozzle.sh
+    # created it, and the confirm names it either way (Kamino 176).
+    local plan="absent" question="This removes Dozzle and its /data (auth users, notification rules). Continue?"
+    if [[ "$TARGET_TYPE" == docker && -n "$STORAGE_PATH" ]]; then
+        plan="$(owned_dir_plan "$STORAGE_PATH")"
+        case "$plan" in
+            delete) question="This removes Dozzle AND deletes its data folder ${STORAGE_PATH} (auth users, notification rules). Continue?" ;;
+            refuse) question="This removes Dozzle. Its data folder ${STORAGE_PATH} is / or your home folder and will NOT be deleted. Continue?" ;;
+            keep)   question="This removes Dozzle. Its data folder ${STORAGE_PATH} was not created by dozzle.sh and will be kept. Continue?" ;;
+            absent) question="This removes Dozzle (its data folder ${STORAGE_PATH} no longer exists). Continue?" ;;
+        esac
+    fi
+    gum confirm "$question" || { info "Cancelled."; return; }
 
     case "$TARGET_TYPE" in
         docker)
             docker-compose -f "$COMPOSE_FILE" down -v 2>/dev/null || true
-            [[ -n "$STORAGE_PATH" ]] && rm -rf "$STORAGE_PATH"
+            case "$plan" in
+                delete)
+                    if owned_dir_remove "$STORAGE_PATH"; then
+                        success "Deleted ${STORAGE_PATH}."
+                    else
+                        warn "Could not delete all of ${STORAGE_PATH} (files owned by the container's user?): remove it by hand."
+                    fi ;;
+                keep)   info "Kept ${STORAGE_PATH}: not created by dozzle.sh." ;;
+                refuse) warn "Not deleting ${STORAGE_PATH}: refused (/ or your home folder)." ;;
+            esac
             ;;
         kind|k8s)
             local ctx_flags

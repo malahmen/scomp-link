@@ -6,7 +6,7 @@
 # scripts/lgtm/lgtm.sh — LGTM stack manager (Loki · Grafana · Tempo · Mimir)
 # Supports Docker Compose and kind/k8s targets.
 # Sourced helpers: _common/ui.sh, _common/cluster.sh, _common/portforward.sh,
-#                  _common/deps.sh
+#                  _common/deps.sh, _common/owned_dirs.sh
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -31,6 +31,8 @@ source "${COMMON_DIR}/cluster.sh"
 source "${COMMON_DIR}/portforward.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
+# shellcheck source=../_common/owned_dirs.sh
+source "${COMMON_DIR}/owned_dirs.sh"
 
 # pinned chart versions
 # Update these explicitly when you want to bump a component.
@@ -157,7 +159,11 @@ cfg_load() {
 
 # cfg_require [error-message]
 # Loads config, validates TARGET_TYPE is set, echoes it for capture.
-# Use as: target_type=$(cfg_require "Nothing to uninstall.")
+# Use as: target_type=$(cfg_require "Nothing to uninstall."); cfg_load
+# The cfg_load after it matters: $() is a subshell, so without it TARGET_TYPE
+# and TARGET_CONTEXT stay empty in the caller, helm_context_flag and
+# kubectl_context_flag print nothing, and every helm/kubectl call - purge's
+# namespace delete included - goes to the user's current context (Kamino 175).
 cfg_require() {
     local msg="${1:-No saved config found. Run install first.}"
     cfg_load
@@ -332,6 +338,12 @@ _prompt_storage() {
             --placeholder "$default_base" \
             --header "Docker Compose data directory (bind-mount base path):") || true
         [[ -z "$base" ]] && base="$default_base"
+        # Absolute, so purge acts on the same folder from any directory; never
+        # / or the home folder, which purge would otherwise be asked to wipe.
+        base="$(owned_dir_abs "$base")"
+        owned_dir_forbidden "$base" \
+            && error_exit "Refusing '${base}' as the data directory: it is / or your home folder (or contains it)."
+        [[ -e "$base" ]] && warn "'${base}' already exists: it is used as is, and purge keeps it (only the folders lgtm.sh creates are deleted)."
         cfg_set "HOSTPATH_BASE" "$base"
         return
     fi
@@ -1202,8 +1214,13 @@ _install_docker() {
     local base_path
     base_path=$(cfg_get "HOSTPATH_BASE")
 
-    # Ensure data dirs exist
+    # Ensure data dirs exist. A folder this creates is marked as lgtm.sh's
+    # (owned_dirs.sh) - purge deletes only those, never a folder the user
+    # already had (Kamino 176).
+    owned_dir_create "$base_path" "lgtm.sh" \
+        || error_exit "Could not use '${base_path}' as the data directory (/, your home folder, or not creatable)."
     for c in $enabled; do
+        owned_dir_create "${base_path}/${c}" "lgtm.sh" || error_exit "Could not create '${base_path}/${c}'."
         mkdir -p "${base_path}/${c}/config"
     done
 
@@ -1416,6 +1433,7 @@ cmd_uninstall() {
 
     local target_type ctx_flags
     target_type=$(cfg_require "No saved config found. Nothing to uninstall.")
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     # Imported stack guard: this stack wasn't deployed by lgtm.sh, so its
     # Helm release names may not match what this script expects. uninstall
@@ -1482,6 +1500,7 @@ cmd_purge() {
 
     local target_type
     target_type=$(cfg_require "No saved config found. Nothing to purge.")
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     # Imported stack guard — purge does helm uninstall + wipe data. For a stack
     # this tool didn't deploy, that's almost never what the user wants.
@@ -1489,8 +1508,8 @@ cmd_purge() {
     install_method=$(cfg_get "INSTALL_METHOD")
     if [[ "$install_method" == "external" ]]; then
         warn "This stack was IMPORTED — not deployed by lgtm.sh."
-        warn "Purging will attempt to helm-uninstall releases this script didn't create"
-        warn "and wipe data this script didn't provision. Almost certainly not what you want."
+        warn "Purging will attempt to helm-uninstall releases this script didn't create."
+        warn "Data folders are deleted only where lgtm.sh created them."
         if ! gum confirm --affirmative "Yes, purge anyway" --negative "Cancel" \
             "Continue with purge of an imported stack?"; then
             info "Cancelled."
@@ -1498,8 +1517,48 @@ cmd_purge() {
         fi
     fi
 
-    gum style --foreground "${RED}" --bold \
-        "WARNING: Purge will remove ALL stack resources AND delete all data on disk."
+    local enabled base_path c
+    enabled=$(cfg_get "ENABLED_COMPONENTS")
+    base_path=$(cfg_get "HOSTPATH_BASE")
+
+    # What is deleted on this machine, decided - and named - before the
+    # confirm (Kamino 176). Only folders lgtm.sh created and marked go: the
+    # base folder if it made it, else the component folders it made inside a
+    # folder the user already had. / and the home folder are refused. On
+    # kind/k8s the hostPath base is a path on the NODES: nothing here is it.
+    local -a to_delete=() to_keep=()
+    if [[ "$target_type" == "docker" && -n "$base_path" ]]; then
+        case "$(owned_dir_plan "$base_path")" in
+            delete) to_delete+=("$base_path") ;;
+            refuse) to_keep+=("${base_path}  (/ or your home folder: refused)") ;;
+            keep)
+                to_keep+=("${base_path}  (not created by lgtm.sh)")
+                for c in $enabled; do
+                    case "$(owned_dir_plan "${base_path}/${c}")" in
+                        delete) to_delete+=("${base_path}/${c}") ;;
+                        keep)   to_keep+=("${base_path}/${c}  (not created by lgtm.sh)") ;;
+                        refuse) to_keep+=("${base_path}/${c}  (refused)") ;;
+                    esac
+                done ;;
+            absent) ;;
+        esac
+    fi
+
+    local -a lines=("WARNING: Purge removes ALL stack resources." "")
+    if (( ${#to_delete[@]} )); then
+        lines+=("These folders are DELETED with everything in them:")
+        for c in "${to_delete[@]}"; do lines+=("  ${c}"); done
+    else
+        lines+=("No folder on this machine is deleted.")
+    fi
+    if (( ${#to_keep[@]} )); then
+        lines+=("" "Kept:")
+        for c in "${to_keep[@]}"; do lines+=("  ${c}"); done
+    fi
+    if [[ "$target_type" != "docker" && -n "$base_path" ]]; then
+        lines+=("" "hostPath data on the node(s) under ${base_path} is not touched from here.")
+    fi
+    gum style --foreground "${RED}" --bold "${lines[@]}"
 
     if ! gum confirm --affirmative "Yes, purge everything" --negative "Cancel" \
         "This is irreversible. Are you sure?"; then
@@ -1507,28 +1566,32 @@ cmd_purge() {
         return
     fi
 
-    # First uninstall resources (reuse uninstall logic silently)
-    local enabled
-    enabled=$(cfg_get "ENABLED_COMPONENTS")
+    # Every step runs whatever the one before did: a failure is recorded and
+    # reported at the end, not a set -e exit half way (Kamino 176).
+    local -a problems=()
 
     if [[ "$target_type" == "docker" ]]; then
         local compose_file
         compose_file=$(cfg_get "COMPOSE_FILE")
         if [[ -f "$compose_file" ]]; then
             gum spin --spinner dot --title "Stopping and removing all containers..." -- \
-                docker-compose -f "$compose_file" down -v || true
+                docker-compose -f "$compose_file" down -v \
+                || problems+=("docker-compose down -v failed for ${compose_file}")
         fi
     else
         local helm_flags kctl_flags
         helm_flags="$(helm_context_flag)"
         kctl_flags="$(kubectl_context_flag)"
         for c in $enabled; do
+            # Absent is fine here: an earlier uninstall may have removed them.
             # shellcheck disable=SC2086
             helm uninstall "$c" --namespace "${NAMESPACE}" $helm_flags 2>/dev/null || true
             # shellcheck disable=SC2086
-            kubectl $kctl_flags delete pv "lgtm-${c}" 2>/dev/null || true
+            kubectl $kctl_flags delete pv "lgtm-${c}" --ignore-not-found 2>/dev/null \
+                || problems+=("kubectl delete pv lgtm-${c} failed")
             # shellcheck disable=SC2086
-            kubectl $kctl_flags delete storageclass "lgtm-${c}" 2>/dev/null || true
+            kubectl $kctl_flags delete storageclass "lgtm-${c}" --ignore-not-found 2>/dev/null \
+                || problems+=("kubectl delete storageclass lgtm-${c} failed")
         done
         # shellcheck disable=SC2086
         if kubectl $kctl_flags delete namespace "${NAMESPACE}" 2>/dev/null; then
@@ -1544,24 +1607,29 @@ cmd_purge() {
                 success "Namespace '${NAMESPACE}' terminated."
             else
                 warn "Namespace did not terminate within 120s — wait before reinstalling."
-                warn "Inspect stuck finalizers with: kubectl get ns ${NAMESPACE} -o yaml"
+                warn "Inspect stuck finalizers with: kubectl ${kctl_flags} get ns ${NAMESPACE} -o yaml"
             fi
         fi
     fi
 
-    # Wipe data
-    local base_path
-    base_path=$(cfg_get "HOSTPATH_BASE")
-    if [[ -n "$base_path" && -d "$base_path" ]]; then
-        gum spin --spinner dot --title "Wiping data at ${base_path}..." -- \
-            rm -rf "${base_path}"
-        success "Data wiped: ${base_path}"
+    # Wipe the data folders lgtm.sh created - and only those.
+    for c in "${to_delete[@]}"; do
+        if owned_dir_remove "$c"; then
+            success "Deleted ${c}"
+        else
+            problems+=("could not delete ${c} (files owned by a container's user? sudo rm -rf '${c}')")
+        fi
+    done
+    for c in "${to_keep[@]}"; do info "Kept ${c}"; done
+
+    if (( ${#problems[@]} )); then
+        for c in "${problems[@]}"; do warn "$c"; done
+        warn "Purge finished with ${#problems[@]} problem(s). Config kept (${CONFIG_FILE}) so purge can be run again."
+        return 0
     fi
 
-    # Wipe config
     rm -f "$CONFIG_FILE"
     success "Config removed."
-
     success "Purge complete."
 }
 
@@ -1572,6 +1640,7 @@ cmd_status() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1662,6 +1731,7 @@ cmd_port_forward() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1781,6 +1851,7 @@ cmd_start() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     if [[ "$target_type" != "docker" ]]; then
         # k8s scale-up
@@ -1833,6 +1904,7 @@ cmd_stop() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     if [[ "$target_type" != "docker" ]]; then
         # k8s scale-down
@@ -1916,6 +1988,7 @@ cmd_test() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
     if [[ "$target_type" == "docker" ]]; then
         error_exit "Test command requires k8s or kind."
     fi

@@ -33,6 +33,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -101,7 +103,7 @@ _prompt_admin_config() {
         --header "Admin password (leave empty to auto-generate):") || true
 
     if [[ -z "$IDB_ADMIN_PASSWORD" ]]; then
-        IDB_ADMIN_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)
+        IDB_ADMIN_PASSWORD=$(_gen_secret 24)
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
             --align center --width 60 --margin "1 0" --padding "0 4" \
@@ -170,11 +172,10 @@ influxdb_install_docker() {
         --header "Host port (leave empty for ${IDB_DEFAULT_PORT}):") || true
     IDB_PORT="${port_input:-$IDB_DEFAULT_PORT}"
 
-    _prompt_admin_config
-
     local image="influxdb:${IDB_IMAGE_TAG}"
     local volume="${IDB_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$IDB_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -188,11 +189,31 @@ influxdb_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$IDB_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$IDB_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # DOCKER_INFLUXDB_INIT_* run the initial setup only on an empty data dir:
+    # on a kept volume the old user, password, org and token stay in force, so
+    # nothing new is asked for; the old container's values are carried over
+    # for connect, and no setup mode is requested (Kamino 174).
+    local kept=false
+    if docker volume inspect "$volume" &>/dev/null; then
+        kept=true
+        _kept_data_notice "$volume" "$old"
+        IDB_ADMIN_USER="$(_container_env "$old" DOCKER_INFLUXDB_INIT_USERNAME)"
+        IDB_ADMIN_PASSWORD="$(_container_env "$old" DOCKER_INFLUXDB_INIT_PASSWORD)"
+        IDB_ORG="$(_container_env "$old" DOCKER_INFLUXDB_INIT_ORG)"
+        IDB_BUCKET="$(_container_env "$old" DOCKER_INFLUXDB_INIT_BUCKET)"
+        IDB_TOKEN="$(_container_env "$old" DOCKER_INFLUXDB_INIT_ADMIN_TOKEN)"
+    else
+        _prompt_admin_config
+    fi
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$IDB_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -203,18 +224,15 @@ influxdb_install_docker() {
         run -d
         --name "$IDB_CONTAINER_NAME"
         -p "${IDB_PORT}:8086"
-        -e DOCKER_INFLUXDB_INIT_MODE=setup
-        -e DOCKER_INFLUXDB_INIT_USERNAME="$IDB_ADMIN_USER"
-        -e DOCKER_INFLUXDB_INIT_PASSWORD="$IDB_ADMIN_PASSWORD"
-        -e DOCKER_INFLUXDB_INIT_ORG="$IDB_ORG"
-        -e DOCKER_INFLUXDB_INIT_BUCKET="$IDB_BUCKET"
         -v "${volume}:/var/lib/influxdb2"
         --restart unless-stopped
     )
-
-    if [[ -n "$IDB_TOKEN" ]]; then
-        docker_args+=(-e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN="$IDB_TOKEN")
-    fi
+    [[ "$kept" == true ]] || docker_args+=(-e DOCKER_INFLUXDB_INIT_MODE=setup)
+    local kv
+    for kv in "USERNAME=${IDB_ADMIN_USER}" "PASSWORD=${IDB_ADMIN_PASSWORD}" \
+              "ORG=${IDB_ORG}" "BUCKET=${IDB_BUCKET}" "ADMIN_TOKEN=${IDB_TOKEN}"; do
+        [[ -n "${kv#*=}" ]] && docker_args+=(-e "DOCKER_INFLUXDB_INIT_${kv}")
+    done
 
     docker_args+=("$image")
 
@@ -239,9 +257,9 @@ influxdb_install_docker() {
         "InfluxDB running" \
         "" \
         "Web UI:   http://localhost:${IDB_PORT}" \
-        "User:     ${IDB_ADMIN_USER}" \
-        "Org:      ${IDB_ORG}" \
-        "Bucket:   ${IDB_BUCKET}" \
+        "User:     ${IDB_ADMIN_USER:-(unchanged)}" \
+        "Org:      ${IDB_ORG:-(unchanged)}" \
+        "Bucket:   ${IDB_BUCKET:-(unchanged)}" \
         "Volume:   ${volume}"
 }
 
@@ -377,30 +395,29 @@ influxdb_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$IDB_HELM_RELEASE" -n "$IDB_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$IDB_HELM_RELEASE" -n "$IDB_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$IDB_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$IDB_NAMESPACE" &>/dev/null; then
         info "Namespace '${IDB_NAMESPACE}' already exists."
     else
         info "Creating namespace '${IDB_NAMESPACE}'..."
-        kubectl create namespace "$IDB_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$IDB_NAMESPACE"
     fi
 }
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -412,10 +429,10 @@ _k8s_check_cluster() {
 _k8s_start_port_forward() {
     local port="$1"
     local svc="${IDB_HELM_RELEASE}-influxdb"
-    if ! kubectl get svc "$svc" -n "$IDB_NAMESPACE" &>/dev/null 2>&1; then
+    if ! kubectl --context "$KUBE_CONTEXT" get svc "$svc" -n "$IDB_NAMESPACE" &>/dev/null 2>&1; then
         svc="$IDB_HELM_RELEASE"
     fi
-    kubectl -n "$IDB_NAMESPACE" port-forward "svc/${svc}" "${port}:8086" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$IDB_NAMESPACE" port-forward "svc/${svc}" "${port}:8086" >/dev/null 2>&1 &
     echo $!
 }
 
@@ -427,7 +444,30 @@ influxdb_install_k8s() {
     header "Install InfluxDB — Kubernetes"
     _k8s_check_cluster || return 0
 
-    _prompt_admin_config
+    # An existing release keeps its credentials: InfluxDB ran its setup with
+    # them on the data in its PVC and ignores new ones, so an upgrade asks for
+    # none and reuses the release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${IDB_HELM_RELEASE}' already exists in '${IDB_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep credentials, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing credentials (helm --reuse-values): the data in its volume keeps the ones it was set up with."
+    else
+        _prompt_admin_config
+    fi
 
     local storage_size
     storage_size=$(gum input \
@@ -446,46 +486,34 @@ influxdb_install_k8s() {
         --namespace "$IDB_NAMESPACE"
         --set fullnameOverride="$IDB_HELM_RELEASE"
         --set service.port=8086
-        --set adminUser.user="$IDB_ADMIN_USER"
-        --set adminUser.password="$IDB_ADMIN_PASSWORD"
-        --set adminUser.organization="$IDB_ORG"
-        --set adminUser.bucket="$IDB_BUCKET"
         --set persistence.enabled=true
         --set persistence.size="$storage_size"
         --wait --timeout 5m
     )
 
-    if [[ -n "$IDB_TOKEN" ]]; then
-        helm_args+=(--set adminUser.token="$IDB_TOKEN")
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
+    else
+        helm_args+=(
+            --set adminUser.user="$IDB_ADMIN_USER"
+            --set adminUser.password="$IDB_ADMIN_PASSWORD"
+            --set adminUser.organization="$IDB_ORG"
+            --set adminUser.bucket="$IDB_BUCKET"
+        )
+        [[ -n "$IDB_TOKEN" ]] && helm_args+=(--set adminUser.token="$IDB_TOKEN")
     fi
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${IDB_HELM_RELEASE}' already exists in '${IDB_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
         if ! gum spin --spinner dot --title "Upgrading InfluxDB (this may take a few minutes)..." -- \
-            helm upgrade "${helm_args[@]}"; then
-            warn "Upgrade failed. Check 'helm status ${IDB_HELM_RELEASE} -n ${IDB_NAMESPACE}' for details."
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
+            warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${IDB_HELM_RELEASE} -n ${IDB_NAMESPACE}' for details."
             return
         fi
         success "InfluxDB upgraded."
     else
         if ! gum spin --spinner dot --title "Installing InfluxDB (this may take a few minutes)..." -- \
-            helm install "${helm_args[@]}"; then
-            warn "Install failed. Check 'helm status ${IDB_HELM_RELEASE} -n ${IDB_NAMESPACE}' for details."
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
+            warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${IDB_HELM_RELEASE} -n ${IDB_NAMESPACE}' for details."
             return
         fi
         success "InfluxDB installed."
@@ -507,19 +535,19 @@ influxdb_status_k8s() {
     fi
 
     info "Helm release:"
-    helm status "$IDB_HELM_RELEASE" -n "$IDB_NAMESPACE" 2>/dev/null | head -10
+    helm --kube-context "$KUBE_CONTEXT" status "$IDB_HELM_RELEASE" -n "$IDB_NAMESPACE" 2>/dev/null | head -10
     echo ""
 
     info "Pods:"
-    kubectl get pods -n "$IDB_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$IDB_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "Services:"
-    kubectl get svc -n "$IDB_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$IDB_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "PersistentVolumeClaims:"
-    kubectl get pvc -n "$IDB_NAMESPACE" --no-headers 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pvc -n "$IDB_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
 influxdb_connect_k8s() {
@@ -580,7 +608,7 @@ influxdb_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "Delete them manually to fully purge data:" \
-        "  kubectl delete pvc --all -n ${IDB_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${IDB_NAMESPACE}"
 
     if ! gum confirm "Uninstall InfluxDB?"; then
         warn "Cancelled."
@@ -588,11 +616,11 @@ influxdb_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$IDB_HELM_RELEASE" -n "$IDB_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$IDB_HELM_RELEASE" -n "$IDB_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${IDB_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${IDB_NAMESPACE}'..." -- \
-            kubectl delete namespace "$IDB_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$IDB_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

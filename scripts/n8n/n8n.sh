@@ -33,6 +33,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -89,7 +91,7 @@ _prompt_encryption_key() {
         --header "Encryption key (protects stored credentials — save it!):") || true
 
     if [[ -z "$key_input" ]]; then
-        N8N_ENCRYPTION_KEY=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+        N8N_ENCRYPTION_KEY=$(_gen_secret 32)
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
             --align center --width 60 --margin "1 0" --padding "0 4" \
@@ -187,12 +189,10 @@ n8n_install_docker() {
         --header "Timezone (leave empty for '${N8N_DEFAULT_TIMEZONE}'):") || true
     local timezone="${tz_input:-$N8N_DEFAULT_TIMEZONE}"
 
-    _prompt_encryption_key
-    _prompt_db_backend
-
     local image="n8nio/n8n:${N8N_IMAGE_TAG}"
     local volume="${N8N_CONTAINER_NAME}-data"
 
+    local old=""
     if _docker_container_exists "$N8N_CONTAINER_NAME"; then
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
@@ -206,11 +206,30 @@ n8n_install_docker() {
             --header "What would you like to do?") || true
 
         case "$action" in
-            "Remove and recreate")
-                gum spin --spinner dot --title "Removing existing container..." -- \
-                    docker rm -f "$N8N_CONTAINER_NAME" ;;
+            "Remove and recreate") old="$N8N_CONTAINER_NAME" ;;
             *) warn "Cancelled."; return ;;
         esac
+    fi
+
+    # n8n saves its encryption key in the volume (.n8n/config) on first start
+    # and refuses to start when N8N_ENCRYPTION_KEY differs from it - a new key
+    # on a kept volume breaks the instance and every stored credential. So on
+    # a kept volume the old container's key is carried over, or, with no
+    # container to read it from, none is passed and n8n uses the saved one
+    # (Kamino 174).
+    if docker volume inspect "$volume" &>/dev/null; then
+        _kept_data_notice "$volume" "$old"
+        N8N_ENCRYPTION_KEY="$(_container_env "$old" N8N_ENCRYPTION_KEY)"
+        [[ -n "$N8N_ENCRYPTION_KEY" ]] \
+            || info "No key in the old container's env: n8n will use the one saved in '${volume}'."
+    else
+        _prompt_encryption_key
+    fi
+    _prompt_db_backend
+
+    if [[ -n "$old" ]]; then
+        gum spin --spinner dot --title "Removing existing container..." -- \
+            docker rm -f "$N8N_CONTAINER_NAME"
     fi
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -221,11 +240,11 @@ n8n_install_docker() {
         run -d
         --name "$N8N_CONTAINER_NAME"
         -p "${N8N_PORT}:5678"
-        -e N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY"
         -e GENERIC_TIMEZONE="$timezone"
         -v "${volume}:/home/node/.n8n"
         --restart unless-stopped
     )
+    [[ -n "$N8N_ENCRYPTION_KEY" ]] && docker_args+=(-e N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY")
 
     if [[ "$N8N_DB_TYPE" == "postgresdb" ]]; then
         docker_args+=(
@@ -387,30 +406,29 @@ n8n_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$N8N_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$N8N_NAMESPACE" &>/dev/null; then
         info "Namespace '${N8N_NAMESPACE}' already exists."
     else
         info "Creating namespace '${N8N_NAMESPACE}'..."
-        kubectl create namespace "$N8N_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$N8N_NAMESPACE"
     fi
 }
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -426,7 +444,32 @@ n8n_install_k8s() {
     _k8s_check_cluster || return 0
 
     _ensure_helm_repo "$N8N_HELM_REPO_NAME" "$N8N_HELM_REPO_URL"
-    _prompt_encryption_key
+
+    # An existing release keeps its encryption key: n8n saved it on its PVC
+    # and refuses to start with a different one, which would also make every
+    # stored credential unreadable. So an upgrade asks for none and reuses the
+    # release's values (Kamino 174).
+    local upgrade=false
+    if _k8s_detect_installed; then
+        gum style \
+            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+            --align center --width 60 --margin "1 2" --padding "1 4" \
+            "Release '${N8N_HELM_RELEASE}' already exists in '${N8N_NAMESPACE}'."
+
+        local action
+        action=$(gum choose \
+            "Upgrade (keep encryption key, apply other values)" \
+            "Cancel" \
+            --header "What would you like to do?") || true
+
+        case "$action" in
+            "Upgrade"*) upgrade=true ;;
+            *) warn "Cancelled."; return ;;
+        esac
+        info "Keeping the release's existing encryption key (helm --reuse-values)."
+    else
+        _prompt_encryption_key
+    fi
     _prompt_db_backend
 
     local storage_size
@@ -445,7 +488,6 @@ n8n_install_k8s() {
     local helm_args=(
         "$N8N_HELM_RELEASE" "$N8N_HELM_CHART"
         --namespace "$N8N_NAMESPACE"
-        --set config.n8n.encryptionKey="$N8N_ENCRYPTION_KEY"
         --set persistence.enabled=true
         --set persistence.size="$storage_size"
         --wait --timeout 5m
@@ -464,33 +506,19 @@ n8n_install_k8s() {
         )
     fi
 
-    if _k8s_detect_installed; then
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 2" --padding "1 4" \
-            "Release '${N8N_HELM_RELEASE}' already exists in '${N8N_NAMESPACE}'."
-
-        local action
-        action=$(gum choose \
-            "Upgrade (apply new values)" \
-            "Cancel" \
-            --header "What would you like to do?") || true
-
-        case "$action" in
-            "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
-        esac
-
+    if [[ "$upgrade" == true ]]; then
+        helm_args+=(--reuse-values)
         if ! gum spin --spinner dot --title "Upgrading n8n..." -- \
-            helm upgrade "${helm_args[@]}"; then
-            warn "Upgrade failed. Check 'helm status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
+            warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
             return
         fi
         success "n8n upgraded."
     else
+        helm_args+=(--set config.n8n.encryptionKey="$N8N_ENCRYPTION_KEY")
         if ! gum spin --spinner dot --title "Installing n8n..." -- \
-            helm install "${helm_args[@]}"; then
-            warn "Install failed. Check 'helm status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
+            warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
             return
         fi
         success "n8n installed."
@@ -512,19 +540,19 @@ n8n_status_k8s() {
     fi
 
     info "Helm release:"
-    helm status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" 2>/dev/null | head -10
+    helm --kube-context "$KUBE_CONTEXT" status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" 2>/dev/null | head -10
     echo ""
 
     info "Pods:"
-    kubectl get pods -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "Services:"
-    kubectl get svc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "PersistentVolumeClaims:"
-    kubectl get pvc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pvc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
 n8n_connect_k8s() {
@@ -552,11 +580,11 @@ n8n_connect_k8s() {
     local port="${port_input:-$N8N_DEFAULT_PORT}"
 
     local svc="${N8N_HELM_RELEASE}-n8n"
-    if ! kubectl get svc "$svc" -n "$N8N_NAMESPACE" &>/dev/null 2>&1; then
+    if ! kubectl --context "$KUBE_CONTEXT" get svc "$svc" -n "$N8N_NAMESPACE" &>/dev/null 2>&1; then
         svc="$N8N_HELM_RELEASE"
     fi
 
-    kubectl -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_N8N_PF_PID"
 
     local attempts=0
@@ -591,7 +619,7 @@ n8n_uninstall_k8s() {
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "(workflows, credentials, and settings will survive in the PVC)" \
         "Delete manually to fully purge:" \
-        "  kubectl delete pvc --all -n ${N8N_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${N8N_NAMESPACE}"
 
     if ! gum confirm "Uninstall n8n?"; then
         warn "Cancelled."
@@ -599,11 +627,11 @@ n8n_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${N8N_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${N8N_NAMESPACE}'..." -- \
-            kubectl delete namespace "$N8N_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$N8N_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

@@ -11,6 +11,7 @@
 # After select_target():
 #   TARGET_TYPE    = "docker" | "podman" | "kind" | "k8s"
 #   TARGET_CONTEXT = "" (docker, podman) | cluster name (kind) | context name (k8s)
+#   KUBE_CONTEXT   = "" (docker, podman) | kind-<cluster> (kind) | context name (k8s)
 #
 # The podman target is opt-in: a script that handles it sets
 # SELECT_TARGET_PODMAN=1 before calling select_target. It means rootless podman
@@ -21,14 +22,21 @@
 # Calling scripts branch on TARGET_TYPE:
 #   case "$TARGET_TYPE" in
 #     docker) ... docker run / compose ... ;;
-#     kind)   ... helm --kube-context "kind-${TARGET_CONTEXT}" ... ;;
-#     k8s)    ... helm --kube-context "${TARGET_CONTEXT}" ... ;;
+#     kind|k8s) ... helm --kube-context "$KUBE_CONTEXT" ...
+#               ... kubectl --context "$KUBE_CONTEXT" ... ;;
 #   esac
 # -----------------------------------------------------------------------------
 
 # Exported after select_target()
 TARGET_TYPE=""
 TARGET_CONTEXT=""
+# The kubeconfig context name of the target (kind-<name> for kind, the context
+# for k8s, empty otherwise). Pass it on every call - kubectl --context
+# "$KUBE_CONTEXT", helm --kube-context "$KUBE_CONTEXT" - and never run
+# `kubectl config use-context`: that changes the user's current context for
+# every terminal, and a call without a context then lands wherever the current
+# context points at that moment (Kamino 175).
+KUBE_CONTEXT=""
 
 # Colours (reuse caller's values if already set)
 _C_CYAN="${CYAN:-212}"
@@ -177,10 +185,23 @@ select_target() {
         fi
     done
 
+    # shellcheck disable=SC2034  # read by the scripts that source this file
+    KUBE_CONTEXT="$(kube_context_name)"
+
     gum style \
         --foreground "$_C_CYAN" --border-foreground "$_C_CYAN" --border rounded \
         --align center --width 60 --margin "1 2" --padding "1 2" \
         "Target: ${TARGET_TYPE}${TARGET_CONTEXT:+  /  ${TARGET_CONTEXT}}"
+}
+
+# Prints the kubeconfig context name of the selected target: kind-<cluster>
+# for kind, the context itself for k8s, nothing for docker/podman.
+kube_context_name() {
+    case "$TARGET_TYPE" in
+        kind) echo "kind-${TARGET_CONTEXT}" ;;
+        k8s)  echo "${TARGET_CONTEXT}" ;;
+        *)    echo "" ;;
+    esac
 }
 
 # Returns the --kube-context flag for helm commands.
