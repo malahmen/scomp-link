@@ -351,6 +351,7 @@ scomp-link/
 ├── tests/                            # Front-end tests, driven through a gum stub
 │   ├── run-all.sh                    # runs every tests/test-*.sh
 │   ├── stubs/gum                     # scripted answers instead of a terminal
+│   ├── lib/service-stubs.sh          # recording docker/podman/kubectl/helm/kind for the service tests
 │   ├── test-astromech.sh             # the astromech front-end
 │   ├── test-carbonite.sh             # the carbonite front-end (real engine, fake CoolerControl)
 │   ├── test-edcmea.sh                # the EDCMEA front-end (fake engine, recording crontab/systemctl)
@@ -359,6 +360,7 @@ scomp-link/
 │   ├── test-lmstudio.sh              # the lmstudio bench (fake server, recording lms)
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
 │   ├── test-protocol.sh              # the protocol front-end
+│   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
 │   └── test-thermal-exhaust-port.sh  # the thermal-exhaust-port front-end
@@ -373,6 +375,7 @@ scomp-link/
     │   ├── portforward.sh             # Port-forward pid-file helpers (also reused for
     │   │                              #   tracking arbitrary background processes)
     │   ├── gh_releases.sh             # GitHub release fetching helpers
+    │   ├── secret.sh                  # _gen_secret (pipefail-safe random secrets)
     │   └── windows.sh                 # X11/XWayland window discovery (wmctrl + xdotool)
     │
     ├── _templates/                     # [Excluded] Skeletons for new scripts, not run directly

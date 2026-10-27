@@ -33,6 +33,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -89,7 +91,7 @@ _prompt_encryption_key() {
         --header "Encryption key (protects stored credentials — save it!):") || true
 
     if [[ -z "$key_input" ]]; then
-        N8N_ENCRYPTION_KEY=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+        N8N_ENCRYPTION_KEY=$(_gen_secret 32)
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
             --align center --width 60 --margin "1 0" --padding "0 4" \

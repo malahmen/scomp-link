@@ -29,6 +29,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -111,7 +113,7 @@ _prompt_db_credentials() {
         --header "Password (leave empty to auto-generate):") || true
 
     if [[ -z "$MY_PASSWORD" ]]; then
-        MY_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
+        MY_PASSWORD=$(_gen_secret 20)
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
             --align center --width 60 --margin "1 0" --padding "0 4" \
@@ -127,7 +129,7 @@ _prompt_root_password() {
         --header "Root password (leave empty to auto-generate):") || true
 
     if [[ -z "$MY_ROOT_PASSWORD" ]]; then
-        MY_ROOT_PASSWORD=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)
+        MY_ROOT_PASSWORD=$(_gen_secret 20)
         gum style \
             --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
             --align center --width 60 --margin "1 0" --padding "0 4" \
