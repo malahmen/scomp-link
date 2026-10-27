@@ -364,6 +364,7 @@ scomp-link/
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-service-credentials.sh   # the service scripts keep a kept volume's / release's credentials
 │   ├── test-service-kube-context.sh  # the service scripts act only on the chosen kube-context
+│   ├── test-service-paths.sh         # dozzle uninstall / lgtm purge delete only folders they created
 │   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
@@ -379,6 +380,7 @@ scomp-link/
     │   ├── portforward.sh             # Port-forward pid-file helpers (also reused for
     │   │                              #   tracking arbitrary background processes)
     │   ├── gh_releases.sh             # GitHub release fetching helpers
+    │   ├── owned_dirs.sh              # folders a script created (marker) - the only ones it may delete
     │   ├── secret.sh                  # _gen_secret (pipefail-safe random secrets)
     │   └── windows.sh                 # X11/XWayland window discovery (wmctrl + xdotool)
     │
@@ -627,7 +629,13 @@ or, given none, from stdin; and it **refuses an answer that was not offered**,
 logging it so `run-all.sh` fails that file even if its checks passed. It used
 to return the scripted answer whatever the menu held, so a picker listing the
 wrong things passed every test. `esc` (or running out of answers) is the user
-pressing Esc. No network and no terminal: `file://` remotes only.
+pressing Esc. `spin` runs its command and exits with the command's status, as
+gum does. No network and no terminal: `file://` remotes only.
+
+The service scripts (databases, observability, platform) run against
+recording stubs of `docker`, `docker-compose`, `podman`, `kubectl`, `helm` and
+`kind` (`tests/lib/service-stubs.sh`) on a `PATH` without `/usr/local/bin` or
+`/opt/homebrew/bin`, so no container runtime or cluster is ever reached.
 
 The astromech, carbonite and thermal-exhaust-port tests drive the real engine,
 found beside this repository (`../astromech`, …) or through `$ASTROMECH`,

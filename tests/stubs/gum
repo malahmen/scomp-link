@@ -84,7 +84,10 @@ case "$cmd" in
             esac
         done ;;
     log)  printf '[info] %s\n' "${*: -1}" >&2 ;;
-    spin) while [[ $# -gt 0 && "$1" != "--" ]]; do shift; done; shift 2>/dev/null || true; "$@" ;;
+    # Like gum, spin exits with the command's status: it used to exit 0
+    # whatever the command did, so a failure a script must survive (a delete
+    # that fails half way through a purge) could not be seen in a test.
+    spin) while [[ $# -gt 0 && "$1" != "--" ]]; do shift; done; shift 2>/dev/null || true; "$@"; exit $? ;;
     *)    : ;;
 esac
 exit 0
