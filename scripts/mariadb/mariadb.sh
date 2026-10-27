@@ -361,32 +361,31 @@ mariadb_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$MDB_HELM_RELEASE" -n "$MDB_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$MDB_HELM_RELEASE" -n "$MDB_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$MDB_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$MDB_NAMESPACE" &>/dev/null; then
         info "Namespace '${MDB_NAMESPACE}' already exists."
     else
         info "Creating namespace '${MDB_NAMESPACE}'..."
-        kubectl create namespace "$MDB_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$MDB_NAMESPACE"
     fi
 }
 
-# Switches to the selected context and verifies the cluster is reachable.
-# Must be called at the start of every K8s operation.
+# Sets KUBE_CONTEXT to the chosen context and verifies the cluster is
+# reachable. Must be called at the start of every K8s operation.
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -446,8 +445,8 @@ mariadb_install_k8s() {
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading MariaDB via Helm..." -- \
-            helm upgrade "${helm_args[@]}" \
-            || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${MDB_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
+            || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MDB_NAMESPACE}"
     else
         helm_args+=(
             --set settings.rootPassword="$MDB_ROOT_PASSWORD"
@@ -456,8 +455,8 @@ mariadb_install_k8s() {
             --set userDatabase.password="$MDB_PASSWORD"
         )
         gum spin --spinner dot --title "Installing MariaDB via Helm (may take a few minutes)..." -- \
-            helm install "${helm_args[@]}" \
-            || error_exit "Helm install failed. Check: kubectl get pods -n ${MDB_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
+            || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MDB_NAMESPACE}"
     fi
 
     local shown_db="$MDB_DB" shown_user="$MDB_USER"
@@ -485,15 +484,15 @@ mariadb_status_k8s() {
     fi
 
     gum style --foreground "$CYAN" --bold "── Helm release ──"
-    helm status "$MDB_HELM_RELEASE" -n "$MDB_NAMESPACE" 2>/dev/null || true
+    helm --kube-context "$KUBE_CONTEXT" status "$MDB_HELM_RELEASE" -n "$MDB_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Pods ──"
-    kubectl get pods -n "$MDB_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$MDB_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Services ──"
-    kubectl get svc -n "$MDB_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$MDB_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
@@ -525,7 +524,7 @@ mariadb_port_forward_k8s() {
         --header "Local port (leave empty for ${MDB_DEFAULT_PORT}):") || true
     local port="${port_input:-$MDB_DEFAULT_PORT}"
 
-    kubectl -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_MDB_PF_PID"
 
     local attempts=0
@@ -575,7 +574,7 @@ mariadb_connect_k8s() {
     db="${db:-$MDB_DEFAULT_DB}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
     local pf_pid=$!
 
     local attempts=0
@@ -619,7 +618,7 @@ mariadb_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "Delete them manually to fully purge data:" \
-        "  kubectl delete pvc --all -n ${MDB_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${MDB_NAMESPACE}"
 
     if ! gum confirm "Uninstall MariaDB?"; then
         warn "Cancelled."
@@ -627,11 +626,11 @@ mariadb_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$MDB_HELM_RELEASE" -n "$MDB_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$MDB_HELM_RELEASE" -n "$MDB_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${MDB_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${MDB_NAMESPACE}'..." -- \
-            kubectl delete namespace "$MDB_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$MDB_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

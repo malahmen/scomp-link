@@ -406,30 +406,29 @@ n8n_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$N8N_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$N8N_NAMESPACE" &>/dev/null; then
         info "Namespace '${N8N_NAMESPACE}' already exists."
     else
         info "Creating namespace '${N8N_NAMESPACE}'..."
-        kubectl create namespace "$N8N_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$N8N_NAMESPACE"
     fi
 }
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -510,16 +509,16 @@ n8n_install_k8s() {
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
         if ! gum spin --spinner dot --title "Upgrading n8n..." -- \
-            helm upgrade "${helm_args[@]}"; then
-            warn "Upgrade failed. Check 'helm status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
+            warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
             return
         fi
         success "n8n upgraded."
     else
         helm_args+=(--set config.n8n.encryptionKey="$N8N_ENCRYPTION_KEY")
         if ! gum spin --spinner dot --title "Installing n8n..." -- \
-            helm install "${helm_args[@]}"; then
-            warn "Install failed. Check 'helm status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
+            warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
             return
         fi
         success "n8n installed."
@@ -541,19 +540,19 @@ n8n_status_k8s() {
     fi
 
     info "Helm release:"
-    helm status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" 2>/dev/null | head -10
+    helm --kube-context "$KUBE_CONTEXT" status "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" 2>/dev/null | head -10
     echo ""
 
     info "Pods:"
-    kubectl get pods -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "Services:"
-    kubectl get svc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "PersistentVolumeClaims:"
-    kubectl get pvc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pvc -n "$N8N_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
 n8n_connect_k8s() {
@@ -581,11 +580,11 @@ n8n_connect_k8s() {
     local port="${port_input:-$N8N_DEFAULT_PORT}"
 
     local svc="${N8N_HELM_RELEASE}-n8n"
-    if ! kubectl get svc "$svc" -n "$N8N_NAMESPACE" &>/dev/null 2>&1; then
+    if ! kubectl --context "$KUBE_CONTEXT" get svc "$svc" -n "$N8N_NAMESPACE" &>/dev/null 2>&1; then
         svc="$N8N_HELM_RELEASE"
     fi
 
-    kubectl -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_N8N_PF_PID"
 
     local attempts=0
@@ -620,7 +619,7 @@ n8n_uninstall_k8s() {
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "(workflows, credentials, and settings will survive in the PVC)" \
         "Delete manually to fully purge:" \
-        "  kubectl delete pvc --all -n ${N8N_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${N8N_NAMESPACE}"
 
     if ! gum confirm "Uninstall n8n?"; then
         warn "Cancelled."
@@ -628,11 +627,11 @@ n8n_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$N8N_HELM_RELEASE" -n "$N8N_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${N8N_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${N8N_NAMESPACE}'..." -- \
-            kubectl delete namespace "$N8N_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$N8N_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

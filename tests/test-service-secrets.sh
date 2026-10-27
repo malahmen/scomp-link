@@ -82,7 +82,7 @@ check "the install completes" has "n8n running" "$T/out"
 echo "harbor (k8s): empty admin password"
 svc_reset; touch "$STUB_STATE/no-docker"; echo stub-ctx > "$STUB_STATE/contexts"
 svc_run harbor "" "" install "" "" "StorageClass (dynamic provisioning — covers NFS-backed classes)" "" "" "← back"
-pw="$(grep -E '^helm install ' "$STUB_LOG" | tr ' ' '\n' | sed -n 's/^harborAdminPassword=//p')"
+pw="$(grep -E '^helm (--kube-context [^ ]+ )?install ' "$STUB_LOG" | tr ' ' '\n' | sed -n 's/^harborAdminPassword=//p')"
 check "the script finishes (exit 0)" rc_is 0
 check "the admin password is generated (24) and reaches the release" grep -qxE '[A-Za-z0-9]{24}' <<< "$pw"
 check "the install completes" has "Harbor installed." "$T/out"

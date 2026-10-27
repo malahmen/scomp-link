@@ -77,17 +77,16 @@ check_dependencies() {
 # -----------------------------------------------------------------------------
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -95,16 +94,16 @@ _k8s_check_cluster() {
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$HARBOR_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$HARBOR_NAMESPACE" &>/dev/null; then
         info "Namespace '${HARBOR_NAMESPACE}' already exists."
     else
         info "Creating namespace '${HARBOR_NAMESPACE}'..."
-        kubectl create namespace "$HARBOR_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$HARBOR_NAMESPACE"
     fi
 }
 
 _k8s_detect_installed() {
-    helm status "$HARBOR_HELM_RELEASE" -n "$HARBOR_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$HARBOR_HELM_RELEASE" -n "$HARBOR_NAMESPACE" &>/dev/null 2>&1
 }
 
 # -----------------------------------------------------------------------------
@@ -113,7 +112,7 @@ _k8s_detect_installed() {
 
 _storage_select_node() {
     local nodes
-    nodes=$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+    nodes=$(kubectl --context "$KUBE_CONTEXT" get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
         | tr ' ' '\n')
 
     local node_count
@@ -149,7 +148,7 @@ _storage_apply_local_path() {
         local pvc_name="${HARBOR_HELM_RELEASE}-${component}"
         local path="${base_path}/${component}"
 
-        kubectl apply -f - &>/dev/null <<EOF
+        kubectl --context "$KUBE_CONTEXT" apply -f - &>/dev/null <<EOF
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -361,15 +360,15 @@ harbor_install_k8s() {
 
     if [[ "$upgrade" == true ]]; then
         if ! gum spin --spinner dot --title "Upgrading Harbor (this may take several minutes)..." -- \
-            helm upgrade "${helm_args[@]}"; then
-            warn "Upgrade failed. Check 'helm status ${HARBOR_HELM_RELEASE} -n ${HARBOR_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
+            warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${HARBOR_HELM_RELEASE} -n ${HARBOR_NAMESPACE}'."
             return
         fi
         success "Harbor upgraded."
     else
         if ! gum spin --spinner dot --title "Installing Harbor (this may take several minutes)..." -- \
-            helm install "${helm_args[@]}"; then
-            warn "Install failed. Check 'helm status ${HARBOR_HELM_RELEASE} -n ${HARBOR_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
+            warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${HARBOR_HELM_RELEASE} -n ${HARBOR_NAMESPACE}'."
             return
         fi
         success "Harbor installed."
@@ -400,19 +399,19 @@ harbor_status_k8s() {
     fi
 
     info "Helm release:"
-    helm status "$HARBOR_HELM_RELEASE" -n "$HARBOR_NAMESPACE" 2>/dev/null | head -10
+    helm --kube-context "$KUBE_CONTEXT" status "$HARBOR_HELM_RELEASE" -n "$HARBOR_NAMESPACE" 2>/dev/null | head -10
     echo ""
 
     info "Pods:"
-    kubectl get pods -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "Services:"
-    kubectl get svc -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "PersistentVolumeClaims:"
-    kubectl get pvc -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pvc -n "$HARBOR_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
 harbor_connect_k8s() {
@@ -442,13 +441,13 @@ harbor_connect_k8s() {
     local port="${port_input:-$HARBOR_DEFAULT_PORT}"
 
     local svc="$HARBOR_HELM_RELEASE"
-    if ! kubectl get svc "$svc" -n "$HARBOR_NAMESPACE" &>/dev/null 2>&1; then
-        svc=$(kubectl get svc -n "$HARBOR_NAMESPACE" \
+    if ! kubectl --context "$KUBE_CONTEXT" get svc "$svc" -n "$HARBOR_NAMESPACE" &>/dev/null 2>&1; then
+        svc=$(kubectl --context "$KUBE_CONTEXT" get svc -n "$HARBOR_NAMESPACE" \
             --field-selector spec.type=ClusterIP \
             -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "$HARBOR_HELM_RELEASE")
     fi
 
-    kubectl -n "$HARBOR_NAMESPACE" port-forward "svc/${svc}" "${port}:80" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$HARBOR_NAMESPACE" port-forward "svc/${svc}" "${port}:80" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_HARBOR_PF_PID"
 
     local attempts=0
@@ -482,8 +481,8 @@ harbor_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims and PersistentVolumes are NOT removed" \
         "automatically. Delete them manually to fully purge data:" \
-        "  kubectl delete pvc --all -n ${HARBOR_NAMESPACE}" \
-        "  kubectl delete pv -l harbor-release=${HARBOR_HELM_RELEASE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${HARBOR_NAMESPACE}" \
+        "  kubectl --context ${KUBE_CONTEXT} delete pv -l harbor-release=${HARBOR_HELM_RELEASE}"
 
     if ! gum confirm "Uninstall Harbor?"; then
         warn "Cancelled."
@@ -491,18 +490,18 @@ harbor_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$HARBOR_HELM_RELEASE" -n "$HARBOR_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$HARBOR_HELM_RELEASE" -n "$HARBOR_NAMESPACE" || true
 
     if gum confirm "Also delete PersistentVolumes created for this release?"; then
         gum spin --spinner dot --title "Deleting PersistentVolumes..." -- \
-            kubectl delete pv -l "harbor-release=${HARBOR_HELM_RELEASE}" \
+            kubectl --context "$KUBE_CONTEXT" delete pv -l "harbor-release=${HARBOR_HELM_RELEASE}" \
             --ignore-not-found 2>/dev/null || true
         success "PersistentVolumes removed."
     fi
 
     if gum confirm "Also delete namespace '${HARBOR_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${HARBOR_NAMESPACE}'..." -- \
-            kubectl delete namespace "$HARBOR_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$HARBOR_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

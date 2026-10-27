@@ -569,30 +569,29 @@ grafana_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$GRF_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$GRF_NAMESPACE" &>/dev/null; then
         info "Namespace '${GRF_NAMESPACE}' already exists."
     else
         info "Creating namespace '${GRF_NAMESPACE}'..."
-        kubectl create namespace "$GRF_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$GRF_NAMESPACE"
     fi
 }
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -684,15 +683,15 @@ grafana_install_k8s() {
 
     if [[ "$upgrade" == true ]]; then
         if ! gum spin --spinner dot --title "Upgrading Grafana..." -- \
-            helm upgrade "${helm_args[@]}"; then
-            warn "Upgrade failed. Check 'helm status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
+            warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
             return
         fi
         success "Grafana upgraded."
     else
         if ! gum spin --spinner dot --title "Installing Grafana..." -- \
-            helm install "${helm_args[@]}"; then
-            warn "Install failed. Check 'helm status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
+            warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${GRF_HELM_RELEASE} -n ${GRF_NAMESPACE}'."
             return
         fi
         success "Grafana installed."
@@ -721,19 +720,19 @@ grafana_status_k8s() {
     fi
 
     info "Helm release:"
-    helm status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" 2>/dev/null | head -10
+    helm --kube-context "$KUBE_CONTEXT" status "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" 2>/dev/null | head -10
     echo ""
 
     info "Pods:"
-    kubectl get pods -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "Services:"
-    kubectl get svc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null
     echo ""
 
     info "PersistentVolumeClaims:"
-    kubectl get pvc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pvc -n "$GRF_NAMESPACE" --no-headers 2>/dev/null || true
 }
 
 grafana_connect_k8s() {
@@ -763,11 +762,11 @@ grafana_connect_k8s() {
     local port="${port_input:-$GRF_DEFAULT_PORT}"
 
     local svc="${GRF_HELM_RELEASE}-grafana"
-    if ! kubectl get svc "$svc" -n "$GRF_NAMESPACE" &>/dev/null 2>&1; then
+    if ! kubectl --context "$KUBE_CONTEXT" get svc "$svc" -n "$GRF_NAMESPACE" &>/dev/null 2>&1; then
         svc="$GRF_HELM_RELEASE"
     fi
 
-    kubectl -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_GRF_PF_PID"
 
     local attempts=0
@@ -801,7 +800,7 @@ grafana_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "Delete manually to fully purge:" \
-        "  kubectl delete pvc --all -n ${GRF_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${GRF_NAMESPACE}"
 
     if ! gum confirm "Uninstall Grafana?"; then
         warn "Cancelled."
@@ -809,11 +808,11 @@ grafana_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$GRF_HELM_RELEASE" -n "$GRF_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${GRF_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${GRF_NAMESPACE}'..." -- \
-            kubectl delete namespace "$GRF_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$GRF_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

@@ -363,6 +363,7 @@ scomp-link/
 │   ├── test-mind-trick.sh            # the mind-trick front-end (fake engine)
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-service-credentials.sh   # the service scripts keep a kept volume's / release's credentials
+│   ├── test-service-kube-context.sh  # the service scripts act only on the chosen kube-context
 │   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
@@ -608,7 +609,7 @@ Scomp-Link is evolving into a comprehensive shell scripting framework:
 - A front-end whose behaviour is worth protecting gets a `tests/test-<name>.sh` (see below)
 - Use gum for all user prompts and selections
 - Add new scripts under `scripts/<folder>/` (auto-discovered by `init.sh`)
-- Source `scripts/_common/cluster.sh` for deployment target selection (`select_target`)
+- Source `scripts/_common/cluster.sh` for deployment target selection (`select_target`); on kind/k8s pass `--context "$KUBE_CONTEXT"` (kubectl) / `--kube-context "$KUBE_CONTEXT"` (helm) on every call and never `kubectl config use-context` - it changes the user's current context in every terminal
 - Source `scripts/_common/ui.sh` for consistent gum-based display helpers
 
 ### Tests

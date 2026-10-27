@@ -339,30 +339,29 @@ mysql_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$MY_HELM_RELEASE" -n "$MY_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$MY_HELM_RELEASE" -n "$MY_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$MY_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$MY_NAMESPACE" &>/dev/null; then
         info "Namespace '${MY_NAMESPACE}' already exists."
     else
         info "Creating namespace '${MY_NAMESPACE}'..."
-        kubectl create namespace "$MY_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$MY_NAMESPACE"
     fi
 }
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -421,8 +420,8 @@ mysql_install_k8s() {
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading MySQL via Helm..." -- \
-            helm upgrade "${helm_args[@]}" \
-            || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${MY_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
+            || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MY_NAMESPACE}"
     else
         helm_args+=(
             --set settings.rootPassword="$MY_ROOT_PASSWORD"
@@ -431,8 +430,8 @@ mysql_install_k8s() {
             --set userDatabase.password="$MY_PASSWORD"
         )
         gum spin --spinner dot --title "Installing MySQL via Helm (may take a few minutes)..." -- \
-            helm install "${helm_args[@]}" \
-            || error_exit "Helm install failed. Check: kubectl get pods -n ${MY_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
+            || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MY_NAMESPACE}"
     fi
 
     local shown_db="$MY_DB" shown_user="$MY_USER"
@@ -460,15 +459,15 @@ mysql_status_k8s() {
     fi
 
     gum style --foreground "$CYAN" --bold "── Helm release ──"
-    helm status "$MY_HELM_RELEASE" -n "$MY_NAMESPACE" 2>/dev/null || true
+    helm --kube-context "$KUBE_CONTEXT" status "$MY_HELM_RELEASE" -n "$MY_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Pods ──"
-    kubectl get pods -n "$MY_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$MY_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Services ──"
-    kubectl get svc -n "$MY_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$MY_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
@@ -500,7 +499,7 @@ mysql_port_forward_k8s() {
         --header "Local port (leave empty for ${MY_DEFAULT_PORT}):") || true
     local port="${port_input:-$MY_DEFAULT_PORT}"
 
-    kubectl -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_MY_PF_PID"
 
     local attempts=0
@@ -550,7 +549,7 @@ mysql_connect_k8s() {
     db="${db:-$MY_DEFAULT_DB}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
     local pf_pid=$!
 
     local attempts=0
@@ -591,7 +590,7 @@ mysql_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "Delete them manually to fully purge data:" \
-        "  kubectl delete pvc --all -n ${MY_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${MY_NAMESPACE}"
 
     if ! gum confirm "Uninstall MySQL?"; then
         warn "Cancelled."
@@ -599,11 +598,11 @@ mysql_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$MY_HELM_RELEASE" -n "$MY_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$MY_HELM_RELEASE" -n "$MY_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${MY_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${MY_NAMESPACE}'..." -- \
-            kubectl delete namespace "$MY_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$MY_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 

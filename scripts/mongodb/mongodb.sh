@@ -466,30 +466,29 @@ mongodb_uninstall_docker() {
 # -----------------------------------------------------------------------------
 
 _k8s_detect_installed() {
-    helm status "$MNG_HELM_RELEASE" -n "$MNG_NAMESPACE" &>/dev/null 2>&1
+    helm --kube-context "$KUBE_CONTEXT" status "$MNG_HELM_RELEASE" -n "$MNG_NAMESPACE" &>/dev/null 2>&1
 }
 
 _k8s_ensure_namespace() {
-    if kubectl get namespace "$MNG_NAMESPACE" &>/dev/null; then
+    if kubectl --context "$KUBE_CONTEXT" get namespace "$MNG_NAMESPACE" &>/dev/null; then
         info "Namespace '${MNG_NAMESPACE}' already exists."
     else
         info "Creating namespace '${MNG_NAMESPACE}'..."
-        kubectl create namespace "$MNG_NAMESPACE"
+        kubectl --context "$KUBE_CONTEXT" create namespace "$MNG_NAMESPACE"
     fi
 }
 
 _k8s_check_cluster() {
-    if [[ "$TARGET_TYPE" == "kind" ]]; then
-        kubectl config use-context "kind-${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to kind context 'kind-${TARGET_CONTEXT}'."
-    else
-        kubectl config use-context "${TARGET_CONTEXT}" &>/dev/null \
-            || error_exit "Could not switch to context '${TARGET_CONTEXT}'."
-    fi
+    # Never `kubectl config use-context`: that rewrote the user's kubeconfig for
+    # every terminal, and the deletes that followed (without --context) went to
+    # whatever the current context had become by then (Kamino 175). Every
+    # kubectl/helm call names the chosen context instead.
+    KUBE_CONTEXT="$(kube_context_name)"
+    [[ -n "$KUBE_CONTEXT" ]] || error_exit "No Kubernetes context selected."
 
     if ! gum spin --spinner dot --title "Verifying cluster connectivity..." -- \
-        kubectl cluster-info &>/dev/null; then
-        gum log --level error "Cannot reach cluster '${TARGET_CONTEXT}'."
+        kubectl --context "$KUBE_CONTEXT" cluster-info &>/dev/null; then
+        gum log --level error "Cannot reach cluster '${KUBE_CONTEXT}'."
         gum log --level error "Verify the cluster is running and your kubeconfig is up to date."
         return 1
     fi
@@ -549,8 +548,8 @@ mongodb_install_k8s() {
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
         gum spin --spinner dot --title "Upgrading MongoDB via Helm..." -- \
-            helm upgrade "${helm_args[@]}" \
-            || error_exit "Helm upgrade failed. Check: kubectl get pods -n ${MNG_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
+            || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MNG_NAMESPACE}"
     else
         helm_args+=(
             --set settings.rootUsername="$MNG_ROOT_USER"
@@ -560,8 +559,8 @@ mongodb_install_k8s() {
             --set userDatabase.password="$MNG_PASSWORD"
         )
         gum spin --spinner dot --title "Installing MongoDB via Helm (may take a few minutes)..." -- \
-            helm install "${helm_args[@]}" \
-            || error_exit "Helm install failed. Check: kubectl get pods -n ${MNG_NAMESPACE}"
+            helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
+            || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MNG_NAMESPACE}"
     fi
 
     local shown_db="$MNG_DB" shown_user="$MNG_USER" shown_root="$MNG_ROOT_USER"
@@ -590,15 +589,15 @@ mongodb_status_k8s() {
     fi
 
     gum style --foreground "$CYAN" --bold "── Helm release ──"
-    helm status "$MNG_HELM_RELEASE" -n "$MNG_NAMESPACE" 2>/dev/null || true
+    helm --kube-context "$KUBE_CONTEXT" status "$MNG_HELM_RELEASE" -n "$MNG_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Pods ──"
-    kubectl get pods -n "$MNG_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get pods -n "$MNG_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Services ──"
-    kubectl get svc -n "$MNG_NAMESPACE" 2>/dev/null || true
+    kubectl --context "$KUBE_CONTEXT" get svc -n "$MNG_NAMESPACE" 2>/dev/null || true
 
     echo ""
     gum confirm "Press Enter to continue" --affirmative "OK" --negative "" || true
@@ -630,7 +629,7 @@ mongodb_port_forward_k8s() {
         --header "Local port (leave empty for ${MNG_DEFAULT_PORT}):") || true
     local port="${port_input:-$MNG_DEFAULT_PORT}"
 
-    kubectl -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_MNG_PF_PID"
 
     local attempts=0
@@ -691,7 +690,7 @@ mongodb_connect_k8s() {
     auth_db="${auth_db:-$auth_default}"
 
     info "Starting port-forward in background..."
-    kubectl -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" >/dev/null 2>&1 &
+    kubectl --context "$KUBE_CONTEXT" -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" >/dev/null 2>&1 &
     local pf_pid=$!
 
     local attempts=0
@@ -735,7 +734,7 @@ mongodb_uninstall_k8s() {
         "" \
         "PersistentVolumeClaims are NOT removed automatically by Helm." \
         "Delete them manually to fully purge data:" \
-        "  kubectl delete pvc --all -n ${MNG_NAMESPACE}"
+        "  kubectl --context ${KUBE_CONTEXT} delete pvc --all -n ${MNG_NAMESPACE}"
 
     if ! gum confirm "Uninstall MongoDB?"; then
         warn "Cancelled."
@@ -743,11 +742,11 @@ mongodb_uninstall_k8s() {
     fi
 
     gum spin --spinner dot --title "Running helm uninstall..." -- \
-        helm uninstall "$MNG_HELM_RELEASE" -n "$MNG_NAMESPACE" || true
+        helm --kube-context "$KUBE_CONTEXT" uninstall "$MNG_HELM_RELEASE" -n "$MNG_NAMESPACE" || true
 
     if gum confirm "Also delete namespace '${MNG_NAMESPACE}' (removes remaining PVCs too)?"; then
         gum spin --spinner dot --title "Deleting namespace '${MNG_NAMESPACE}'..." -- \
-            kubectl delete namespace "$MNG_NAMESPACE" --ignore-not-found || true
+            kubectl --context "$KUBE_CONTEXT" delete namespace "$MNG_NAMESPACE" --ignore-not-found || true
         success "Namespace deleted."
     fi
 
