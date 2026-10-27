@@ -157,7 +157,11 @@ cfg_load() {
 
 # cfg_require [error-message]
 # Loads config, validates TARGET_TYPE is set, echoes it for capture.
-# Use as: target_type=$(cfg_require "Nothing to uninstall.")
+# Use as: target_type=$(cfg_require "Nothing to uninstall."); cfg_load
+# The cfg_load after it matters: $() is a subshell, so without it TARGET_TYPE
+# and TARGET_CONTEXT stay empty in the caller, helm_context_flag and
+# kubectl_context_flag print nothing, and every helm/kubectl call - purge's
+# namespace delete included - goes to the user's current context (Kamino 175).
 cfg_require() {
     local msg="${1:-No saved config found. Run install first.}"
     cfg_load
@@ -1416,6 +1420,7 @@ cmd_uninstall() {
 
     local target_type ctx_flags
     target_type=$(cfg_require "No saved config found. Nothing to uninstall.")
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     # Imported stack guard: this stack wasn't deployed by lgtm.sh, so its
     # Helm release names may not match what this script expects. uninstall
@@ -1482,6 +1487,7 @@ cmd_purge() {
 
     local target_type
     target_type=$(cfg_require "No saved config found. Nothing to purge.")
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     # Imported stack guard — purge does helm uninstall + wipe data. For a stack
     # this tool didn't deploy, that's almost never what the user wants.
@@ -1572,6 +1578,7 @@ cmd_status() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1662,6 +1669,7 @@ cmd_port_forward() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     local enabled
     enabled=$(cfg_get "ENABLED_COMPONENTS")
@@ -1781,6 +1789,7 @@ cmd_start() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     if [[ "$target_type" != "docker" ]]; then
         # k8s scale-up
@@ -1833,6 +1842,7 @@ cmd_stop() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
 
     if [[ "$target_type" != "docker" ]]; then
         # k8s scale-down
@@ -1916,6 +1926,7 @@ cmd_test() {
 
     local target_type
     target_type=$(cfg_require)
+    cfg_load   # $(cfg_require) loaded the config in a subshell; the context flags read it here
     if [[ "$target_type" == "docker" ]]; then
         error_exit "Test command requires k8s or kind."
     fi

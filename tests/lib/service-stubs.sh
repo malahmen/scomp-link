@@ -24,7 +24,7 @@ check() { local d="$1"; shift; if "$@"; then echo "   ok   - $d"; else echo "   
 has()   { grep -qF -- "$1" "$2"; }
 lacks() { ! grep -qF -- "$1" "$2"; }
 
-mkdir -p "$T/bin" "$T/home"
+mkdir -p "$T/bin" "$T/home" "$T/work"   # work: the scripts' cwd, so a relative path stays in here
 # bash 4+ is what the gum stub and the scripts need; it may live outside the
 # system directories (macOS: /bin/bash is 3.2), so it is linked in by name.
 ln -s "$(command -v bash)" "$T/bin/bash"
@@ -156,6 +156,8 @@ printf 'kind %s\n' "$*" >> "$STUB_LOG"
 [[ "$1 $2" == "get clusters" ]] && cat "$STUB_STATE/kind-clusters" 2>/dev/null
 exit 0
 EOF
+# docker-compose (v1, what dozzle and lgtm call): records, succeeds.
+printf '#!/usr/bin/env bash\nprintf "docker-compose %%s\\n" "$*" >> "$STUB_LOG"\nexit 0\n' > "$T/bin/docker-compose"
 # Readiness loops: answer at once, and do not wait.
 printf '#!/usr/bin/env bash\nprintf "curl %%s\\n" "$*" >> "$STUB_LOG"\nexit 0\n' > "$T/bin/curl"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/nc"
@@ -175,7 +177,15 @@ svc_reset() { rm -rf "$STUB_STATE"; mkdir -p "$STUB_STATE"; : > "$STUB_LOG"; }
 svc_run() {
     local svc="$1"; shift
     printf '%s\n' "$@" > "$GUM_ANSWERS"; : > "$GUM_STATE"; : > "$STUB_LOG"
-    bash "${SVC_DIR}/${svc}/${svc}.sh" > "$T/out" 2>&1 < /dev/null
+    (cd "$T/work" && bash "${SVC_DIR}/${svc}/${svc}.sh" > "$T/out" 2>&1 < /dev/null)
+    echo $? > "$T/rc"
+}
+# svc_cmd <service> <subcommand> <answer>... - the same, for the scripts
+# driven by a subcommand (dozzle.sh uninstall, lgtm.sh purge).
+svc_cmd() {
+    local svc="$1" sub="$2"; shift 2
+    printf '%s\n' "$@" > "$GUM_ANSWERS"; : > "$GUM_STATE"; : > "$STUB_LOG"
+    (cd "$T/work" && bash "${SVC_DIR}/${svc}/${svc}.sh" "$sub" > "$T/out" 2>&1 < /dev/null)
     echo $? > "$T/rc"
 }
 rc_is() { [[ "$(cat "$T/rc")" == "$1" ]]; }

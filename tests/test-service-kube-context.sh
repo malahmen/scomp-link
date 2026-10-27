@@ -97,6 +97,24 @@ check "no kubectl config use-context" no_use_context
 check "the user's current context is untouched" current_is eks-prod
 check "every cluster call names kind-dev" all_carry kind-dev
 
+echo "lgtm: purge on a kind target from its saved config"
+# lgtm read its target with target_type=\$(cfg_require): a subshell, so the
+# context flags came out empty and purge's helm uninstall / kubectl delete
+# namespace went to the user's current context.
+svc_reset
+echo eks-prod > "$STUB_STATE/current-context"
+mkdir -p "$HOME/.config/lgtm"
+printf '%s\n' 'TARGET_TYPE="kind"' 'TARGET_CONTEXT="dev"' 'ENABLED_COMPONENTS="grafana loki"' \
+    "HOSTPATH_BASE=\"$T/node-path\"" > "$HOME/.config/lgtm/lgtm.conf"
+svc_cmd lgtm purge yes
+check "the script finishes (exit 0)" rc_is 0
+check "helm uninstall names kind-dev" grep -qE '^helm uninstall grafana .*--kube-context kind-dev' "$STUB_LOG"
+check "kubectl delete namespace names kind-dev" grep -qE '^kubectl --context kind-dev delete namespace monitoring' "$STUB_LOG"
+check "every cluster call names kind-dev" \
+    bash -c "n=\$(grep -cE '^(kubectl|helm) ' '$STUB_LOG'); (( n > 0 )) && ! grep -E '^(kubectl|helm) ' '$STUB_LOG' | grep -vqE -- '--(kube-)?context kind-dev'"
+check "the user's current context is untouched" current_is eks-prod
+rm -rf "$HOME/.config/lgtm"
+
 echo "no service script or template switches the global context"
 check "no 'config use-context' outside kind.sh and karpenter.sh" \
     bash -c "! grep -rn 'kubectl config use-context' '$SVC_DIR' --include='*.sh' \
