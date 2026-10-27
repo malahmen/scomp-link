@@ -175,7 +175,13 @@ content hash, so re-running an unchanged file does nothing.
 
 **dump** writes gzipped SQL to `~/.config/nordrassil/dumps`; **restore** lists
 what is in there, newest first. A dump is self-describing, so restore knows
-which databases it replaces and prints them before starting. Because the
+which databases it replaces. The front-end first runs the engine's restore
+without `--yes`, which prints the `target:` and `OVERWRITES:` lines and stops
+before touching anything, and only then asks - with those two lines in the
+question. If the engine would refuse (an unreadable file, `--db` on a dump
+that names its own databases, no reachable database), nothing is asked.
+`tests/test-wow-vmangos-nordrassil.sh` holds this against an engine stub with
+the same contract. Because the
 transport comes from the profile, a dump taken from one server restores onto
 another by switching server first — which is how you move a world between
 them.
