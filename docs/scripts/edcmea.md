@@ -27,6 +27,23 @@ feed, no key). Mail goes through Charm's [pop](https://github.com/charmbracelet/
 over Resend or SMTP; its settings live in the engine's owner-only `pop.env`,
 because a cron job gets none of your shell's environment.
 
+**What the schedule runs.** cron runs a job with `PATH=/usr/bin:/bin` and none
+of your shell's variables, the systemd user manager with its own: a schedule
+that relied on either would not find pop, or your rules. So the schedule is
+written with everything resolved when you set it up: python3 (`$EDCMEA_PYTHON`
+first) and the engine's `edcmea.py` by full path, and `EDCMEA_POP`,
+`EDCMEA_CONFIG_DIR`, `EDCMEA_STATE_DIR` as the engine resolves them in this
+session - in the crontab line as variables, in the unit as `Environment=`.
+Every path is quoted, a space, `'`, `$` or `%` included (`\%` for cron, `%%`
+for systemd). Without pop it refuses to schedule. Moved pop, Python or the
+engine? Set the schedule again. The crontab line runs `check --quiet` (alerts
+and errors only) into `check.log` in the state folder, so the log grows by what
+happened; the timer logs to the journal. The unit has `TimeoutStartSec=15min`
+behind the engine's own run deadline, and `KillMode=mixed` so a stop lets
+`check` record the email it is sending. If `crontab -l` fails for any reason
+but "no crontab for" you, the crontab is left alone - read as empty, the
+rewrite would have dropped every line of yours.
+
 **Secrets stay off command lines.** The SMTP password and the Resend key are
 typed into a hidden field and handed to the engine on stdin; a value given as
 an argument would show in every process listing while it runs.
@@ -37,4 +54,8 @@ an argument would show in every process listing while it runs.
 arguments and stdin, with recording `crontab`, `systemctl` and `uname` stubs -
 rules built into flags, secrets on stdin, the crontab line replaced and removed
 without touching your own lines, the systemd timer, and the guards that refuse
-a schedule with no rules or no recipient.
+a schedule with no rules, no recipient or no pop, or a crontab that cannot be
+read. The engine, python3 and the folders sit in paths with a space, `%`, `'`
+and `$`; the crontab line is then run the way cron runs it (`%` handling, a
+bare environment) and must reach python3 with the right arguments and
+variables.
