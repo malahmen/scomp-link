@@ -90,10 +90,14 @@ resolve_engine() {
 # engine_foreground runs every action: under `set -e` a bare call that exits
 # non-zero (a refused command, a stopped server) or a Ctrl-C would end the
 # whole TUI, where an error or an interrupt has to leave the operator back in
-# the menu. eget reads one setting, for pre-filling a prompt.
+# the menu. Its status is kept in ENGINE_RC for the one caller that must act
+# on it (a roster plan that failed). eget reads one setting, for pre-filling
+# a prompt.
+ENGINE_RC=0
 engine_foreground() {
     trap ':' INT
-    bash "$ENGINE" "${PROFILE_FLAGS[@]}" "$@" || true
+    ENGINE_RC=0
+    bash "$ENGINE" "${PROFILE_FLAGS[@]}" "$@" || ENGINE_RC=$?
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 }
 eget() { bash "$ENGINE" "${PROFILE_FLAGS[@]}" get "$1" 2>/dev/null || true; }
@@ -206,6 +210,17 @@ action_delete_profile() {
     return 0
 }
 
+# action_db_timeout — the engine's DB_TIMEOUT: how long install and db-init
+# wait for the database to answer before they give up, touching nothing.
+action_db_timeout() {
+    header "teldrassil — Database wait (${PROFILE_LABEL})"
+    info "How long install and db-init wait for the database to answer; past it they stop, the databases untouched."
+    local v; v="$(_ask "Seconds (DB_TIMEOUT; blank keeps it):" "$(eget DB_TIMEOUT)")"
+    [[ -n "$v" ]] || { info "Kept."; return 0; }
+    [[ "$v" =~ ^[1-9][0-9]*$ ]] || { warn "'${v}' is not a whole number of seconds above 0; DB_TIMEOUT is unchanged."; return 0; }
+    engine_foreground set DB_TIMEOUT "$v"
+}
+
 # action_profile — which server the rest of the menus act on.
 action_profile() {
     header "teldrassil — Profile (now: ${PROFILE_LABEL})"
@@ -235,6 +250,8 @@ action_install() {
     header "teldrassil — Install a server"
     info "Builds from pinned sources, extracts the client's data, creates the databases"
     info "and starts it all in containers. Steps already done are skipped."
+    info "Databases that exist are kept, never replaced: install starts them, waits up to"
+    info "DB_TIMEOUT seconds (Settings -> db-timeout), and stops if one of the four is missing."
     _set_if CLIENT_DIR    "The 1.12.1 client folder (it holds Data/):"
     _set_if REALM_NAME    "Realm name (in the realm list):"
     _set_if REALM_ADDRESS "Address players connect to (this machine's LAN address for LAN play):"
@@ -258,6 +275,8 @@ action_step() {
             engine_foreground "${args[@]}" ;;
         db-init)
             warn "This creates the four databases and REPLACES any that exist: every account and character."
+            info "teldrassil dumps the ones that exist first, to ~/.config/teldrassil/dumps/before-db-init-*.sql.gz"
+            info "(Administration -> restore lists it); if that dump fails, nothing is replaced."
             gum confirm --default=false "Recreate the databases on ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
             engine_foreground db-init --yes ;;
         configure)
@@ -466,6 +485,12 @@ action_roster_apply() {
     info "First, what would change:"
     engine_foreground roster plan
     echo ""
+    # A plan that fails (a players' guild the roster may not take over, a
+    # bot that does not exist) is one teldrassil refuses to apply: stop here.
+    if (( ENGINE_RC != 0 )); then
+        warn "The plan failed (see above), so there is nothing to apply. Fix the roster and plan again."
+        return 0
+    fi
     warn "Applying stops the world server for about a minute (everyone is disconnected)."
     gum confirm --default=false "Apply the roster to ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
     local -a extra=()
@@ -584,6 +609,7 @@ _submenu() {
             edit-setting)      action_edit_setting || true ;;
             rename-profile)    action_rename_profile || true ;;
             delete-profile)    action_delete_profile || true ;;
+            db-timeout)        action_db_timeout || true ;;
             console-account)   gum confirm --default=false "Create (or renew) the console account TELDRASSIL on ${PROFILE_LABEL}?" && engine_foreground console-account ;;
             install)           action_install || true ;;
             source|build-image|build|extract|db-init|configure|create) action_step "$action" || true ;;
@@ -623,7 +649,7 @@ main() {
         case "$category" in
             Server)         _submenu "Server"         status start stop restart save console ;;
             Provision)      _submenu "Provision"      install source build-image build extract db-init configure create remove ;;
-            Settings)       _submenu "Settings"       profile where-is-it edit-setting console-account settings rename-profile delete-profile ;;
+            Settings)       _submenu "Settings"       profile where-is-it edit-setting console-account db-timeout settings rename-profile delete-profile ;;
             Accounts)       _submenu "Accounts"       create-account list-accounts set-account-level delete-account ;;
             Characters)     _submenu "Characters"     rename-character ;;
             Search)         action_search || true ;;

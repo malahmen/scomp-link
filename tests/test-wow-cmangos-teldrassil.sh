@@ -10,7 +10,8 @@
 # the whole bot population needs a second, separate yes; a console command
 # reaches the engine as one argument, however many words it has; the search
 # filters arrive as the engine's flags; a table-subset dump is restored with
-# --db.
+# --db; a roster plan that fails is never followed by an apply (Kamino 217);
+# DB_TIMEOUT is saved with 'set' only as a positive number of seconds.
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +33,7 @@ cat > "$T/engine/teldrassil.sh" <<EOF
 if [[ "\${1:-}" == get ]]; then
     case "\$2" in
         DB_WORLD) echo classicmangos ;; DB_CHARACTERS) echo classiccharacters ;;
-        DB_REALMD) echo classicrealmd ;; DB_LOGS) echo classiclogs ;; *) echo "" ;;
+        DB_REALMD) echo classicrealmd ;; DB_LOGS) echo classiclogs ;; DB_TIMEOUT) echo 120 ;; *) echo "" ;;
     esac
     exit 0
 fi
@@ -41,6 +42,12 @@ fi
 [[ "\${1:-}" == config ]] && { printf '  DB_USER                root      the database user\n* DB_CONTAINER           db        the MariaDB container\n'; exit 0; }
 (IFS='|'; printf '%s\n' "\$*") >> "$T/calls"
 [[ "\${1:-}" == create-account ]] && cat > "$T/stdin"
+# A roster plan the engine cannot make: as teldrassil, "cannot plan" and a
+# non-zero exit, when the test leaves a status in plan-rc.
+if [[ "\${1:-} \${2:-}" == "roster plan" && -s "$T/plan-rc" ]]; then
+    echo "cannot plan: guild Players' Den is led by a player" >&2
+    exit "\$(cat "$T/plan-rc")"
+fi
 exit 0
 EOF
 cp "${TEST_DIR}/stubs/gum" "$T/bin/gum"; chmod +x "$T/bin/gum"
@@ -73,6 +80,26 @@ check "the second yes missing: the population is kept" called "roster|apply|--ye
 check "  and --fresh-population is not passed" not_called "fresh-population"
 drive Roster apply yes yes yes back Quit
 check "both yeses: apply --fresh-population --yes" called "roster|apply|--fresh-population|--yes"
+
+echo "# roster apply: a plan that fails stops the menu there (Kamino 217)"
+# The answers end at the submenu's "back": a front-end that asked to apply
+# anyway would take "back" as its confirmation, so the transcript shows it.
+echo 1 > "$T/plan-rc"
+drive Roster apply back Quit
+check "failed plan: the plan was run" called "roster|plan"
+check "  apply is never asked" bash -c '! grep -q "<confirm>.*Apply the roster" "$1"' _ "$T/out"
+check "  nor the population" bash -c '! grep -q "<confirm>.*random-bot population" "$1"' _ "$T/out"
+check "  and roster apply never runs" not_called "roster|apply"
+check "  the menu says the plan failed" grep -q "The plan failed" "$T/out"
+# Answered as someone who says yes to everything: the yeses then reach menus
+# that do not offer them, which the stub refuses - expected here, so its
+# refusal log is off for this one run.
+GUM_STUB_ERRLOG='' drive Roster apply yes yes yes back Quit
+check "failed plan, yes to all: roster apply never runs" not_called "roster|apply"
+rm -f "$T/plan-rc"
+drive Roster apply yes no back Quit
+check "plan exit 0: apply is still asked" grep -q "<confirm>.*Apply the roster" "$T/out"
+check "  and confirmed, applied" called "roster|apply|--yes"
 
 echo "# search: filters become flags; a term is required where the engine needs one"
 drive Search Bots "" 'zone\nonline only' Durotar Quit
@@ -153,6 +180,18 @@ PATH="$T/bin:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state.p" TELDRASSIL_D
 check "\$TELDRASSIL_PROFILE starts the session, the password still on stdin" called "--profile|far|create-account|--name|Bob|--pass-stdin|--level|3"
 drive Settings console-account yes back Quit
 check "console account, confirmed" called "console-account"
+
+echo "# settings: DB_TIMEOUT, a positive number of seconds (Kamino 217)"
+drive Settings db-timeout 300 back Quit
+check "300: set DB_TIMEOUT 300" called "set|DB_TIMEOUT|300"
+drive Settings profile "new profile..." far "Here, in containers" "" "" "" "" "" "" "" "" "" "" "" no db-timeout 45 back Quit
+check "  in a profile, to that profile" called "--profile|far|set|DB_TIMEOUT|45"
+for bad in 0 -5 abc 1.5 "60s" "1 2" 007; do
+    drive Settings db-timeout "$bad" back Quit
+    check "'${bad}' is refused, nothing set" not_called "DB_TIMEOUT"
+done
+drive Settings db-timeout "" back Quit
+check "blank keeps it" not_called "DB_TIMEOUT"
 
 echo "# every destructive prompt: declined, Enter (its default) and confirmed (Kamino 178)"
 # Enter answers the prompt's --default; each of these is --default=false, so
