@@ -36,13 +36,13 @@ and a world server); then it manages it and its bots.
 
 | Category | Actions |
 | --- | --- |
-| **Provision** | install (a short wizard - the client folder, realm name and address, how many bots - then one confirmation; steps already done are skipped), or one step at a time: sources, image, build, extract, databases, configure, containers; remove |
+| **Provision** | install (a short wizard - the client folder, realm name and address, how many bots - then one confirmation; steps already done are skipped, and databases that exist are kept, never replaced), or one step at a time: sources, image, build, extract, databases, configure, containers; remove |
 | **Server** | status (containers, ports, who is online, the LLM endpoint), start, stop, restart (now, or graceful: players warned, the world saved), save, the remote console |
-| **Settings** | the profile (which server everything acts on: an existing one, a new one, or the base config); where the server is - here in containers, another machine in containers, or another machine in Kubernetes, each asking only its own questions; edit one setting (change it, or clear it so the base config's shows through); the console account; the current settings; rename or delete a profile (its settings only - the server is untouched) |
+| **Settings** | the profile (which server everything acts on: an existing one, a new one, or the base config); where the server is - here in containers, another machine in containers, or another machine in Kubernetes, each asking only its own questions; edit one setting (change it, or clear it so the base config's shows through); the console account; db-timeout (`DB_TIMEOUT`: how many seconds install and db-init wait for the database to answer, a whole number above 0); the current settings; rename or delete a profile (its settings only - the server is untouched) |
 | **Accounts** | create, list, set the level (0 player to 3 administrator), delete |
 | **Characters** | rename (refused while the character is online) |
 | **Search** | bots and characters (filters: zone, level range, class, race, guild, online, roster or random), guilds, items, NPCs, objects (herbs, ore, chests - with spawn counts), quests, teleport locations |
-| **Roster** | show the shaped bots as the server has them, plan (what applying would change), check, apply |
+| **Roster** | show the shaped bots as the server has them, plan (what applying would change), check, apply (shows the plan first; a plan that fails - a players' guild the roster may not take over, say - ends it there, without asking) |
 | **Bots** | LLM chat (status, on with an endpoint and model, off - optional, and off on a new server), attunements (grant bots the raid attunements they cannot earn), the commands bots obey and who may use them |
 | **Administration** | dump (all databases, one, or the accounts only), restore, apply SQL |
 
@@ -69,7 +69,11 @@ it for such a profile.
   deleting an account, applying the roster or attunements (both stop the world
   server for about a minute), restore, apply SQL.
 - **Deleting the database takes two separate yeses** (Provision -> remove), and
-  recreating it (db-init) one more, each defaulting to no.
+  recreating it (db-init) one more, each defaulting to no. Before db-init
+  replaces the databases, the engine dumps the ones that exist to
+  `~/.config/teldrassil/dumps/before-db-init-*.sql.gz` (Administration ->
+  restore lists them); if that dump fails, nothing is replaced. Install never
+  replaces a database that exists.
 - **LLM chat is optional.** A new server starts with it off; turning it on asks
   for an OpenAI-style endpoint and a model, and an API key is given as a file
   path, never typed in.
@@ -97,4 +101,7 @@ replaced only after both yeses, and the database deleted only after both of
 its own; the install wizard saves its answers and installs only when
 confirmed; LLM chat is switched on with exactly the fields given, a key as a
 file; search filters arrive as flags; a table-subset dump is restored with
-`--db`.
+`--db`; when the engine's `roster plan` exits non-zero, apply is never asked
+and `roster apply` never runs, and when it succeeds apply works as before;
+`DB_TIMEOUT` is saved with `set` (to the active profile) only as a whole
+number of seconds above 0.
