@@ -38,7 +38,7 @@ and a world server); then it manages it and its bots.
 | --- | --- |
 | **Provision** | install (a short wizard - the client folder, realm name and address, how many bots - then one confirmation; steps already done are skipped), or one step at a time: sources, image, build, extract, databases, configure, containers; remove |
 | **Server** | status (containers, ports, who is online, the LLM endpoint), start, stop, restart (now, or graceful: players warned, the world saved), save, the remote console |
-| **Settings** | the profile (which server everything acts on: an existing one, a new one, or the base config); where the server is - here in containers, another machine in containers, or another machine in Kubernetes, each asking only its own questions; the console account; and the current settings |
+| **Settings** | the profile (which server everything acts on: an existing one, a new one, or the base config); where the server is - here in containers, another machine in containers, or another machine in Kubernetes, each asking only its own questions; edit one setting (change it, or clear it so the base config's shows through); the console account; the current settings; rename or delete a profile (its settings only - the server is untouched) |
 | **Accounts** | create, list, set the level (0 player to 3 administrator), delete |
 | **Characters** | rename (refused while the character is online) |
 | **Search** | bots and characters (filters: zone, level range, class, race, guild, online, roster or random), guilds, items, NPCs, objects (herbs, ore, chests - with spawn counts), quests, teleport locations |

@@ -36,6 +36,9 @@ if [[ "\${1:-}" == get ]]; then
     esac
     exit 0
 fi
+# The pickers' lists: one profile, and config's "mark KEY value description" lines.
+[[ "\${1:-}" == profiles ]] && { echo "  far"; exit 0; }
+[[ "\${1:-}" == config ]] && { printf '  DB_USER                root      the database user\n* DB_CONTAINER           db        the MariaDB container\n'; exit 0; }
 (IFS='|'; printf '%s\n' "\$*") >> "$T/calls"
 [[ "\${1:-}" == create-account ]] && cat > "$T/stdin"
 exit 0
@@ -240,5 +243,20 @@ echo "# console: one command is one argument, however many words"
 drive Server console "account onlinelist" "server info" "" back Quit
 check "a two-word command arrives whole" called "console|account onlinelist"
 check "  and the next one as its own call" called "console|server info"
+echo "# editing and removing profiles"
+drive Settings delete-profile far no back Quit
+check "delete declined: nothing" not_called "profile-delete"
+drive Settings delete-profile far enter back Quit
+check "delete, Enter: nothing" not_called "profile-delete"
+drive Settings console-account enter back Quit
+check "console account, Enter: none made" not_called "console-account"
+drive Settings delete-profile far yes back Quit
+check "delete confirmed" called "profile-delete|far|--yes"
+drive Settings rename-profile far near back Quit
+check "rename" called "profile-rename|far|near"
+drive Settings edit-setting DB_USER "Clear it (use the base config's or the default)" back Quit
+check "clear a setting: unset" called "unset|DB_USER"
+drive Settings edit-setting DB_USER "Change it" alice back Quit
+check "change a setting: set" called "set|DB_USER|alice"
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi

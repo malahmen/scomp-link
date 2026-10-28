@@ -164,6 +164,48 @@ action_setup() {
     return 0
 }
 
+# _pick_profile <header> — an existing profile's name; empty when cancelled.
+_pick_profile() {
+    bash "$ENGINE" profiles 2>/dev/null | sed -E 's/^[*[:space:]]+//' | grep -vE '^$|=' \
+        | gum choose --header "$1" || true
+}
+
+# action_edit_setting — one setting of the active profile: change it, or clear
+# it so the base config's value (or the default) shows through again.
+action_edit_setting() {
+    header "teldrassil — Edit a setting (${PROFILE_LABEL})"
+    local key how v
+    key=$(engine_foreground config 2>/dev/null | awk '{k = ($1 ~ /^[A-Z][A-Z0-9_]+$/) ? $1 : $2} k ~ /^[A-Z][A-Z0-9_]+$/ && k != "Config" {print k}' \
+        | gum choose --header "Which setting?") || return 0
+    [[ -n "$key" ]] || return 0
+    how=$(gum choose --header "${key} is now: $(eget "$key")" "Change it" "Clear it (use the base config's or the default)") || return 0
+    case "$how" in
+        Change*) v="$(_ask "${key}:" "$(eget "$key")")"; [[ -n "$v" ]] && engine_foreground set "$key" "$v" ;;
+        Clear*)  engine_foreground unset "$key" ;;
+    esac
+    return 0
+}
+
+action_rename_profile() {
+    header "teldrassil — Rename a profile"
+    local old new
+    old="$(_pick_profile "Rename which profile?")"; [[ -n "$old" ]] || return 0
+    new="$(_ask "New name for ${old}:")"; [[ -n "$new" ]] || return 0
+    bash "$ENGINE" profile-rename "$old" "$new" || return 0
+    [[ "$PROFILE_LABEL" == "$old" ]] && _set_profile "$new"
+    return 0
+}
+
+action_delete_profile() {
+    header "teldrassil — Delete a profile"
+    local name
+    name="$(_pick_profile "Delete which profile?")"; [[ -n "$name" ]] || return 0
+    gum confirm --default=false "Delete profile '${name}'? (its settings only; the server is untouched)" || { info "Cancelled."; return 0; }
+    bash "$ENGINE" profile-delete "$name" --yes || return 0
+    [[ "$PROFILE_LABEL" == "$name" ]] && _set_profile ""
+    return 0
+}
+
 # action_profile — which server the rest of the menus act on.
 action_profile() {
     header "teldrassil — Profile (now: ${PROFILE_LABEL})"
@@ -539,6 +581,9 @@ _submenu() {
             console)           action_console || true ;;
             where-is-it)       action_setup || true ;;
             profile)           action_profile || true ;;
+            edit-setting)      action_edit_setting || true ;;
+            rename-profile)    action_rename_profile || true ;;
+            delete-profile)    action_delete_profile || true ;;
             console-account)   gum confirm --default=false "Create (or renew) the console account TELDRASSIL on ${PROFILE_LABEL}?" && engine_foreground console-account ;;
             install)           action_install || true ;;
             source|build-image|build|extract|db-init|configure|create) action_step "$action" || true ;;
@@ -578,7 +623,7 @@ main() {
         case "$category" in
             Server)         _submenu "Server"         status start stop restart save console ;;
             Provision)      _submenu "Provision"      install source build-image build extract db-init configure create remove ;;
-            Settings)       _submenu "Settings"       profile where-is-it console-account settings ;;
+            Settings)       _submenu "Settings"       profile where-is-it edit-setting console-account settings rename-profile delete-profile ;;
             Accounts)       _submenu "Accounts"       create-account list-accounts set-account-level delete-account ;;
             Characters)     _submenu "Characters"     rename-character ;;
             Search)         action_search || true ;;
