@@ -126,6 +126,26 @@ _prompt_db_credentials() {
 # -----------------------------------------------------------------------------
 
 _docker_container_exists()  { docker inspect "$1" &>/dev/null 2>&1; }
+
+# _pg_data_mount <image-tag> - where the data volume is mounted. The official
+# image 18+ keeps PGDATA in /var/lib/postgresql/<major>/docker and declares
+# /var/lib/postgresql as its volume; it refuses to start with a mount at
+# /var/lib/postgresql/data, where 17 and older keep it (Kamino 196). A tag
+# without a leading version (latest, alpine, bookworm...) is 18 or newer.
+_pg_data_mount() {
+    if [[ "$1" =~ ^([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} <= 17 )); then
+        echo /var/lib/postgresql/data
+    else
+        echo /var/lib/postgresql
+    fi
+}
+
+# _docker_volume_mount <container> <volume> - where the container mounts the
+# volume, or nothing.
+_docker_volume_mount() {
+    docker inspect --format '{{range .Mounts}}{{.Name}}:{{.Destination}}{{println}}{{end}}' "$1" 2>/dev/null \
+        | sed -n "s|^$2:||p" | head -1
+}
 _docker_container_running() { [[ "$(docker inspect --format='{{.State.Running}}' "$1" 2>/dev/null)" == "true" ]]; }
 
 postgres_install_docker() {
@@ -144,6 +164,8 @@ postgres_install_docker() {
 
     local image="postgres:${PG_IMAGE_TAG}"
     local volume="${PG_CONTAINER_NAME}-data"
+    local data_mount
+    data_mount="$(_pg_data_mount "$PG_IMAGE_TAG")"
 
     local old=""
     if _docker_container_exists "$PG_CONTAINER_NAME"; then
@@ -168,6 +190,29 @@ postgres_install_docker() {
     # the old credentials stay in force, so they are carried over, not asked
     # for again (Kamino 174). Read before the old container is removed.
     if docker volume inspect "$volume" &>/dev/null; then
+        # 17 and older and 18+ lay the volume out differently: a kept volume
+        # of the other kind is not used - 18+ would initialise a new, empty
+        # cluster next to the old one - and data from another major version
+        # needs pg_upgrade (or a dump and restore) anyway (Kamino 196).
+        local old_mount=""
+        [[ -n "$old" ]] && old_mount="$(_docker_volume_mount "$old" "$volume")"
+        if [[ -n "$old_mount" && "$old_mount" != "$data_mount" ]]; then
+            gum style \
+                --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+                --width 60 --margin "1 2" --padding "1 2" \
+                "Volume '${volume}' was mounted at ${old_mount};" \
+                "postgres:${PG_IMAGE_TAG} needs it at ${data_mount}." \
+                "" \
+                "PostgreSQL 18 moved its data directory: it will not use" \
+                "the cluster in this volume (and 17 or older will not use" \
+                "an 18+ one). Upgrade the data with pg_upgrade, or a dump" \
+                "and restore, or keep the image's major version."
+            if ! gum confirm "Start postgres:${PG_IMAGE_TAG} on this volume anyway?" --default=false; then
+                warn "Cancelled."; return
+            fi
+        elif [[ -z "$old_mount" && "$data_mount" == /var/lib/postgresql ]]; then
+            warn "If volume '${volume}' was created by PostgreSQL 17 or older, postgres:${PG_IMAGE_TAG} will not use its data (18 moved the data directory): upgrade it with pg_upgrade first, or use a tag of that major version."
+        fi
         _kept_data_notice "$volume" "$old"
         _keep_credential PG_DB       "$old" POSTGRES_DB       "database name" "=${PG_DEFAULT_DB}" \
             && _keep_credential PG_USER     "$old" POSTGRES_USER     "username"      "=${PG_DEFAULT_USER}" \
@@ -195,7 +240,7 @@ postgres_install_docker() {
         -e POSTGRES_USER="$PG_USER" \
         -e POSTGRES_PASSWORD \
         -p "$(svc_publish "$PG_PORT" 5432)" \
-        -v "${volume}:/var/lib/postgresql/data" \
+        -v "${volume}:${data_mount}" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
         error_exit "Failed to start container '${PG_CONTAINER_NAME}'."

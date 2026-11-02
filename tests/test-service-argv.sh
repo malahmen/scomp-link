@@ -23,6 +23,9 @@
 #     container, which must read them, so they hold no secret at all - the
 #     container gets it in its env;
 #   - dozzle generate gets the password on stdin, not --password;
+#   - postgres 18+ gets its volume at /var/lib/postgresql (17 and older at
+#     .../data, where 18 refuses to start); a kept volume laid out for the
+#     other kind is not used without a warning and a confirm.
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -194,7 +197,7 @@ done
 docker_secret_case mongodb "install" "MONGO_INITDB_ROOT_PASSWORD=$PW" "SCOMP_APP_PASSWORD=$PW2" -- \
     "" install "" "" "" "$PW" "" "" "$PW2" "← back"
 check "the readiness check logs in from a script on stdin, with the password exactly" \
-    grep -qF "auth(\"root\", \"P,w=1\\\\x.{y}'\\\"z q\")" "$STUB_STATE/exec-stdin"
+    grep -qsF "auth(\"root\", \"P,w=1\\\\x.{y}'\\\"z q\")" "$STUB_STATE/exec-stdin"
 
 echo "mongodb docker: connect"
 svc_reset
@@ -269,7 +272,7 @@ check "the script finishes (exit 0)" rc_is 0
 check "both REST calls read a config from stdin" \
     bash -c "[[ \$(grep -cE '^curl -sf -K - http://127\.0\.0\.1:.*/(collections)?\$' '$STUB_LOG') == 2 ]]"
 check "the config holds the api-key header, the key escaped for its double quotes" \
-    grep -qxF 'header = "api-key: P,w=1\\x.{y}'"'"'\"z q"' "$STUB_STATE/curl-config"
+    grep -qsxF 'header = "api-key: P,w=1\\x.{y}'"'"'\"z q"' "$STUB_STATE/curl-config"
 check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
 
 # ------------------------------------------------------ secrets in files ---
@@ -347,6 +350,47 @@ check "...mode 600, though an older one was 644" bash -c "[[ \$($(declare -f mod
 check "dozzle generate reads the password on stdin" bash -c '[[ "$(cat "$1")" == "$2" ]]' _ "$STUB_STATE/generate-stdin" "$PW"
 check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
 rm -rf "$T/dz"
+mv "$T/bin/docker.stub" "$T/bin/docker"   # the shared stub again (it logs as `docker`)
+
+# ---------------------------------------------------------- postgres 18 ---
+# pg_mount_is <path> - the last docker run mounted postgres-data there.
+pg_mount_is() { grep -qxF -- "postgres-data:$1" "$STUB_STATE/c/postgres/mounts"; }
+for tag_mount in "18:/var/lib/postgresql" "latest:/var/lib/postgresql" "alpine:/var/lib/postgresql" \
+                 "18.1-bookworm:/var/lib/postgresql" "17:/var/lib/postgresql/data" \
+                 "16.4-alpine:/var/lib/postgresql/data" "9.6:/var/lib/postgresql/data"; do
+    tag="${tag_mount%%:*}" mount_want="${tag_mount#*:}"
+    echo "postgres docker: install postgres:${tag}"
+    svc_reset
+    svc_run postgres "" install "$tag" "" "" "" "" "← back"
+    check "the script finishes (exit 0)" rc_is 0
+    check "the volume is mounted at ${mount_want}" pg_mount_is "$mount_want"
+done
+
+echo "postgres docker: recreate a 16 container (volume at .../data) as 18 - declined"
+svc_reset
+old_container postgres POSTGRES_DB=d POSTGRES_USER=u "POSTGRES_PASSWORD=$PW"
+echo "postgres-data:/var/lib/postgresql/data" > "$STUB_STATE/c/postgres/mounts"
+svc_run postgres "" install "18" "" "Remove and recreate" no "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "it says 18 will not use the data in the volume" grep -q "PostgreSQL 18 moved its data directory" "$T/out"
+check "nothing is removed or started" bash -c "! grep -qE '^docker (rm|run) ' '$STUB_LOG'"
+
+echo "postgres docker: recreate a 16 container as 18 - confirmed"
+svc_reset
+old_container postgres POSTGRES_DB=d POSTGRES_USER=u "POSTGRES_PASSWORD=$PW"
+echo "postgres-data:/var/lib/postgresql/data" > "$STUB_STATE/c/postgres/mounts"
+svc_run postgres "" install "18" "" "Remove and recreate" yes "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "18 gets the volume where it needs it" pg_mount_is /var/lib/postgresql
+
+echo "postgres docker: recreate a 16 container as 16.4 - nothing to say"
+svc_reset
+old_container postgres POSTGRES_DB=d POSTGRES_USER=u "POSTGRES_PASSWORD=$PW"
+echo "postgres-data:/var/lib/postgresql/data" > "$STUB_STATE/c/postgres/mounts"
+svc_run postgres "" install "16.4" "" "Remove and recreate" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "no layout warning" lacks "moved its data directory" "$T/out"
+check "the volume stays at .../data" pg_mount_is /var/lib/postgresql/data
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi
