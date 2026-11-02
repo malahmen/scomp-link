@@ -16,7 +16,10 @@
 #     only after the light one is taking jobs;
 #   - a port inside firewalld's open range reads as open (corelia opens
 #     1025-65535, and --query-port says "no" for it);
-#   - uninstall keeps the model cache and the secrets unless asked.
+#   - uninstall keeps the model cache and the secrets unless asked;
+#   - the API is published on every interface by default - a LAN service,
+#     deliberately, and install says so - or where SCOMP_BIND_ADDR says, with
+#     the URLs, the firewall and status following it (Kamino 235).
 # shellcheck disable=SC2016
 # Single-quoted heredoc stubs expand their own $1/$@ at run time, on purpose.
 set -uo pipefail
@@ -130,6 +133,7 @@ export PATH="${TEST_DIR}/stubs:$T/bin:$PATH"
 export GUM_ANSWERS="$T/answers" GUM_STATE="$T/gumstate" STUB_LOG="$T/calls" STUB_STATE="$T/state"
 export SCOMP_PROTOCOL_CONFIG_DIR="$T/config" SCOMP_PROTOCOL_QUADLET_DIR="$T/quadlet" SCOMP_PROTOCOL_SRC_DIR="$T/src"
 Q="$T/quadlet"
+unset SCOMP_BIND_ADDR
 
 run() {
     printf '%s\n' "$@" > "$GUM_ANSWERS"; : > "$GUM_STATE"; : > "$STUB_LOG"
@@ -165,10 +169,11 @@ check "...and the heavy one only after it is taking jobs" before "journalctl --u
 check "lingering is enabled" has "loginctl enable-linger" "$T/calls"
 check "a port inside an open range is not offered again" lacks "add-port" "$T/calls"
 check "the settings are saved" test -f "$T/config/protocol.conf"
+check "it says the API is on every interface, a LAN service (Kamino 235)" has "every interface: this is a LAN service" "$T/out"
 
 # ---- the units ------------------------------------------------------------------
 echo "units"
-check "the API publishes its port" has "PublishPort=8090:8080" "$Q/protocol-api.container"
+check "the API publishes its port, on every interface (Kamino 235)" has "PublishPort=0.0.0.0:8090:8080" "$Q/protocol-api.container"
 check "...and runs the API" has "Exec=api" "$Q/protocol-api.container"
 check "no worker publishes a port" lacks "PublishPort" "$Q/protocol-markitdown.container"
 check "the light worker runs the light lane" has "Exec=worker marker-light" "$Q/protocol-marker-light.container"
@@ -186,6 +191,20 @@ check "...running the transcription lane" has "Exec=worker transcription" "$Q/pr
 check "...with no model volume: Speaches holds the model" lacks "Volume=" "$Q/protocol-transcription.container"
 check "it reaches Speaches as a container can" has "Environment=SPEACHES_URL=http://host.containers.internal:8000" "$Q/protocol-transcription.container"
 check "...and so does the API, which then accepts audio" has "Environment=SPEACHES_URL=http://host.containers.internal:8000" "$Q/protocol-api.container"
+
+echo "where the API is published (Kamino 235)"
+SCOMP_BIND_ADDR=127.0.0.1 run install yes no "← back"
+check "SCOMP_BIND_ADDR=127.0.0.1: loopback only" has "PublishPort=127.0.0.1:8090:8080" "$Q/protocol-api.container"
+check "...said, and no firewall or LAN URL offered" bash -c 'grep -q "not reachable from the LAN" "$1" && ! grep -q "From the LAN" "$1"' _ "$T/out"
+run status "← back"
+check "status, later, still says loopback only" has "Published on 127.0.0.1 only" "$T/out"
+check "...and reads no firewall" lacks "Firewall" "$T/out"
+SCOMP_BIND_ADDR=192.0.2.9 run install yes no "← back"
+check "SCOMP_BIND_ADDR=192.0.2.9: published there" has "PublishPort=192.0.2.9:8090:8080" "$Q/protocol-api.container"
+check "...health asked there" has "http://192.0.2.9:8090/healthz" "$T/calls"
+check "...the LAN URL is that address" has "From the LAN: http://192.0.2.9:8090" "$T/out"
+run install yes no "← back"
+check "unset again: every interface" has "PublishPort=0.0.0.0:8090:8080" "$Q/protocol-api.container"
 
 # ---- status, test --------------------------------------------------------------------
 echo "status and test"
