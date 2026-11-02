@@ -148,6 +148,26 @@ _prompt_password() {
     fi
 }
 
+# _redis_requirepass_line <password> - `requirepass "<password>"` as a line of
+# redis.conf: double-quoted, with \ and " escaped (Redis reads both escapes
+# there). Returns 1 for a password with control characters.
+_redis_requirepass_line() {
+    local pw="$1"
+    [[ "$pw" == *[[:cntrl:]]* ]] && return 1
+    pw="${pw//\\/\\\\}"
+    pw="${pw//\"/\\\"}"
+    printf 'requirepass "%s"' "$pw"
+}
+
+# What the Docker container runs when it has a password (Kamino 235): its
+# shell writes $SCOMP_REDIS_CONF into a 0600 file the redis user owns, then
+# starts the image's own entrypoint on it (which drops to that user). Run in
+# the container, so single-quoted here. The old file is removed first: on a
+# restart it is the redis user's, in sticky /tmp, and the kernel's
+# protected_regular refuses root opening it for writing.
+# shellcheck disable=SC2016
+_RD_CONF_BOOT='umask 077; f=/tmp/scomp-redis.conf; rm -f "$f"; printf "%s\n" "$SCOMP_REDIS_CONF" > "$f" || exit 1; if [ "$(id -u)" = 0 ]; then chown redis "$f" || exit 1; fi; exec docker-entrypoint.sh redis-server "$f" --appendonly yes'
+
 # -----------------------------------------------------------------------------
 # redis-cli wrappers
 # Prefer REDISCLI_AUTH env var over -a flag to keep passwords out of ps output.
@@ -290,6 +310,12 @@ redis_install_docker() {
     RD_PORT="${port_input:-$RD_DEFAULT_PORT}"
 
     _prompt_password
+    # Checked before anything is removed or pulled.
+    local SCOMP_REDIS_CONF=""
+    if [[ -n "$RD_PASSWORD" ]]; then
+        SCOMP_REDIS_CONF="$(_redis_requirepass_line "$RD_PASSWORD")" \
+            || { warn "The password contains control characters; Redis cannot read it from a config line. Nothing was changed."; return; }
+    fi
 
     local image="redis:${RD_IMAGE_TAG}"
     local volume="${RD_CONTAINER_NAME}-data"
@@ -318,15 +344,25 @@ redis_install_docker() {
         docker pull "$image" \
         || error_exit "Failed to pull image ${image}."
 
-    # Build the redis-server command args: always enable AOF persistence;
-    # add requirepass only when a password was provided.
-    local server_args=(redis-server --appendonly yes)
-    [[ -n "$RD_PASSWORD" ]] && server_args+=(--requirepass "$RD_PASSWORD")
+    # The redis-server command: always AOF persistence. A password is not
+    # --requirepass: that put it on docker's command line and on redis-server's
+    # inside the container, both readable with `ps` on the host (Kamino 235),
+    # and the official image reads no password variable. It goes in the
+    # container's environment (-e NAME, the value from docker's own), and a
+    # shell in the container writes it into a 0600 config file for
+    # redis-server to read - the same requirepass line the k8s target gives
+    # the chart, double-quoted so a space, quote or backslash stays as typed.
+    local -a server_args=(redis-server --appendonly yes) env_args=()
+    if [[ -n "$SCOMP_REDIS_CONF" ]]; then
+        env_args=(-e SCOMP_REDIS_CONF)
+        server_args=(sh -c "$_RD_CONF_BOOT")
+    fi
 
-    if ! docker run -d \
+    if ! SCOMP_REDIS_CONF="$SCOMP_REDIS_CONF" docker run -d \
         --name "$RD_CONTAINER_NAME" \
         -p "$(svc_publish "$RD_PORT" 6379)" \
         -v "${volume}:/data" \
+        ${env_args[@]+"${env_args[@]}"} \
         --restart unless-stopped \
         "$image" "${server_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${RD_CONTAINER_NAME}'."
@@ -551,9 +587,10 @@ redis_install_k8s() {
     # a space, quote or backslash in it reaches requirepass as typed.
     local secret_values=""
     if [[ -n "$RD_PASSWORD" ]]; then
-        local conf_pw="${RD_PASSWORD//\\/\\\\}"
-        conf_pw="${conf_pw//\"/\\\"}"
-        _helm_secret_values secret_values redisConfig "requirepass \"${conf_pw}\"" \
+        local conf_line
+        conf_line="$(_redis_requirepass_line "$RD_PASSWORD")" \
+            || error_exit "The password contains control characters; it cannot be passed to helm."
+        _helm_secret_values secret_values redisConfig "$conf_line" \
             || error_exit "The password contains control characters; it cannot be passed to helm."
         helm_args+=(-f "$secret_values")
     fi

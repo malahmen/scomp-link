@@ -224,6 +224,17 @@ mongodb_install_docker() {
         --header "MongoDB image tag (leave empty for '${MNG_DEFAULT_IMAGE_TAG}'):") || true
     MNG_IMAGE_TAG="${MNG_IMAGE_TAG:-$MNG_DEFAULT_IMAGE_TAG}"
 
+    # MongoDB before 6.0 is refused (Kamino 235). Its image runs init
+    # scripts with the legacy mongo shell, which cannot read the app password
+    # from the environment - so the app user could only be created with the
+    # password in a file the container's user can read, or on a command
+    # line - and connect could only log in with -p <password> on argv. Every
+    # release before 6.0 is past its end of life (5.0: October 2024).
+    if ! _mongo_tag_has_mongosh "$MNG_IMAGE_TAG"; then
+        warn "mongo:${MNG_IMAGE_TAG} is older than 6.0, which this script does not install: its legacy shell can create the app user and log in only with the password in a file or on a command line, and every release before 6.0 is past its end of life. Choose 6.0 or later (default: ${MNG_DEFAULT_IMAGE_TAG}). Nothing was changed."
+        return
+    fi
+
     local port_input
     port_input=$(gum input \
         --placeholder "$MNG_DEFAULT_PORT" \
@@ -306,9 +317,6 @@ mongodb_install_docker() {
             && ! grep -q 'process.env.SCOMP_APP_PASSWORD' "$(_docker_init_dir)/create-app-user.js"; then
             _docker_write_init_script >/dev/null || rm -f "$(_docker_init_dir)/create-app-user.js"
         fi
-    elif [[ -n "$MNG_USER" && -n "$MNG_PASSWORD" ]] && ! _mongo_tag_has_mongosh "$MNG_IMAGE_TAG"; then
-        warn "mongo:${MNG_IMAGE_TAG} runs init scripts with the legacy mongo shell, which cannot read the app password from the environment: the app user '${MNG_USER}' is not created. Use MongoDB 6.0 or later for it; connect logs in as root."
-        rm -f "$(_docker_init_dir)/create-app-user.js"
     elif [[ -n "$MNG_USER" && -n "$MNG_PASSWORD" ]]; then
         if init_dir=$(_docker_write_init_script); then
             docker_args+=(
@@ -438,8 +446,9 @@ mongodb_connect_docker() {
     # mongosh logs in from --eval with the password read from its environment
     # (SCOMP_MONGO_PW, passed by name), then stays interactive (--shell): -p
     # put it on the command line, inside and outside the container (Kamino
-    # 196). The legacy mongo shell (images before 6.0) has no environment
-    # access, so for it the password stays on -p.
+    # 196). The legacy mongo shell (a container from before 6.0, which install
+    # no longer makes) has no environment access: it is given -p with no
+    # value, so it asks for the password itself (Kamino 235).
     if [[ "$cli" == mongosh ]]; then
         local q_user q_auth_db
         q_user=$(_js_quote "$user") && q_auth_db=$(_js_quote "$auth_db") \
@@ -449,9 +458,12 @@ mongodb_connect_docker() {
             --eval "db.getSiblingDB(${q_auth_db}).auth(${q_user}, process.env.SCOMP_MONGO_PW); undefined" \
             "$db"
     else
+        local var=MONGO_INITDB_ROOT_PASSWORD
+        [[ "$auth_db" != admin ]] && var=SCOMP_APP_PASSWORD
+        info "The legacy mongo shell asks for ${user}'s password: it cannot read it from the environment, and on its command line any local user could. It is in the container's environment: docker exec ${MNG_CONTAINER_NAME} printenv ${var}"
+        # -p last, with nothing after it: the shell's documented way to ask.
         docker exec -it "$MNG_CONTAINER_NAME" \
-            "$cli" -u "$user" -p "$pass" \
-            --authenticationDatabase "$auth_db" "$db"
+            "$cli" "$db" -u "$user" --authenticationDatabase "$auth_db" -p
     fi
 }
 
