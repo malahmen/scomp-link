@@ -46,8 +46,10 @@ engine itself never prompts.
   (`BOTTLES_RUNNER`, picked from the engine's `list-runners` output; if none is
   listed yet, run install-deps and open Bottles once so it downloads a runner),
   the default window resolution (`DEFAULT_RESOLUTION`, WxH), and the default
-  realm (entered manually or discovered on the LAN). Each answer is persisted
-  with `set` and pre-fills on the next run; the engine's own `configure` then
+  realm (entered manually or discovered on the LAN). Each prompt pre-fills with
+  the current value, and only an answer that changed it is saved with `set`
+  (Kamino 235: Enter used to pin the engine's defaults into its config); the
+  engine's own `configure` then
   validates the settings and grants Bottles host-filesystem access.
 - **Two file-isolation modes** (`set CLIENT_ISOLATION_MODE`): `full` (a complete
   copy per instance — more disk, but avoids the read contention/disconnects that
@@ -130,5 +132,5 @@ a fake engine that answers `get`, the listings and the LAN scan and records
 every other call: removing an instance is driven with Enter, no, yes and Esc,
 and only yes calls `remove-instance`; Esc on the client path returns to the
 menu with nothing set, and Esc on a picker keeps the current value; configure
-saves the picks with `~` expanded; add, edit, launch (several at once), stop,
+saves only what changed, with `~` expanded, and Enter throughout saves nothing; add, edit, launch (several at once), stop,
 stop-all, discover and status reach the engine with their flags.
