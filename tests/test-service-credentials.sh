@@ -163,7 +163,9 @@ check "postgres: it says the credentials are kept" has "Keeping the release's ex
 echo "postgres k8s: fresh install still sets them"
 svc_reset; k8s_world
 svc_run postgres "" "" install "" "" "" "" "← back"
-check "the password is --set on install" bash -c "grep -E '^helm .*install ' '$STUB_LOG' | grep -qE 'userDatabase.password=[A-Za-z0-9]{20}'"
+# Kamino 196: the password reaches helm in a values file (the helm stub keeps
+# a copy under values/), not on its argv as --set.
+check "the password is passed on install" bash -c "grep -qE '^  password: .[A-Za-z0-9]{20}.\$' '$STUB_STATE'/values/*.yaml"
 
 echo "mariadb / mysql / mongodb k8s: upgrade"
 for svc in mariadb mysql mongodb; do

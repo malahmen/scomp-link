@@ -492,16 +492,23 @@ influxdb_install_k8s() {
         --wait --timeout 5m
     )
 
+    local secret_values=""
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
     else
+        # The password and token go in a 0600 values file, not --set: on argv
+        # they are readable by every local user, and --set splits a value at
+        # commas and parses \ . { } in it (Kamino 196).
+        local -a secret_kv=(adminUser.password "$IDB_ADMIN_PASSWORD")
+        [[ -n "$IDB_TOKEN" ]] && secret_kv+=(adminUser.token "$IDB_TOKEN")
+        _helm_secret_values secret_values "${secret_kv[@]}" \
+            || error_exit "The admin password or token contains control characters; it cannot be passed to helm."
         helm_args+=(
+            -f "$secret_values"
             --set adminUser.user="$IDB_ADMIN_USER"
-            --set adminUser.password="$IDB_ADMIN_PASSWORD"
             --set adminUser.organization="$IDB_ORG"
             --set adminUser.bucket="$IDB_BUCKET"
         )
-        [[ -n "$IDB_TOKEN" ]] && helm_args+=(--set adminUser.token="$IDB_TOKEN")
     fi
 
     if [[ "$upgrade" == true ]]; then
@@ -515,10 +522,12 @@ influxdb_install_k8s() {
         if ! gum spin --spinner dot --title "Installing InfluxDB (this may take a few minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
             warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${IDB_HELM_RELEASE} -n ${IDB_NAMESPACE}' for details."
+            _secret_file_rm "$secret_values"
             return
         fi
         success "InfluxDB installed."
     fi
+    _secret_file_rm "$secret_values"
 
     echo ""
     gum style --foreground "$CYAN" \

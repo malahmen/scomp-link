@@ -4,6 +4,7 @@
 
 - Docker image: `n8nio/n8n` · Port: `5678` · Image tag prompted at install
 - K8s chart: `community-charts/n8n` · Namespace / release: `n8n` / `n8n` (both prompted)
+- K8s secrets (the encryption key and the external Postgres password): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - **Database backends**: SQLite (zero-config default) or PostgreSQL (for production / multi-instance)
 - **Encryption key**: protects all stored credentials. Auto-generated (32 chars, displayed once at install) or user-provided (not echoed back). Changing it after install makes stored credentials unreadable.
 - **Timezone** prompt (`GENERIC_TIMEZONE`, default `UTC`), Docker only

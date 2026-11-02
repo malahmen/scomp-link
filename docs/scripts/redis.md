@@ -6,6 +6,7 @@ Follows the shared database-script pattern (see [Databases](../../README.md#data
 
 - Docker image: `redis:7` · Port: `6379` · Docker install starts `redis-server --appendonly yes` (AOF persistence)
 - K8s chart: `groundhog2k/redis` (https://groundhog2k.github.io/helm-charts/ — deploys the official `redis` image; replaces the deprecated Bitnami chart. A password is applied via `requirepass`; leave it empty to run without auth)
+- K8s secrets (the password (`redisConfig: requirepass "…"`, double-quoted so a space, quote or backslash in it is kept)): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - Password via `--requirepass`; `REDISCLI_AUTH` used internally to keep passwords out of `ps` output
 - Install prompts: image tag and host port (Docker); PVC size, default `8Gi` (K8s)
 - **`list-queues` (queue / key inspector)**: `SCAN`s keys (non-blocking), capped at 500 keys (`RD_QUEUE_SCAN_LIMIT`), reports type and size, sorted by size, useful for inspecting BullMQ, Celery, Sidekiq, and Streams queues

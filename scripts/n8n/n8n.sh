@@ -503,8 +503,22 @@ n8n_install_k8s() {
             --set config.database.postgresdb.port="$N8N_PG_PORT"
             --set config.database.postgresdb.database="$N8N_PG_DATABASE"
             --set config.database.postgresdb.user="$N8N_PG_USER"
-            --set config.database.postgresdb.password="$N8N_PG_PASSWORD"
         )
+    fi
+
+    # The Postgres password and the encryption key go in a 0600 values file,
+    # not --set: on argv they are readable by every local user, and --set
+    # splits a value at commas and parses \ . { } in it (Kamino 196). Keys
+    # under config. stay next to each other (_helm_secret_values).
+    local -a secret_kv=()
+    [[ "$N8N_DB_TYPE" == "postgresdb" ]] \
+        && secret_kv+=(config.database.postgresdb.password "$N8N_PG_PASSWORD")
+    [[ "$upgrade" == true ]] || secret_kv+=(config.n8n.encryptionKey "$N8N_ENCRYPTION_KEY")
+    local secret_values=""
+    if (( ${#secret_kv[@]} )); then
+        _helm_secret_values secret_values "${secret_kv[@]}" \
+            || error_exit "The Postgres password or encryption key contains control characters; it cannot be passed to helm."
+        helm_args+=(-f "$secret_values")
     fi
 
     if [[ "$upgrade" == true ]]; then
@@ -512,18 +526,20 @@ n8n_install_k8s() {
         if ! gum spin --spinner dot --title "Upgrading n8n..." -- \
             helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
             warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            _secret_file_rm "$secret_values"
             return
         fi
         success "n8n upgraded."
     else
-        helm_args+=(--set config.n8n.encryptionKey="$N8N_ENCRYPTION_KEY")
         if ! gum spin --spinner dot --title "Installing n8n..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
             warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            _secret_file_rm "$secret_values"
             return
         fi
         success "n8n installed."
     fi
+    _secret_file_rm "$secret_values"
 
     echo ""
     gum style --foreground "$CYAN" \

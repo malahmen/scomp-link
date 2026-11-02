@@ -679,7 +679,15 @@ grafana_install_k8s() {
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
     else
-        helm_args+=(--set "adminUser=${GRF_ADMIN_USER}" --set "adminPassword=${GRF_ADMIN_PASSWORD}")
+        # The admin password goes in a 0600 values file, not --set: on argv it
+        # is readable by every local user, and --set splits a value at commas
+        # and parses \ . { } in it (Kamino 196). Removed with values_file.
+        local secret_values
+        _helm_secret_values secret_values adminPassword "$GRF_ADMIN_PASSWORD" \
+            || error_exit "The admin password contains control characters; it cannot be passed to helm."
+        # shellcheck disable=SC2064
+        trap "rm -f '${values_file}' '${secret_values}'" RETURN
+        helm_args+=(--set "adminUser=${GRF_ADMIN_USER}" -f "$secret_values")
     fi
 
     if [[ "$upgrade" == true ]]; then

@@ -87,3 +87,68 @@ _keep_credential() {
     fi
     printf -v "$var" '%s' "$v"
 }
+
+
+# -----------------------------------------------------------------------------
+# Secrets kept off argv and out of world-readable files (Kamino 196)
+#
+# A command line is readable by every local user (ps, /proc/<pid>/cmdline)
+# for as long as the command runs. And `helm --set k=v` parses its value:
+# a comma splits it into two keys, and backslashes, dots and braces are
+# syntax - so a password with any of them reached the chart changed. Secrets
+# go to helm in a values file (mode 0600, removed again), to docker/podman as
+# `-e NAME` (the value is taken from the client's environment), and to the
+# database clients through their environment variables or stdin.
+# -----------------------------------------------------------------------------
+
+# _yaml_squote <value> - <value> as a single-quoted YAML scalar: the only
+# escape there is '' for '. Returns 1 for a value with control characters
+# (a newline would be folded into a space), printing nothing.
+_yaml_squote() {
+    local s="$1" q="'"
+    [[ "$s" == *[[:cntrl:]]* ]] && return 1
+    printf "'%s'" "${s//"$q"/"$q$q"}"
+}
+
+_SCOMP_SECRET_FILES=()
+_scomp_secret_files_rm() {
+    (( ${#_SCOMP_SECRET_FILES[@]} )) && rm -f -- "${_SCOMP_SECRET_FILES[@]}"
+    return 0
+}
+
+# _helm_secret_values <VAR> <dotted.key> <value> [<dotted.key> <value>]...
+# Writes the pairs as nested YAML to a new mode-0600 temp file and sets VAR
+# to its path, for `helm ... -f "$VAR"`. Keys that share a parent must be
+# given next to each other (a.b.x a.b.y). The file is removed at exit, also on
+# error_exit; remove it sooner with _secret_file_rm. Returns 1 (no file) when
+# a value cannot be written safely (control characters).
+_helm_secret_values() {
+    local __var="$1"; shift
+    (( $# % 2 == 0 )) || { echo "_helm_secret_values: key without value" >&2; return 2; }
+    local yaml="" q i n file
+    local -a cur prev=()
+    while (( $# )); do
+        q="$(_yaml_squote "$2")" || return 1
+        IFS=. read -r -a cur <<< "$1"
+        n=${#cur[@]}
+        # The parents this key shares with the previous one are already open.
+        i=0
+        while (( i < n - 1 && i < ${#prev[@]} - 1 )) && [[ "${cur[i]}" == "${prev[i]}" ]]; do
+            i=$((i + 1))
+        done
+        for (( ; i < n - 1; i++ )); do
+            yaml+="$(printf '%*s' $((i * 2)) '')${cur[i]}:"$'\n'
+        done
+        yaml+="$(printf '%*s' $(((n - 1) * 2)) '')${cur[n - 1]}: ${q}"$'\n'
+        prev=("${cur[@]}")
+        shift 2
+    done
+    file="$(umask 077 && mktemp "${TMPDIR:-/tmp}/scomp-helm-values.XXXXXX")" || return 1
+    _SCOMP_SECRET_FILES+=("$file")
+    trap _scomp_secret_files_rm EXIT
+    printf '%s' "$yaml" > "$file" || return 1
+    printf -v "$__var" '%s' "$file"
+}
+
+# _secret_file_rm <file> - removes a file made by _helm_secret_values now.
+_secret_file_rm() { [[ -n "${1:-}" ]] && rm -f -- "$1"; return 0; }

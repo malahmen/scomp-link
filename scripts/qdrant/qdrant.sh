@@ -10,7 +10,7 @@
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   curl (health-check feature).
 # Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh,
-#          deps.sh, portforward.sh.
+#          deps.sh, portforward.sh, secret.sh.
 #
 # Ports:  6333 — REST / HTTP API
 #         6334 — gRPC
@@ -33,6 +33,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -381,7 +383,15 @@ qdrant_install_k8s() {
         --set persistence.size="$storage_size"
         --wait --timeout 5m
     )
-    [[ -n "$QD_API_KEY" ]] && helm_args+=(--set "config.service.api_key=${QD_API_KEY}")
+    # The API key goes in a 0600 values file, not --set: on argv it is
+    # readable by every local user, and --set splits a value at commas and
+    # parses \ . { } in it (Kamino 196).
+    local secret_values=""
+    if [[ -n "$QD_API_KEY" ]]; then
+        _helm_secret_values secret_values config.service.api_key "$QD_API_KEY" \
+            || error_exit "The API key contains control characters; it cannot be passed to helm."
+        helm_args+=(-f "$secret_values")
+    fi
 
     if _k8s_detect_installed; then
         gum style \
@@ -397,7 +407,7 @@ qdrant_install_k8s() {
 
         case "$action" in
             "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
+            *) _secret_file_rm "$secret_values"; warn "Cancelled."; return ;;
         esac
 
         gum spin --spinner dot --title "Upgrading Qdrant via Helm..." -- \
@@ -408,6 +418,7 @@ qdrant_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${QD_NAMESPACE}"
     fi
+    _secret_file_rm "$secret_values"
 
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \

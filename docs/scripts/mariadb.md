@@ -6,6 +6,7 @@ Follows the shared database-script pattern (see [Databases](../../README.md#data
 
 - Docker image: `mariadb:11` · Port: `3306`
 - K8s chart: `groundhog2k/mariadb` (https://groundhog2k.github.io/helm-charts/ — deploys the official `mariadb` image; replaces the deprecated Bitnami chart)
+- K8s secrets (the root and user passwords): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - Configurable: root password, database, username/password
 - Install prompts: image tag and host port (Docker); PVC size, default `8Gi` (K8s)
 - Connect: uses `mariadb` client, falls back to `mysql` (Docker: inside the container; K8s: local client, prompted if missing)

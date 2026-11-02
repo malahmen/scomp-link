@@ -6,6 +6,7 @@ Follows the shared database-script pattern (see [Databases](../../README.md#data
 
 - Docker image: `qdrant/qdrant:latest` · Ports: `6333` (REST) · `6334` (gRPC)
 - K8s chart: `qdrant/qdrant` (official Qdrant Helm repo)
+- K8s secrets (the API key): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - Optional API key authentication
 - Install prompts: image tag, REST and gRPC host ports (Docker); PVC size, default `10Gi`, and replica count (K8s)
 - **Health check**: hits `/` and `/collections` via `curl`; JSON is pretty-printed only when `python3` is present

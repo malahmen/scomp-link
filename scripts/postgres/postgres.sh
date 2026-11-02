@@ -403,15 +403,23 @@ postgres_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${PG_NAMESPACE}"
     else
+        # The passwords go in a 0600 values file, not --set: on argv they are
+        # readable by every local user, and --set splits a value at commas and
+        # parses \ . { } in it (Kamino 196).
+        local secret_values
+        _helm_secret_values secret_values \
+            settings.superuserPassword "$PG_PASSWORD" \
+            userDatabase.password      "$PG_PASSWORD" \
+            || error_exit "The password contains control characters; it cannot be passed to helm."
         helm_args+=(
-            --set settings.superuserPassword="$PG_PASSWORD"
+            -f "$secret_values"
             --set userDatabase.name="$PG_DB"
             --set userDatabase.user="$PG_USER"
-            --set userDatabase.password="$PG_PASSWORD"
         )
         gum spin --spinner dot --title "Installing PostgreSQL via Helm (may take a few minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${PG_NAMESPACE}"
+        _secret_file_rm "$secret_values"
     fi
 
     local shown_db="$PG_DB" shown_user="$PG_USER"

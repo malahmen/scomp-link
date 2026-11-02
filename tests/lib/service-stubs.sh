@@ -134,11 +134,25 @@ cat > "$T/bin/helm" <<'EOF'
 #!/usr/bin/env bash
 printf 'helm %s\n' "$*" >> "$STUB_LOG"
 S="$STUB_STATE"; mkdir -p "$S/releases"
+# Each -f/--values file is kept as values/<n>.yaml with its mode in <n>.mode
+# and its path in <n>.path: the scripts delete it once helm returns, and the
+# secrets in it must reach helm exactly, from a 0600 file (Kamino 196).
+vprev=""
+for a in "$@"; do
+    if [[ "$vprev" == -f || "$vprev" == --values ]] && [[ -f "$a" ]]; then
+        mkdir -p "$S/values"; vn=$(( $(find "$S/values" -name '*.yaml' | wc -l) + 1 ))
+        cp "$a" "$S/values/${vn}.yaml"; printf '%s\n' "$a" > "$S/values/${vn}.path"
+        { stat -c %a "$a" 2>/dev/null || stat -f %Lp "$a"; } > "$S/values/${vn}.mode"
+    fi
+    vprev="$a"
+done
 pos=(); skip=0
 for a in "$@"; do
     if (( skip )); then skip=0; continue; fi
     case "$a" in --kube-context|-n|--namespace|--set|--version|-f|--values|--timeout) skip=1 ;; -*) ;; *) pos+=("$a") ;; esac
 done
+# $STUB_STATE/helm-fail: install fails (after the values files are kept).
+[[ "${pos[0]:-}" == install && -e "$S/helm-fail" ]] && exit 1
 case "${pos[0]:-}" in
     version) echo "v3.99.0-stub" ;;
     status)  [[ -e "$S/releases/${pos[1]}" ]] || exit 1 ;;

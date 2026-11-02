@@ -6,6 +6,7 @@ Follows the shared database-script pattern (see [Databases](../../README.md#data
 
 - Docker image: `influxdb:2` · Port: `8086`
 - K8s chart: `influxdata/influxdb2` (https://helm.influxdata.com/ — official InfluxDB 2.x chart/image; replaces the deprecated Bitnami chart)
+- K8s secrets (the admin password and token): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - Configurable: admin user, password, organisation, bucket, optional admin token (auto-generated if empty)
 - Install prompts: image tag and host port (Docker); PVC size, default `8Gi` (K8s)
 - Docker `status` runs a `curl` against `/health` (JSON pretty-printed when `python3` is present)

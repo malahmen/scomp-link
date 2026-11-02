@@ -449,15 +449,23 @@ mariadb_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MDB_NAMESPACE}"
     else
+        # The passwords go in a 0600 values file, not --set: on argv they are
+        # readable by every local user, and --set splits a value at commas and
+        # parses \ . { } in it (Kamino 196).
+        local secret_values
+        _helm_secret_values secret_values \
+            settings.rootPassword "$MDB_ROOT_PASSWORD" \
+            userDatabase.password "$MDB_PASSWORD" \
+            || error_exit "A password contains control characters; it cannot be passed to helm."
         helm_args+=(
-            --set settings.rootPassword="$MDB_ROOT_PASSWORD"
+            -f "$secret_values"
             --set userDatabase.name="$MDB_DB"
             --set userDatabase.user="$MDB_USER"
-            --set userDatabase.password="$MDB_PASSWORD"
         )
         gum spin --spinner dot --title "Installing MariaDB via Helm (may take a few minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MDB_NAMESPACE}"
+        _secret_file_rm "$secret_values"
     fi
 
     local shown_db="$MDB_DB" shown_user="$MDB_USER"
