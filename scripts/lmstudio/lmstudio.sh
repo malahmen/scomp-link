@@ -334,7 +334,18 @@ cmd_service_enable() {
 
     local display
     display=$(gum input --value "${XVFB_DISPLAY}" --header "Xvfb display number to use:") || true
-    XVFB_DISPLAY="${display:-$XVFB_DISPLAY}"
+    display="${display:-$XVFB_DISPLAY}"
+    # A display number and nothing else (Kamino 196): the value is written
+    # into a systemd ExecStart line, a wrapper script and the config file this
+    # script sources, so "99 -listen tcp" opened Xvfb to the network and a
+    # $(...) ran at the next start. ":99" is accepted as 99. Checked after
+    # the prompt, so a bad value hand-edited into the config stops here too.
+    display="${display#:}"
+    if [[ ! "$display" =~ ^[0-9]{1,5}$ ]]; then
+        warn "Not a display number: '${display}' (digits only, e.g. 99 or :99). Nothing was changed."
+        return 0
+    fi
+    XVFB_DISPLAY="$display"
 
     _write_wrapper_script
     _write_systemd_units

@@ -14,7 +14,9 @@
 #   - a model that fails to load is recorded and the rest still bench;
 #   - the report is valid JSON with the conditions it was taken in;
 #   - lms is found in the Flatpak's own sandbox and run with HOME there, as on
-#     corelia, where ~/.lmstudio does not exist.
+#     corelia, where ~/.lmstudio does not exist;
+#   - service-enable's Xvfb display is a number before it reaches the unit,
+#     the wrapper and the sourced config (Kamino 196).
 # shellcheck disable=SC2016
 # Single-quoted heredoc stubs expand their own $1/$@ at run time, on purpose.
 set -uo pipefail
@@ -146,5 +148,42 @@ check "...and the model after it still benches" \
 check "embedding models are not offered" lacks "<option> text-embedding-bge-m3" "$T/out"
 check "the conditions are recorded" \
     test "$(jq -c '.conditions | [.cpus, .not_idle]' "$R")" = "[32,false]"
+
+echo "service-enable: the Xvfb display (Kamino 196)"
+# Xvfb, flatpak, systemctl and loginctl record; lms (where service-enable
+# puts it on PATH) says the server is up, so the wait ends at once.
+for c in Xvfb flatpak systemctl loginctl; do
+    printf '#!/usr/bin/env bash\necho "%s $*" >> "$STUB_LOG"\nexit 0\n' "$c" > "$T/bin/$c"; chmod +x "$T/bin/$c"
+done
+mkdir -p "$HOME/.lmstudio/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.lmstudio/bin/lms"; chmod +x "$HOME/.lmstudio/bin/lms"
+CONF="$XDG_CONFIG_HOME/lmstudio-tui/lmstudio.conf"
+UNITS="$HOME/.config/systemd/user"
+enable() {   # enable <display answer> - service-enable, declining linger
+    printf '%s\n' "$1" no > "$GUM_ANSWERS"; : > "$GUM_STATE"; : > "$STUB_LOG"
+    bash "$FRONT" service-enable > "$T/out" 2>&1
+}
+enable 12
+check "a number: Xvfb runs on it" has "ExecStart=/usr/bin/Xvfb :12 -screen" "$UNITS/lmstudio-xvfb.service"
+check "  the wrapper uses it" has "export DISPLAY=:12" "$XDG_CONFIG_HOME/lmstudio-tui/lmstudio-headless.sh"
+check "  and it is saved" has 'XVFB_DISPLAY="12"' "$CONF"
+enable ":13"
+check ":13 is taken as 13" has "ExecStart=/usr/bin/Xvfb :13 -screen" "$UNITS/lmstudio-xvfb.service"
+check "  saved as 13" has 'XVFB_DISPLAY="13"' "$CONF"
+cp "$UNITS/lmstudio-xvfb.service" "$T/unit.before"; cp "$CONF" "$T/conf.before"
+enable '13 -listen tcp'
+check "extra Xvfb arguments are refused" has "Not a display number: '13 -listen tcp'" "$T/out"
+check "  the unit is unchanged" cmp -s "$UNITS/lmstudio-xvfb.service" "$T/unit.before"
+check "  nothing was enabled or started" lacks "systemctl" "$STUB_LOG"
+enable '1"; touch '"$T"'/pwned; : "'
+check "a quote and a command are refused" has "Not a display number" "$T/out"
+check "  the config is unchanged" cmp -s "$CONF" "$T/conf.before"
+bash "$FRONT" status > /dev/null 2>&1   # sources the config
+check "  and nothing ran when the config was read back" test ! -e "$T/pwned"
+# A bad value hand-edited into the config: Enter keeps the pre-filled value,
+# which is checked like a typed one.
+printf 'INSTALL_SCOPE="user"\nXVFB_DISPLAY="9 -listen tcp"\nSERVICE_ENABLED="false"\n' > "$CONF"
+enable ""
+check "a bad value from the config is refused too" has "Not a display number: '9 -listen tcp'" "$T/out"
+check "  the unit is unchanged" cmp -s "$UNITS/lmstudio-xvfb.service" "$T/unit.before"
 
 echo; (( FAILS == 0 )) && echo "all passed" || { echo "${FAILS} failed"; exit 1; }
