@@ -54,7 +54,12 @@ helm_values() {
             v = line
             if (sub(/^[^:]*: /, "", v)) {
                 p = path[0]; for (i = 1; i <= ind; i++) p = p "." path[i]
-                if (v ~ /^\x27.*\x27$/) { v = substr(v, 2, length(v) - 2); gsub(/\x27\x27/, "\x27", v) }
+                if (v ~ /^\x27.*\x27$/) {
+                    v = substr(v, 2, length(v) - 2)
+                    t = v; gsub(/\x27\x27/, "", t)
+                    # a lone quote inside ends the scalar early: not valid YAML
+                    if (t ~ /\x27/) v = "<invalid single-quoted YAML>"; else gsub(/\x27\x27/, "\x27", v)
+                }
                 print p "=" v
             }
         }' "$f"
