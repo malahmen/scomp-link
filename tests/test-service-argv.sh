@@ -23,6 +23,9 @@
 #     container, which must read them, so they hold no secret at all - the
 #     container gets it in its env;
 #   - dozzle generate gets the password on stdin, not --password;
+#   - lgtm's Grafana is no longer admin/admin: Docker gets a generated
+#     password from a 0600 env_file, kind/k8s the chart's generated Secret
+#     (Kamino 235);
 #   - redis on Docker gets its password in the container env, written by the
 #     container into a config file, not as --requirepass (Kamino 235);
 #   - postgres 18+ gets its volume at /var/lib/postgresql (17 and older at
@@ -392,6 +395,34 @@ check "the script finishes (exit 0)" rc_is 0
 q="'"; q="${q}${PW2//"$q"/"$q$q"}${q}"   # PW2 as a single-quoted YAML scalar
 check "the token reaches helm exactly (quoted YAML)" bash -c 'grep -qxF -- "        token: $1" "$2"/values/*.yaml' _ "$q" "$STUB_STATE"
 check "the values files were mode 600 and are removed" values_private
+
+echo "lgtm docker: Grafana's admin password is generated, kept 0600, never admin (Kamino 235)"
+svc_reset; rm -rf "$HOME/.config/lgtm" "$T/lgtm-data"
+svc_cmd lgtm install 'Grafana\nLoki' "$T/lgtm-data"
+GENV="$HOME/.config/lgtm/compose/grafana.env"
+LC="$HOME/.config/lgtm/compose/docker-compose.yml"
+gpw="$(sed -n 's/^GF_SECURITY_ADMIN_PASSWORD=//p' "$GENV" 2>/dev/null)"
+check "install finishes (exit 0)" rc_is 0
+check "the compose file has no admin/admin" bash -c '! grep -q "GF_SECURITY_ADMIN_PASSWORD=admin" "$1"' _ "$LC"
+check "...but an env_file, quoted" grep -qxF "      - '${GENV}'" "$LC"
+check "which holds a generated password (24 alphanumerics)" grep -qxE '[A-Za-z0-9]{24}' <<< "$gpw"
+check "...mode 600" bash -c "[[ \$($(declare -f mode); mode '$GENV') == 600 ]]"
+check "the password is never printed" bash -c '[[ -n "$1" ]] && ! grep -qF -- "$1" "$2"' _ "$gpw" "$T/out"
+check "...the output says how to read it" has "docker exec lgtm_grafana printenv GF_SECURITY_ADMIN_PASSWORD" "$T/out"
+svc_cmd lgtm install "Use existing config"
+check "a re-install keeps the password (the data keeps the first)" \
+    bash -c '[[ "$(sed -n "s/^GF_SECURITY_ADMIN_PASSWORD=//p" "$1")" == "$2" ]]' _ "$GENV" "$gpw"
+svc_cmd lgtm purge yes
+check "purge removes it with the data" test ! -e "$GENV"
+rm -rf "$T/lgtm-data"
+
+echo "lgtm k8s: Grafana's values carry no admin password (the chart generates one)"
+gv="$(bash -c 'set -e; warn() { :; }; NAMESPACE=monitoring TARGET_TYPE=k8s
+    declare -A PROF_REPLICAS=([grafana]=1) PROF_CPU_REQ=([grafana]=1) PROF_MEM_REQ=([grafana]=1) \
+        PROF_CPU_LIM=([grafana]=1) PROF_MEM_LIM=([grafana]=1) PROF_PVC=([grafana]=1Gi)
+    source <(sed -n "/^_helm_values_grafana()/,/^}/p" "$1"); _helm_values_grafana' _ "$SVC_DIR/lgtm/lgtm.sh")"
+check "the values render" grep -q "datasources.yaml:" <<< "$gv"
+check "no adminPassword in them" bash -c '! grep -qE "^ *adminPassword:" <<< "$1"' _ "$gv"
 
 echo "dozzle docker: auth - users.yml (password hash)"
 svc_reset; rm -rf "$HOME/.config/dozzle"
