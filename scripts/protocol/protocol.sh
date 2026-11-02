@@ -46,6 +46,8 @@ source "${COMMON_DIR}/deps.sh"
 SVC_BIND_DEFAULT=0.0.0.0
 # shellcheck source=../_common/portforward.sh
 source "${COMMON_DIR}/portforward.sh"
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"   # conf_load: the settings file is parsed, never sourced
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -121,26 +123,145 @@ cfg_defaults() {
     PR_REF="main"               # built for both repositories
 }
 
-cfg_load() {
-    cfg_defaults
-    # Where install published the API (SCOMP_BIND_ADDR, or every interface):
-    # saved by install for status and the URLs, not a setting 'config' edits.
-    PR_BIND_ADDR=""
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
-    if [[ -n "$PR_BIND_ADDR" ]] && ! _svc_ipv4 "$PR_BIND_ADDR"; then
-        warn "Ignoring PR_BIND_ADDR='${PR_BIND_ADDR}' in ${CONFIG_FILE}: not an IPv4 address."
-        PR_BIND_ADDR=""
+# Every key the settings file holds: read by cfg_load, written by cfg_save,
+# the same list both ways. PR_BIND_ADDR is where install published the API
+# (SCOMP_BIND_ADDR, or every interface): saved by install for status and the
+# URLs, not a setting 'config' edits.
+PR_KEYS=("${PR_SETTINGS[@]}" PR_BIND_ADDR)
+
+# _pr_port VALUE - a TCP port, 1-65535, written without leading zeros.
+_pr_port() { [[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && (( $1 < 65536 )); }
+
+# _pr_host VALUE - an IPv4 address or a DNS host name (RFC 1123 labels).
+# Something made only of digits and dots has to be a real IPv4 address.
+_pr_host() {
+    local v="$1" label='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+    [[ "$v" =~ ^[0-9.]+$ ]] && { _svc_ipv4 "$v"; return; }
+    (( ${#v} <= 253 )) && [[ "$v" =~ ^${label}(\.${label})*$ ]]
+}
+
+# _pr_url SCHEMES VALUE [PATH-ERE] - SCHEME://host[:port][path]: SCHEMES is an
+# ERE alternation; no credentials (they are podman secrets), no query, and a
+# path of plain characters only (PATH-ERE narrows it).
+_pr_url() {
+    local schemes="$1" v="$2" path_re="${3:-(/[A-Za-z0-9._~/-]*)?}"
+    local re="^(${schemes})://([A-Za-z0-9.-]+)(:([0-9]{1,5}))?(.*)$"
+    [[ "$v" =~ $re ]] || return 1
+    local host="${BASH_REMATCH[2]}" port="${BASH_REMATCH[4]}" path="${BASH_REMATCH[5]}"
+    _pr_host "$host" || return 1
+    [[ -z "$port" ]] || _pr_port "$port" || return 1
+    [[ "$path" =~ ^${path_re}$ ]]
+}
+
+# _pr_bucket VALUE - an S3 bucket name, by the S3 naming rules (Garage keeps
+# them): 3-63 lower-case letters, digits, dots and hyphens, a letter or digit
+# at each end, no "..", not an IPv4 address, none of the reserved prefixes or
+# suffixes.
+_pr_bucket() {
+    local v="$1"
+    [[ ${#v} -ge 3 && ${#v} -le 63 && "$v" =~ ^[a-z0-9][a-z0-9.-]*[a-z0-9]$ ]] || return 1
+    [[ "$v" != *..* ]] || return 1
+    [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && return 1
+    case "$v" in
+        xn--*|sthree-*|amzn-s3-demo-*|*-s3alias|*--ol-s3|*.mrap|*--x-s3|*--table-s3) return 1 ;;
+    esac
+    return 0
+}
+
+# _pr_repo VALUE - a repository git can clone and nothing it runs: an
+# http(s)://, git:// or ssh:// URL (a user only for ssh - a token in an https
+# URL would sit in this file), scp-like user@host:path, or an absolute path to
+# a local clone. Never a transport like ext:: (it runs a command).
+_pr_repo() {
+    local v="$1" path='[A-Za-z0-9._~/+-]'
+    if [[ "$v" =~ ^(https?|git)://[^@]*$ ]]; then _pr_url 'https?|git' "$v" "/${path}*"
+    elif [[ "$v" =~ ^ssh://([A-Za-z0-9._-]+@)?(.*)$ ]]; then _pr_url ssh "ssh://${BASH_REMATCH[2]}" "/${path}*"
+    elif [[ "$v" =~ ^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):(${path}+)$ ]]; then _pr_host "${BASH_REMATCH[1]}"
+    else [[ "$v" =~ ^/${path}+$ ]]
     fi
 }
 
+# _pr_ref_name VALUE - a branch or tag (or commit) name git accepts
+# (check-ref-format, short): not starting with - or ., no "..", "//", "@{",
+# nor a trailing / . or .lock.
+_pr_ref_name() {
+    local v="$1"
+    [[ ${#v} -le 255 && "$v" =~ ^[A-Za-z0-9_][A-Za-z0-9._/+-]*$ ]] || return 1
+    [[ "$v" != *..* && "$v" != *//* && "$v" != */ && "$v" != *. && "$v" != *.lock && "$v" != */.* ]]
+}
+
+# pr_valid <KEY> <value> - the value is one the setting may hold. Every
+# setting becomes a unit's Environment= line, a published port, a podman
+# volume or a git argument as it is, so each is checked the same way whether
+# it was typed under 'config' or read from the settings file (Kamino 236, as
+# speaches' sp_valid in 235).
+pr_valid() {
+    local v="$2"
+    case "$1" in
+        PR_PORT|PR_MARIADB_PORT) _pr_port "$v" ;;
+        PR_MARIADB_HOST) _pr_host "$v" ;;
+        # redis-py's form: an optional database number as the path.
+        PR_REDIS_URL)    _pr_url 'rediss?' "$v" '(/[0-9]{1,2})?' ;;
+        PR_S3_ENDPOINT|PR_QDRANT_URL) _pr_url 'https?' "$v" ;;
+        # Empty = audio is refused at submit (Kamino 89).
+        PR_SPEACHES_URL) [[ -z "$v" ]] || _pr_url 'https?' "$v" ;;
+        PR_S3_SOURCES_BUCKET|PR_S3_OUTPUTS_BUCKET) _pr_bucket "$v" ;;
+        # Empty until ingestion names them; else names, comma-separated.
+        PR_QDRANT_COLLECTIONS)
+            [[ -z "$v" || "$v" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]{0,254}(,[A-Za-z0-9_-][A-Za-z0-9._-]{0,254})*$ ]] ;;
+        # A named volume: a path there is a bind mount of this host's files.
+        PR_MODELS_VOLUME) [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] ;;
+        PR_PROTOCOL_REPO|PR_DROID_REPO) _pr_repo "$v" ;;
+        PR_REF)          _pr_ref_name "$v" ;;
+        PR_BIND_ADDR)    [[ -z "$v" ]] || _svc_ipv4 "$v" ;;
+        *) return 1 ;;
+    esac
+}
+
+# pr_valid_hint <KEY> - what pr_valid wants, for the warnings.
+pr_valid_hint() {
+    case "$1" in
+        PR_PORT|PR_MARIADB_PORT) echo "a port (1-65535)" ;;
+        PR_MARIADB_HOST) echo "a host name or IPv4 address" ;;
+        PR_REDIS_URL)    echo "a redis:// URL without credentials (host[:port][/db])" ;;
+        PR_S3_ENDPOINT|PR_QDRANT_URL) echo "an http(s):// URL without credentials" ;;
+        PR_SPEACHES_URL) echo "an http(s):// URL without credentials, or empty" ;;
+        PR_S3_SOURCES_BUCKET|PR_S3_OUTPUTS_BUCKET) echo "an S3 bucket name (3-63 of a-z 0-9 . -)" ;;
+        PR_QDRANT_COLLECTIONS) echo "collection names, comma-separated, or empty" ;;
+        PR_MODELS_VOLUME) echo "a volume name (not a path)" ;;
+        PR_PROTOCOL_REPO|PR_DROID_REPO) echo "a git URL (https, ssh, git, user@host:path) or an absolute path" ;;
+        PR_REF)          echo "a branch or tag name (not starting with -)" ;;
+        PR_BIND_ADDR)    echo "an IPv4 address" ;;
+        *)               echo "a known setting" ;;
+    esac
+}
+
+# The settings file is parsed (conf.sh), never sourced: a $(...), a backtick
+# or a bare command line in it ran as code (Kamino 236, as speaches in 235).
+# A value that is not one the setting may hold keeps the default.
+cfg_load() {
+    cfg_defaults
+    PR_BIND_ADDR=""
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    local -A dflt=()
+    local key
+    for key in "${PR_KEYS[@]}"; do dflt[$key]="${!key}"; done
+    conf_load "$CONFIG_FILE" "${PR_KEYS[@]}"
+    for key in "${PR_KEYS[@]}"; do
+        pr_valid "$key" "${!key}" && continue
+        warn "Ignoring ${key}='${!key}' in ${CONFIG_FILE}: not $(pr_valid_hint "$key"). Using '${dflt[$key]}' (change it under 'config')."
+        printf -v "$key" '%s' "${dflt[$key]}"
+    done
+}
+
+# KEY=%q lines, the form conf_load reads back (and every version of this
+# script wrote).
 cfg_save() {
     mkdir -p "$CONFIG_DIR"
     {
         printf '# protocol.sh settings - see the defaults in protocol.sh\n'
         local key
-        for key in "${PR_SETTINGS[@]}" PR_BIND_ADDR; do printf '%s=%q\n' "$key" "${!key:-}"; done
+        for key in "${PR_KEYS[@]}"; do printf '%s=%q\n' "$key" "${!key:-}"; done
     } > "$CONFIG_FILE"
 }
 
@@ -350,14 +471,11 @@ pr_src_sync() {   # pr_src_sync <dir> <repo> -> prints the commit
     git -C "$dir" remote set-url origin "$repo" >&2 || return 1
     # After --, so a ref (or a hand-edited PR_REF) that starts with - is a
     # ref git cannot find, never an option (--upload-pack runs a command).
-    _pr_ref_ok "$PR_REF" || { warn "Not a branch or tag: '${PR_REF}' (set it under 'config')."; return 1; }
+    pr_valid PR_REF "$PR_REF" || { warn "Not a branch or tag: '${PR_REF}' (set it under 'config')."; return 1; }
     git -C "$dir" fetch --quiet -- origin "$PR_REF" >&2 || return 1
     git -C "$dir" checkout --quiet --detach FETCH_HEAD >&2 || return 1
     git -C "$dir" rev-parse --short HEAD
 }
-
-# _pr_ref_ok REF - a branch or tag name: plain, and not starting with -.
-_pr_ref_ok() { _pr_plain "$1" && [[ "$1" != -* ]]; }
 
 pr_image_revision() {
     podman image inspect "$1" --format "{{ index .Labels \"${PR_REVISION_LABEL}\" }}" 2>/dev/null || true
@@ -655,10 +773,11 @@ pr_uninstall() {
 }
 
 # Returns 0 when something changed (the caller offers to re-apply).
-# _pr_set NAME VALUE - set a setting, if VALUE can go into a unit as it is.
+# _pr_set NAME VALUE - set a setting, if VALUE is one it may hold: the same
+# pr_valid the settings file is read with (Kamino 236).
 _pr_set() {
-    if _pr_plain "$2"; then printf -v "$1" '%s' "$2"
-    else warn "Not changed: '${2}' - no spaces, %, quotes or backslashes, and not empty."; fi
+    if pr_valid "$1" "$2"; then printf -v "$1" '%s' "$2"
+    else warn "Not changed: '${2}' - not $(pr_valid_hint "$1")."; fi
 }
 
 pr_config() {
@@ -672,13 +791,13 @@ pr_config() {
             --header "Change:") || break
         case "$field" in
             port) value=$(gum input --value "$PR_PORT" --header "The API's port on this host:") || continue
-                  [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 && value < 65536 )) && PR_PORT="$value" || warn "Not a port: ${value}" ;;
+                  _pr_set PR_PORT "$value" ;;
             "MariaDB host") value=$(gum input --value "$PR_MARIADB_HOST" --header "MariaDB host:") || continue
                   _pr_set PR_MARIADB_HOST "$value" ;;
             "MariaDB port") value=$(gum input --value "$PR_MARIADB_PORT" --header "MariaDB port:") || continue
-                  [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 && value < 65536 )) && PR_MARIADB_PORT="$value" || warn "Not a port: ${value}" ;;
+                  _pr_set PR_MARIADB_PORT "$value" ;;
             "Redis URL") value=$(gum input --value "$PR_REDIS_URL" --header "Redis URL (no password in it - that is a secret):") || continue
-                  [[ "$value" == redis://* && "$value" != *@* ]] && _pr_set PR_REDIS_URL "$value" || warn "A redis:// URL without credentials, please." ;;
+                  _pr_set PR_REDIS_URL "$value" ;;
             "S3 endpoint") value=$(gum input --value "$PR_S3_ENDPOINT" --header "Garage S3 endpoint:") || continue
                   _pr_set PR_S3_ENDPOINT "$value" ;;
             buckets) value=$(gum input --value "$PR_S3_SOURCES_BUCKET" --header "Sources bucket:") || continue
@@ -691,15 +810,14 @@ pr_config() {
                     --header "The collections ingestion writes, comma-separated (removal deletes points only there):") || continue
                   # "documents, chunks" is what people type: the spaces go.
                   value="${value//[[:space:]]/}"
-                  if [[ -z "$value" ]]; then PR_QDRANT_COLLECTIONS=""; else _pr_set PR_QDRANT_COLLECTIONS "$value"; fi ;;
+                  _pr_set PR_QDRANT_COLLECTIONS "$value" ;;
             "Speaches URL") value=$(gum input --value "$PR_SPEACHES_URL" \
                     --header "Speaches, as a container reaches it (empty = refuse audio):") || continue
-                  if [[ -z "$value" ]]; then PR_SPEACHES_URL=""; else _pr_set PR_SPEACHES_URL "$value"; fi ;;
+                  _pr_set PR_SPEACHES_URL "$value" ;;
             "models volume") value=$(gum input --value "$PR_MODELS_VOLUME" --header "Named volume for marker's models:") || continue
                   _pr_set PR_MODELS_VOLUME "$value" ;;
             "branch to build") value=$(gum input --value "$PR_REF" --header "Branch or tag of protocol and protocol-droid to build:") || continue
-                  if [[ "$value" == -* ]]; then warn "Not changed: '${value}' - a branch or tag does not start with -."
-                  else _pr_set PR_REF "$value"; fi ;;
+                  _pr_set PR_REF "$value" ;;
             repositories) value=$(gum input --value "$PR_PROTOCOL_REPO" --header "protocol's repository:") || continue
                   _pr_set PR_PROTOCOL_REPO "$value"
                   value=$(gum input --value "$PR_DROID_REPO" --header "protocol-droid's repository:") || continue
