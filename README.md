@@ -635,6 +635,16 @@ wrong things passed every test. `esc` (or running out of answers) is the user
 pressing Esc. `spin` runs its command and exits with the command's status, as
 gum does. No network and no terminal: `file://` remotes only.
 
+`input` and `write` open holding their `--value`, as gum does, so a **blank
+answer is Enter** and returns the pre-filled value; `<clear>` is the user
+emptying the field, `esc` (or no answer left) exits 130. `confirm` answers
+`enter` with its `--default`. `filter` is `choose` with a search box, and
+refuses what it did not offer. A command gum does not have exits 80, and one
+the stub does not model fails and is logged: both used to print nothing and
+exit 0, which a front-end reads as an empty answer (Kamino item 196, which also
+found the teldrassil front-end saving every pre-filled answer - see
+`tests/test-gum-stub.sh`).
+
 The service scripts (databases, observability, platform) run against
 recording stubs of `docker`, `docker-compose`, `podman`, `kubectl`, `helm` and
 `kind` (`tests/lib/service-stubs.sh`) on a `PATH` without `/usr/local/bin` or

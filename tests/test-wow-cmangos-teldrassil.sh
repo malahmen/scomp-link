@@ -33,7 +33,9 @@ cat > "$T/engine/teldrassil.sh" <<EOF
 if [[ "\${1:-}" == get ]]; then
     case "\$2" in
         DB_WORLD) echo classicmangos ;; DB_CHARACTERS) echo classiccharacters ;;
-        DB_REALMD) echo classicrealmd ;; DB_LOGS) echo classiclogs ;; DB_TIMEOUT) echo 120 ;; *) echo "" ;;
+        DB_REALMD) echo classicrealmd ;; DB_LOGS) echo classiclogs ;; DB_TIMEOUT) echo 120 ;;
+        # Values a prompt opens holding (gum --value): Enter returns them.
+        REALM_NAME) echo Teldrassil ;; DB_USER) echo root ;; BOTS) echo 2000 ;; *) echo "" ;;
     esac
     exit 0
 fi
@@ -142,6 +144,16 @@ check "  a blank answer keeps the setting" not_called "set|WORK_DIR"
 check "  and declining installs nothing" not_called "install"
 drive Provision install "" "" "" "" "" yes back Quit
 check "confirmed: install --yes" called "install|--yes"
+# Enter on a prompt that opens holding the current value returns that value
+# (real gum, and the stub since Kamino 196): saving it anyway wrote every
+# visited key into the profile, pinning what the base config or the
+# engine's default supplied. Only a changed answer is saved.
+check "  Enter on each pre-filled prompt: nothing is set" not_called "set|"
+drive Provision install "" Darnassus "" "" "" no back Quit
+check "  a changed answer is set" called "set|REALM_NAME|Darnassus"
+check "  and only that one" bash -c '[ "$(grep -c "^set|" "$1")" = 1 ]' _ "$T/calls"
+drive Settings edit-setting DB_USER "Change it" "" back Quit
+check "edit a setting, Enter: unchanged, not set" not_called "set|DB_USER"
 drive Provision db-init no back Quit
 check "db-init declined: nothing" not_called "db-init"
 drive Provision db-init yes back Quit
@@ -162,7 +174,9 @@ drive Bots llm "Turn it off" back Quit
 check "off" called "llm|off"
 drive Bots llm "Turn it on (or change it)" http://127.0.0.1:1234/v1/chat/completions qwen 80 none 0 "" back Quit
 check "on, with the endpoint, model and extras" called "llm|on|--endpoint|http://127.0.0.1:1234/v1/chat/completions|--model|qwen|--max-tokens|80|--reasoning-effort|none|--bot-to-bot|0"
-drive Bots llm "Turn it on (or change it)" https://api.example/v1/chat/completions gpt "" "" "" /keys/llm.txt back Quit
+# The token and bot-to-bot prompts open holding 80 and 0 (gum --value), so
+# leaving them out takes clearing the field: <clear>, not Enter (Kamino 196).
+drive Bots llm "Turn it on (or change it)" https://api.example/v1/chat/completions gpt "<clear>" "" "<clear>" /keys/llm.txt back Quit
 check "a hosted endpoint: the key FILE is passed, blanks left out" called "llm|on|--endpoint|https://api.example/v1/chat/completions|--model|gpt|--api-key-file|/keys/llm.txt"
 drive Bots llm "Turn it on (or change it)" http://x/v1/chat/completions "" back Quit
 check "no model: cancelled" not_called "llm|on"
@@ -191,7 +205,9 @@ for bad in 0 -5 abc 1.5 "60s" "1 2" 007; do
     check "'${bad}' is refused, nothing set" not_called "DB_TIMEOUT"
 done
 drive Settings db-timeout "" back Quit
-check "blank keeps it" not_called "DB_TIMEOUT"
+check "Enter (the pre-filled 120) keeps it" not_called "DB_TIMEOUT"
+drive Settings db-timeout "<clear>" back Quit
+check "a cleared field keeps it" not_called "DB_TIMEOUT"
 
 echo "# every destructive prompt: declined, Enter (its default) and confirmed (Kamino 178)"
 # Enter answers the prompt's --default; each of these is --default=false, so

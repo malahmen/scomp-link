@@ -106,10 +106,15 @@ eget() { bash "$ENGINE" "${PROFILE_FLAGS[@]}" get "$1" 2>/dev/null || true; }
 _ask() { gum input --value "${2:-}" --header "$1" || true; }
 
 # _set_if <KEY> <header> — prompt pre-filled with the current value, saved
-# only when an answer was given (empty keeps the setting).
+# only when the answer changed it. gum returns the pre-filled value on Enter,
+# so saving every non-empty answer wrote each visited key into the active
+# profile (or teldrassil.conf): a value inherited from the base config or the
+# engine's default was pinned there, and stopped following them (Kamino 196).
+# Empty (the field cleared, or Esc) keeps the setting too.
 _set_if() {
-    local v; v="$(_ask "$2" "$(eget "$1")")"
-    [[ -n "$v" ]] && engine_foreground set "$1" "$v"
+    local cur v; cur="$(eget "$1")"
+    v="$(_ask "$2" "$cur")"
+    [[ -n "$v" && "$v" != "$cur" ]] && engine_foreground set "$1" "$v"
     return 0
 }
 
@@ -126,7 +131,7 @@ _pick_gm_level() {
 
 action_setup() {
     header "teldrassil — Where the server is (${PROFILE_LABEL})"
-    info "Each answer is saved with the engine's 'set'; leave one blank to keep it."
+    info "Each answer that changes a setting is saved with the engine's 'set'; Enter keeps one as it is."
     local where
     where=$(gum choose --header "Where does this server run?" \
         "Here, in containers" \
@@ -178,13 +183,13 @@ _pick_profile() {
 # it so the base config's value (or the default) shows through again.
 action_edit_setting() {
     header "teldrassil — Edit a setting (${PROFILE_LABEL})"
-    local key how v
+    local key how
     key=$(engine_foreground config 2>/dev/null | awk '{k = ($1 ~ /^[A-Z][A-Z0-9_]+$/) ? $1 : $2} k ~ /^[A-Z][A-Z0-9_]+$/ && k != "Config" {print k}' \
         | gum choose --header "Which setting?") || return 0
     [[ -n "$key" ]] || return 0
     how=$(gum choose --header "${key} is now: $(eget "$key")" "Change it" "Clear it (use the base config's or the default)") || return 0
     case "$how" in
-        Change*) v="$(_ask "${key}:" "$(eget "$key")")"; [[ -n "$v" ]] && engine_foreground set "$key" "$v" ;;
+        Change*) _set_if "$key" "${key}:" ;;
         Clear*)  engine_foreground unset "$key" ;;
     esac
     return 0
@@ -215,8 +220,9 @@ action_delete_profile() {
 action_db_timeout() {
     header "teldrassil — Database wait (${PROFILE_LABEL})"
     info "How long install and db-init wait for the database to answer; past it they stop, the databases untouched."
-    local v; v="$(_ask "Seconds (DB_TIMEOUT; blank keeps it):" "$(eget DB_TIMEOUT)")"
-    [[ -n "$v" ]] || { info "Kept."; return 0; }
+    local cur v; cur="$(eget DB_TIMEOUT)"
+    v="$(_ask "Seconds (DB_TIMEOUT; Enter keeps it):" "$cur")"
+    [[ -n "$v" && "$v" != "$cur" ]] || { info "Kept."; return 0; }
     [[ "$v" =~ ^[1-9][0-9]*$ ]] || { warn "'${v}' is not a whole number of seconds above 0; DB_TIMEOUT is unchanged."; return 0; }
     engine_foreground set DB_TIMEOUT "$v"
 }
@@ -256,7 +262,7 @@ action_install() {
     _set_if REALM_NAME    "Realm name (in the realm list):"
     _set_if REALM_ADDRESS "Address players connect to (this machine's LAN address for LAN play):"
     _set_if BOTS          "How many random bots:"
-    _set_if WORK_DIR      "Where teldrassil keeps its files (blank keeps the current place):"
+    _set_if WORK_DIR      "Where teldrassil keeps its files (Enter keeps the current place):"
     warn "The first install compiles for tens of minutes and extracts for about 20 (~7 GB in all)."
     gum confirm --default=false "Install now?" || { info "Cancelled."; return 0; }
     engine_foreground install --yes

@@ -206,7 +206,9 @@ run config "Qdrant collections" "documents, chunks" "done" yes yes no "← back"
 check "named collections reach the units, without the typed space (item 102)" has "Environment=QDRANT_COLLECTIONS=documents,chunks" "$Q/protocol-api.container"
 check "every setting is in the menu: the MariaDB port" has "<option> MariaDB port" "$T/out"
 check "...and Speaches" has "<option> Speaches URL" "$T/out"
-run config "Speaches URL" "" "done" yes yes no "← back"
+# The field opens holding the URL (gum --value), so emptying it is <clear>:
+# Enter alone keeps it (Kamino 196).
+run config "Speaches URL" "<clear>" "done" yes yes no "← back"
 check "an empty Speaches URL leaves it out of the units: audio is refused" lacks "SPEACHES_URL" "$Q/protocol-api.container"
 check "...and says so" has "not set (audio is refused)" "$T/out"
 check "...and the repositories" has "<option> repositories" "$T/out"

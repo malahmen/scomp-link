@@ -28,6 +28,12 @@ All interactivity is here: answers are saved into the engine's config store
 (`~/.config/teldrassil/`) with its `set` command, and each action runs the
 matching flag-driven subcommand. The engine itself never prompts.
 
+A settings prompt opens holding the current value, and only an answer that
+changes it is saved: Enter keeps the setting, and so does a cleared field. It
+used to save whatever came back, so walking through the wizard wrote every
+key it visited into the profile - a value the base config or the engine's
+default supplied was pinned there and stopped following them (Kamino 196).
+
 ## What it does
 
 teldrassil builds a server from nothing - pinned sources, the client's data,
@@ -104,4 +110,5 @@ file; search filters arrive as flags; a table-subset dump is restored with
 `--db`; when the engine's `roster plan` exits non-zero, apply is never asked
 and `roster apply` never runs, and when it succeeds apply works as before;
 `DB_TIMEOUT` is saved with `set` (to the active profile) only as a whole
-number of seconds above 0.
+number of seconds above 0; and a prompt that opens holding the current value
+saves nothing when Enter keeps it.
