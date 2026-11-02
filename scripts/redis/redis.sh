@@ -55,7 +55,7 @@ RD_HELM_REPO_NAME="groundhog2k"
 RD_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 RD_HELM_CHART="groundhog2k/redis"
 RD_DEFAULT_PORT=6379
-_RD_PF_PID="/tmp/scomp-pf-redis.pid"
+_RD_PF_PID="$(pf_file redis)"
 RD_DEFAULT_IMAGE_TAG="7"
 RD_QUEUE_SCAN_LIMIT=500     # max keys to inspect during queue listing
 
@@ -635,7 +635,7 @@ redis_port_forward_k8s() {
 
     local pf_pid
     pf_pid=$(_k8s_start_port_forward "$port")
-    echo "${pf_pid}:${port}" > "$_RD_PF_PID"
+    pf_write "$_RD_PF_PID" "${pf_pid}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

@@ -52,7 +52,7 @@ MDB_HELM_REPO_NAME="groundhog2k"
 MDB_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 MDB_HELM_CHART="groundhog2k/mariadb"
 MDB_DEFAULT_PORT=3306
-_MDB_PF_PID="/tmp/scomp-pf-mariadb.pid"
+_MDB_PF_PID="$(pf_file mariadb)"
 MDB_DEFAULT_DB="app"
 MDB_DEFAULT_USER="app"
 MDB_DEFAULT_IMAGE_TAG="11"
@@ -526,7 +526,7 @@ mariadb_port_forward_k8s() {
     local port="${port_input:-$MDB_DEFAULT_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_MDB_PF_PID"
+    pf_write "$_MDB_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

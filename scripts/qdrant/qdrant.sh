@@ -52,8 +52,8 @@ QD_HELM_CHART="qdrant/qdrant"
 QD_DEFAULT_REST_PORT=6333
 QD_DEFAULT_GRPC_PORT=6334
 QD_DEFAULT_IMAGE_TAG="latest"
-_QD_REST_PF_PID="/tmp/scomp-pf-qdrant-rest.pid"
-_QD_GRPC_PF_PID="/tmp/scomp-pf-qdrant-grpc.pid"
+_QD_REST_PF_PID="$(pf_file qdrant-rest)"
+_QD_GRPC_PF_PID="$(pf_file qdrant-grpc)"
 
 # Colours
 BLUE=39
@@ -488,10 +488,10 @@ qdrant_port_forward_k8s() {
     local grpc_port="${grpc_input:-$QD_DEFAULT_GRPC_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${grpc_port}:6334" >/dev/null 2>&1 &
-    echo "${!}:${grpc_port}" > "$_QD_GRPC_PF_PID"
+    pf_write "$_QD_GRPC_PF_PID" "${!}" "${grpc_port}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${rest_port}:6333" >/dev/null 2>&1 &
-    echo "${!}:${rest_port}" > "$_QD_REST_PF_PID"
+    pf_write "$_QD_REST_PF_PID" "${!}" "${rest_port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$rest_port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

@@ -41,7 +41,7 @@ FOO_HELM_REPO_URL="https://TODO.example/helm-charts/"  # a maintained chart repo
 FOO_HELM_CHART="TODO-repo/foo"
 FOO_DEFAULT_PORT=1234
 FOO_DEFAULT_IMAGE_TAG="latest"                         # prefer the official image + a pinned tag
-_FOO_PF_PID="/tmp/scomp-pf-foo.pid"
+_FOO_PF_PID="$(pf_file foo)"
 
 # Session state — populated by the menus
 FOO_CONTAINER_NAME="foo"
@@ -158,7 +158,7 @@ foo_port_forward_k8s() {
     local port; port=$(gum input --value "$FOO_DEFAULT_PORT" --header "Local port:") || return 0
     port="${port:-$FOO_DEFAULT_PORT}"
     kubectl --context "$KUBE_CONTEXT" -n "$FOO_NAMESPACE" port-forward "svc/${FOO_HELM_RELEASE}" "${port}:${FOO_DEFAULT_PORT}" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_FOO_PF_PID"
+    pf_write "$_FOO_PF_PID" "${!}" "${port}"
     pf_is_running "$_FOO_PF_PID" && success "Port-forward: localhost:${port}" || { warn "Failed."; rm -f "$_FOO_PF_PID"; }
 }
 

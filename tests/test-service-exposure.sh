@@ -16,6 +16,10 @@
 #   - Declining: `gum confirm ... || return` returns 1, and a menu calling
 #     the function bare under set -e then ended the whole TUI. Declining (or
 #     cancelling kind's create) goes back to the menu now.
+#   - Port-forward PID files: /tmp/scomp-pf-<svc>.pid could be planted (or
+#     symlinked) by another local user, and pf_stop killed the PID it read.
+#     They live in a per-user 0700 folder, and a symlink or a file that is
+#     not the user's is never read or signalled.
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -229,6 +233,53 @@ check "declining to recreate an existing cluster: exit 0" rc_is 0
 check "...nothing was deleted" bash -c "! grep -q '^kind delete' '$STUB_LOG'"
 check "...and the TUI said Bye" has "Bye!" "$T/out"
 rm -f "$T/bin/mise"
+
+# ----------------------------------------------------------------- PID files
+PF() {   # PF <bash code> - runs it with ui.sh and portforward.sh sourced
+    bash -c 'source "$1/_common/ui.sh"; source "$1/_common/portforward.sh"; eval "$2"' _ "$SVC_DIR" "$1"
+}
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }   # GNU, else BSD
+export SVC_DIR; export -f PF mode
+PFDIR="$XDG_RUNTIME_DIR/scomp-link/pf"
+echo "portforward.sh: PID files live in a per-user 0700 folder"
+check "pf_file grafana is under \$XDG_RUNTIME_DIR/scomp-link/pf" \
+    bash -c '[[ "$(PF "pf_file grafana")" == "$1/grafana.pid" ]]' _ "$PFDIR"
+check "the folder is mode 700" bash -c '[[ "$(mode "$1")" == 700 ]]' _ "$PFDIR"
+check "without \$XDG_RUNTIME_DIR it is ~/.cache/scomp-link/pf, also 700" \
+    bash -c 'f="$(XDG_RUNTIME_DIR= PF "pf_file x")"; d="$HOME/.cache/scomp-link/pf"
+        [[ "$f" == "$d/x.pid" && "$(mode "$d")" == 700 ]]'
+check "a folder left 755 is tightened to 700" \
+    bash -c 'chmod 755 "$1"; PF "pf_dir" >/dev/null; [[ "$(mode "$1")" == 700 ]]' _ "$PFDIR"
+
+echo "portforward.sh: a planted symlink is refused"
+/bin/sleep 300 & VICTIM=$!
+printf '%s:5432\n' "$VICTIM" > "$T/elsewhere.pid"
+ln -sf "$T/elsewhere.pid" "$PFDIR/postgres.pid"
+check "pf_is_running does not follow it" bash -c '! PF "pf_is_running \"$1\""' _ "$PFDIR/postgres.pid"
+check "pf_port does not read it" bash -c '[[ -z "$(PF "pf_port \"$1\"")" ]]' _ "$PFDIR/postgres.pid"
+PF "pf_stop '$PFDIR/postgres.pid'" > "$T/pfout" 2>&1
+check "pf_stop refuses it and says so" has "Refusing PID file" "$T/pfout"
+check "...and the PID it pointed at was not signalled" kill -0 "$VICTIM"
+check "a pid file in a group/other-writable folder is refused" \
+    bash -c 'mkdir -p "$1/open"; chmod 777 "$1/open"; printf "%s:1\n" "$2" > "$1/open/x.pid"; ! PF "pf_is_running \"$1/open/x.pid\""' _ "$T" "$VICTIM"
+check "pf_write replaces a symlink instead of writing through it" \
+    bash -c 'PF "pf_write \"$1\" 123 5432"; [[ ! -L "$1" && "$(cat "$1")" == 123:5432 && "$(cat "$2")" == "$3:5432" ]]' \
+    _ "$PFDIR/postgres.pid" "$T/elsewhere.pid" "$VICTIM"
+rm -f "$PFDIR/postgres.pid"
+
+echo "grafana k8s: the menu reads the forward from the per-user folder"
+svc_reset
+touch "$STUB_STATE/no-docker"; echo stub-ctx > "$STUB_STATE/contexts"
+printf '%s:9999\n' "$VICTIM" > "$PFDIR/grafana.pid"
+svc_run grafana "" "" "← back"
+check "the menu shows the running forward" has "connect  [● localhost:9999]" "$T/out"
+ln -sf "$T/elsewhere.pid" "$PFDIR/grafana.pid"
+svc_run grafana "" "" "← back"
+check "a symlinked PID file shows as stopped" has "connect  [○ stopped]" "$T/out"
+rm -f "$PFDIR/grafana.pid"
+kill "$VICTIM" 2>/dev/null
+check "no script names a /tmp/scomp-pf PID file any more" \
+    bash -c '! grep -rn "/tmp/scomp-pf" "$1" --include="*.sh" | grep -v "_common/portforward.sh"' _ "$SVC_DIR"
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi

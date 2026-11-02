@@ -52,7 +52,7 @@ N8N_HELM_REPO_NAME="community-charts"
 N8N_HELM_REPO_URL="https://community-charts.github.io/helm-charts"
 N8N_HELM_CHART="community-charts/n8n"
 N8N_DEFAULT_PORT=5678
-_N8N_PF_PID="/tmp/scomp-pf-n8n.pid"
+_N8N_PF_PID="$(pf_file n8n)"
 N8N_DEFAULT_IMAGE_TAG="latest"
 N8N_DEFAULT_TIMEZONE="UTC"
 
@@ -586,7 +586,7 @@ n8n_connect_k8s() {
     fi
 
     kubectl --context "$KUBE_CONTEXT" -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_N8N_PF_PID"
+    pf_write "$_N8N_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

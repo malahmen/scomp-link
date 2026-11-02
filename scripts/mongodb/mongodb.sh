@@ -52,7 +52,7 @@ MNG_HELM_REPO_NAME="groundhog2k"
 MNG_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 MNG_HELM_CHART="groundhog2k/mongodb"
 MNG_DEFAULT_PORT=27017
-_MNG_PF_PID="/tmp/scomp-pf-mongodb.pid"
+_MNG_PF_PID="$(pf_file mongodb)"
 MNG_DEFAULT_DB="app"
 MNG_DEFAULT_USER="app"
 MNG_DEFAULT_ROOT_USER="root"
@@ -631,7 +631,7 @@ mongodb_port_forward_k8s() {
     local port="${port_input:-$MNG_DEFAULT_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$MNG_NAMESPACE" port-forward "svc/${MNG_HELM_RELEASE}" "${port}:27017" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_MNG_PF_PID"
+    pf_write "$_MNG_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

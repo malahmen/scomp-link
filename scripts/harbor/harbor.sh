@@ -53,7 +53,7 @@ HARBOR_HELM_REPO_NAME="harbor"
 HARBOR_HELM_REPO_URL="https://helm.goharbor.io"
 HARBOR_HELM_CHART="harbor/harbor"
 HARBOR_DEFAULT_PORT=8080
-_HARBOR_PF_PID="/tmp/scomp-pf-harbor.pid"
+_HARBOR_PF_PID="$(pf_file harbor)"
 HARBOR_ADMIN_PASSWORD=""
 
 # Component PVC sizes — registry is the only user-configurable one.
@@ -448,7 +448,7 @@ harbor_connect_k8s() {
     fi
 
     kubectl --context "$KUBE_CONTEXT" -n "$HARBOR_NAMESPACE" port-forward "svc/${svc}" "${port}:80" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_HARBOR_PF_PID"
+    pf_write "$_HARBOR_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

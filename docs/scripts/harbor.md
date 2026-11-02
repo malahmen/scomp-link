@@ -12,7 +12,7 @@ Kubernetes only.
   - **StorageClass** - dynamic provisioning (covers NFS-backed classes); prompt for class name and registry size
   - **Local path** - hostPath PVs pinned to a selected node; creates PVs + PVCs for all Harbor components (registry, jobservice, database, redis, trivy) under `<base>/<component>` using `DirectoryOrCreate`. Falls back to the cluster default StorageClass if no path or node is given.
 - PVs labelled `harbor-release=<name>` for targeted cleanup at uninstall
-- **Connect**: background `kubectl port-forward`, PID file `/tmp/scomp-pf-harbor.pid`, toggled from the menu (`connect [● localhost:<port>]` / `[○ stopped]`)
+- **Connect**: background `kubectl port-forward`, PID file `$XDG_RUNTIME_DIR/scomp-link/pf/harbor.pid` (else `~/.cache/scomp-link/pf/`; a per-user 0700 folder, and a PID file that is a symlink or not yours is refused - Kamino 196), toggled from the menu (`connect [● localhost:<port>]` / `[○ stopped]`)
 - **Uninstall**: `helm uninstall`, then offers to delete PVs by the `harbor-release` label and to delete the namespace (removes remaining PVCs)
 - Menu: `install`, `status`, `connect`, `uninstall`
 

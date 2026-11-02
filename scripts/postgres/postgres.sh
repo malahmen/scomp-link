@@ -52,7 +52,7 @@ PG_HELM_REPO_NAME="groundhog2k"
 PG_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 PG_HELM_CHART="groundhog2k/postgres"
 PG_DEFAULT_PORT=5432
-_PG_PF_PID="/tmp/scomp-pf-postgres.pid"
+_PG_PF_PID="$(pf_file postgres)"
 PG_DEFAULT_DB="app"
 PG_DEFAULT_USER="app"
 PG_DEFAULT_IMAGE_TAG="16"
@@ -480,7 +480,7 @@ postgres_port_forward_k8s() {
     local port="${port_input:-$PG_DEFAULT_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_PG_PF_PID"
+    pf_write "$_PG_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

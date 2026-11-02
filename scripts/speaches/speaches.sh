@@ -61,7 +61,7 @@ CONFIG_DIR="${SCOMP_SPEACHES_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/speac
 CONFIG_FILE="${CONFIG_DIR}/speaches.conf"
 QUADLET_DIR="${SCOMP_SPEACHES_QUADLET_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd}"
 QUADLET_FILE="${QUADLET_DIR}/${SP_NAME}.container"
-_SP_PF_PID="/tmp/scomp-pf-speaches.pid"
+_SP_PF_PID="$(pf_file speaches)"
 
 BLUE=39
 
@@ -924,7 +924,7 @@ sp_port_forward_k8s() {
     port="${port:-$SP_PORT}"
     # shellcheck disable=SC2046
     kubectl $(_kctx) -n "$SP_NAME" port-forward "svc/${SP_NAME}" "${port}:${SP_CONTAINER_PORT}" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_SP_PF_PID"
+    pf_write "$_SP_PF_PID" "${!}" "${port}"
     sleep 2
     if pf_is_running "$_SP_PF_PID"; then
         success "Port-forward: http://127.0.0.1:${port}" >&2

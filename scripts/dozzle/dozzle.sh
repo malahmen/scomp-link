@@ -877,7 +877,7 @@ cmd_port_forward() {
         error_exit "Port-forward failed to start (port in use, or service not ready)."
     fi
 
-    echo "${pid}:${local_port}" > "$pf_file"
+    pf_write "$pf_file" "${pid}" "${local_port}"
     success "Port-forward active (auto-reconnect): http://localhost:${local_port}"
 }
 

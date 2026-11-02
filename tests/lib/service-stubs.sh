@@ -166,6 +166,9 @@ chmod +x "$T/bin/"*
 
 export PATH="${SVC_TEST_DIR}/stubs:$T/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config"
+# Port-forward PID files live under $XDG_RUNTIME_DIR (Kamino 196): the real one
+# is the user's session folder, so it is pointed in here too.
+export XDG_RUNTIME_DIR="$T/run"; mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
 export GUM_ANSWERS="$T/answers" GUM_STATE="$T/gumstate" STUB_LOG="$T/calls" STUB_STATE="$T/state"
 mkdir -p "$STUB_STATE"
 

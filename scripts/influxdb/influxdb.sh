@@ -56,7 +56,7 @@ IDB_HELM_REPO_NAME="influxdata"
 IDB_HELM_REPO_URL="https://helm.influxdata.com/"
 IDB_HELM_CHART="influxdata/influxdb2"
 IDB_DEFAULT_PORT=8086
-_IDB_PF_PID="/tmp/scomp-pf-influxdb.pid"
+_IDB_PF_PID="$(pf_file influxdb)"
 IDB_DEFAULT_IMAGE_TAG="2"
 IDB_DEFAULT_ADMIN_USER="admin"
 IDB_DEFAULT_ORG="myorg"
@@ -577,7 +577,7 @@ influxdb_connect_k8s() {
 
     local pf_pid
     pf_pid=$(_k8s_start_port_forward "$port")
-    echo "${pf_pid}:${port}" > "$_IDB_PF_PID"
+    pf_write "$_IDB_PF_PID" "${pf_pid}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

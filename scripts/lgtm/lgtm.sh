@@ -1822,7 +1822,7 @@ cmd_port_forward() {
             ) &
             local pf_pid=$!
 
-            echo "${pf_pid}:${local_port}" > "$pf_file"
+            pf_write "$pf_file" "${pf_pid}" "${local_port}"
             sleep 2
 
             # Verify something is listening — if not, the wrapper is spinning on

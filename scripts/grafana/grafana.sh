@@ -50,7 +50,7 @@ GRF_HELM_REPO_NAME="grafana"
 GRF_HELM_REPO_URL="https://grafana.github.io/helm-charts"
 GRF_HELM_CHART="grafana/grafana"
 GRF_DEFAULT_PORT=3000
-_GRF_PF_PID="/tmp/scomp-pf-grafana.pid"
+_GRF_PF_PID="$(pf_file grafana)"
 GRF_SVC_PORT=80        # Grafana chart service listens on 80 → pod :3000
 GRF_DEFAULT_IMAGE_TAG="latest"
 GRF_DEFAULT_ADMIN_USER="admin"
@@ -768,7 +768,7 @@ grafana_connect_k8s() {
     fi
 
     kubectl --context "$KUBE_CONTEXT" -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_GRF_PF_PID"
+    pf_write "$_GRF_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

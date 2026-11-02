@@ -49,7 +49,7 @@ PROM_HELM_REPO_NAME="prometheus-community"
 PROM_HELM_REPO_URL="https://prometheus-community.github.io/helm-charts"
 PROM_HELM_CHART="prometheus-community/prometheus"
 PROM_DEFAULT_PORT=9090
-_PROM_PF_PID="/tmp/scomp-pf-prometheus.pid"
+_PROM_PF_PID="$(pf_file prometheus)"
 # Service created by the chart: <release>-server, exposed on port 80 → pod :9090
 PROM_SVC_PORT=80
 
@@ -306,7 +306,7 @@ prometheus_connect_k8s() {
     local svc="${PROM_HELM_RELEASE}-server"
 
     kubectl --context "$KUBE_CONTEXT" -n "$PROM_NAMESPACE" port-forward "svc/${svc}" "${port}:${PROM_SVC_PORT}" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_PROM_PF_PID"
+    pf_write "$_PROM_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
