@@ -102,6 +102,9 @@ once per selection, in order — starting a whole multibox session is one pick
 instead of one round-trip per box. `stop` still targets a single instance;
 `stop-all` covers everything.
 
+**Remove** deletes the instance's Bottles bottle and client files, so it asks
+first and the question defaults to **no**: Enter removes nothing.
+
 ## Driving the engine directly
 
 You can skip the TUI and call the engine yourself:
@@ -119,3 +122,13 @@ See the [engine README](https://github.com/malahmen/dark-portal) for the full
 flag reference.
 
 Companion script: [Vanilla WoW Server (VMaNGOS)](wow-vmangos-nordrassil.md).
+
+## Tests
+
+`tests/test-wow-dark-portal.sh` drives the menus through the gum stub against
+a fake engine that answers `get`, the listings and the LAN scan and records
+every other call: removing an instance is driven with Enter, no, yes and Esc,
+and only yes calls `remove-instance`; Esc on the client path returns to the
+menu with nothing set, and Esc on a picker keeps the current value; configure
+saves the picks with `~` expanded; add, edit, launch (several at once), stop,
+stop-all, discover and status reach the engine with their flags.
