@@ -70,7 +70,10 @@ it for such a profile.
 
 - **Passwords never reach a command line.** A new account's password goes to
   the engine on stdin; the database and console passwords stay in files the
-  engine reads.
+  engine reads. The engine takes console commands only as arguments, so the
+  console refuses `account create` and `account set password` (they carry a
+  password) and points to Accounts -> create-account; there is no way to
+  change an account's password from here until the engine reads one on stdin.
 - **Every destructive action asks, and defaults to no:** stop, restart,
   deleting an account, applying the roster or attunements (both stop the world
   server for about a minute), restore, apply SQL.
@@ -93,6 +96,16 @@ it for such a profile.
 - **Accounts-only dumps** leave out `realmlist`, which holds this realm's
   address: restored elsewhere, a whole realm database would send that server's
   clients here.
+- **Restoring an accounts-only dump replaces every account.** The engine dumps
+  `account`, `account_banned` and `realmcharacters` with `mariadb-dump
+  --tables`, which writes `DROP TABLE` and `CREATE TABLE` for each: restored,
+  the target's console account (TELDRASSIL) and its random bots' accounts
+  become the source server's. A dump holding the account table therefore asks
+  a separate question first (defaulting to no), and after the restore offers
+  to renew the console account, so this profile's console password works
+  again - harmless if the account survived. The bots' accounts are not
+  repaired: a moved account table belongs on a server whose bots are made
+  afterwards.
 
 ## Tests
 
@@ -109,6 +122,10 @@ confirmed; LLM chat is switched on with exactly the fields given, a key as a
 file; search filters arrive as flags; a table-subset dump is restored with
 `--db`; when the engine's `roster plan` exits non-zero, apply is never asked
 and `roster apply` never runs, and when it succeeds apply works as before;
+the console sends no `account create` or `account set password` (any case,
+leading dot, extra spaces) and still sends other account commands; a dump
+holding the account table is restored only after its own yes, and the console
+account is renewed after it unless declined;
 `DB_TIMEOUT` is saved with `set` (to the active profile) only as a whole
 number of seconds above 0; and a prompt that opens holding the current value
 saves nothing when Enter keeps it.

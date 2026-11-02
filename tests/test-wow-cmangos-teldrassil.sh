@@ -54,6 +54,10 @@ exit 0
 EOF
 cp "${TEST_DIR}/stubs/gum" "$T/bin/gum"; chmod +x "$T/bin/gum"
 printf -- '-- a table-subset dump\nCREATE TABLE guild (a INT);\n' > "$T/config/teldrassil/dumps/classiccharacters-tables-20261025-000000.sql"
+# What the engine's "Accounts only" dump is: mariadb-dump --tables, so DROP
+# TABLE and CREATE TABLE for each, and no CREATE DATABASE.
+printf -- '-- accounts\nDROP TABLE IF EXISTS `account`;\nCREATE TABLE `account` (id INT);\n' > "$T/config/teldrassil/dumps/classicrealmd-tables-20261024-000000.sql"
+touch -t 202610240000 "$T/config/teldrassil/dumps/classicrealmd-tables-20261024-000000.sql"
 
 # drive <answer>... — one answer per prompt, in order; the session ends at Quit.
 drive() {
@@ -298,6 +302,35 @@ echo "# console: one command is one argument, however many words"
 drive Server console "account onlinelist" "server info" "" back Quit
 check "a two-word command arrives whole" called "console|account onlinelist"
 check "  and the next one as its own call" called "console|server info"
+echo "# console: a password never goes on the engine's command line (Kamino 196)"
+# The engine takes console commands only as arguments: one carrying a
+# password would be in the process list. They are refused here instead.
+drive Server console "account create Alice s3cretpw" ".ACCOUNT SET PASSWORD Alice n3wpw n3wpw" "  account   create Bob pw2" "server info" "" back Quit
+check "account create is not sent" not_called "s3cretpw"
+check "  nor account set password (any case, a leading dot)" not_called "n3wpw"
+check "  nor with extra spaces" not_called "pw2"
+check "  the operator is told where to create one" grep -q "create-account" "$T/out"
+check "  and the console goes on: the next command is sent" called "console|server info"
+drive Server console "account onlinelist" "account set gmlevel Bob 1" "" back Quit
+check "other account commands still go through" bash -c 'grep -qxF "console|account onlinelist" "$1" && grep -qxF "console|account set gmlevel Bob 1" "$1"' _ "$T/calls"
+
+echo "# restore: an accounts-only dump replaces every account (Kamino 196)"
+acc="classicrealmd-tables-20261024-000000.sql"
+drive Administration restore "$acc" classicrealmd no back Quit
+check "the account table: a separate question first; declined, no restore" not_called "restore"
+check "  it says the console's and the bots' accounts are replaced" grep -q "random bots' accounts" "$T/out"
+drive Administration restore "$acc" classicrealmd enter back Quit
+check "  Enter on it: no restore" not_called "restore"
+drive Administration restore "$acc" classicrealmd yes no back Quit
+check "  yes, then the restore itself declined: no restore" not_called "restore"
+drive Administration restore "$acc" classicrealmd yes yes no back Quit
+check "both yeses: restored into the realm database" called "restore|--file|$T/config/teldrassil/dumps/${acc}|--db|classicrealmd|--yes"
+check "  the console account renewal declined: not renewed" not_called "console-account"
+drive Administration restore "$acc" classicrealmd yes yes enter back Quit
+check "  Enter on the renewal: the console account is renewed" called "console-account"
+drive Administration restore "classiccharacters-tables-20261025-000000.sql" classiccharacters yes back Quit
+check "a dump without the account table: no extra question, no renewal" bash -c 'grep -q "^restore|" "$1" && ! grep -q console-account "$1"' _ "$T/calls"
+
 echo "# editing and removing profiles"
 drive Settings delete-profile far no back Quit
 check "delete declined: nothing" not_called "profile-delete"

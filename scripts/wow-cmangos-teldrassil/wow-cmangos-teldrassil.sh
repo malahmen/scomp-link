@@ -383,8 +383,24 @@ action_console() {
     while true; do
         c="$(_ask "Console command:")"
         [[ -n "$c" ]] || return 0
+        if _console_has_password "$c"; then
+            # The engine takes console commands only as arguments, so a
+            # password in one would sit in the process list (here, and on
+            # SSH_HOST) for as long as the command runs (Kamino 196).
+            warn "Not sent: 'account create' and 'account set password' carry a password, and the console takes it as an argument."
+            info "Create accounts under Accounts -> create-account (the password goes on stdin)."
+            unset c
+            continue
+        fi
         engine_foreground console "$c"
     done
+}
+
+# _console_has_password <command> — a cmangos console command whose arguments
+# include a password.
+_console_has_password() {
+    local c; c="$(tr '[:upper:]' '[:lower:]' <<< "$1")"
+    [[ "$c" =~ ^[[:space:]]*\.?account[[:space:]]+(create|set[[:space:]]+password)([[:space:]]|$) ]]
 }
 
 # -----------------------------------------------------------------------------
@@ -582,13 +598,32 @@ action_restore() {
     local -a dbflag=() head=()
     if [[ "$file" == *.gz ]]; then mapfile -t head < <(gzip -dc -- "$file" 2>/dev/null | head -200 || true)
     else mapfile -t head < <(head -200 -- "$file" 2>/dev/null || true); fi
+    local accounts=0
     if ! printf '%s\n' "${head[@]}" | grep -qiE '^CREATE DATABASE'; then
         local into; into="$(_pick_db "This dump names no database (a table subset) - restore into which?")" || { info "Cancelled."; return 0; }
         dbflag=(--db "$into")
+        # An "Accounts only" dump: mariadb-dump writes DROP TABLE and CREATE
+        # TABLE for each table it names, so restoring it replaces this
+        # server's whole account table - its console account and its bots'
+        # accounts with the other server's (Kamino 196; see the docs).
+        printf '%s\n' "${head[@]}" | grep -qiE '^(DROP TABLE IF EXISTS|CREATE TABLE) `account`' && accounts=1
     fi
     warn "RESTORE REPLACES DATA and cannot be undone. The world server must be stopped first."
+    if (( accounts )); then
+        warn "This dump holds the account table: restored, it REPLACES every account on ${PROFILE_LABEL} - its console account"
+        warn "(TELDRASSIL) and its random bots' accounts too - with the ones of the server it was dumped from."
+        gum confirm --default=false "Replace every account on ${PROFILE_LABEL}, bots' and console's included?" || { info "Cancelled."; return 0; }
+    fi
     gum confirm --default=false "Restore $(basename "$file") onto ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
     engine_foreground restore --file "$file" "${dbflag[@]}" --yes
+    if (( accounts && ENGINE_RC == 0 )); then
+        # The console account is now the dumped server's, with a password this
+        # profile's RA_PASS_FILE does not hold: renewing it is harmless if it
+        # survived, and is what makes the console work again if it did not.
+        info "The console account may now be the other server's: renewing it gives this profile a working one."
+        gum confirm "Renew the console account TELDRASSIL on ${PROFILE_LABEL}?" && engine_foreground console-account
+    fi
+    return 0
 }
 
 # -----------------------------------------------------------------------------
