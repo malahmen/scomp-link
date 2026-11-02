@@ -22,6 +22,7 @@
 #     script and grafana's Docker datasource file are bind-mounted into the
 #     container, which must read them, so they hold no secret at all - the
 #     container gets it in its env;
+#   - dozzle generate gets the password on stdin, not --password;
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -343,6 +344,8 @@ svc_cmd dozzle install yes admin "$PW" "" "" "$T/dz"
 check "install finishes (exit 0)" rc_is 0
 check "users.yml is written" grep -q 'stubhash' "$T/dz/users.yml"
 check "...mode 600, though an older one was 644" bash -c "[[ \$($(declare -f mode); mode '$T/dz/users.yml') == 600 ]]"
+check "dozzle generate reads the password on stdin" bash -c '[[ "$(cat "$1")" == "$2" ]]' _ "$STUB_STATE/generate-stdin" "$PW"
+check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
 rm -rf "$T/dz"
 
 echo

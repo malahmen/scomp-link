@@ -253,13 +253,24 @@ _prompt_auth() {
 
     info "Generating bcrypt hash via 'docker run amir20/dozzle generate'..."
 
-    local users_yml
-    if ! users_yml=$(gum spin --spinner dot --title "Generating users.yml..." -- \
-        docker run -i --rm "${DOZZLE_IMAGE}:${DOZZLE_VERSION:-latest}" generate "$user" \
-            --password "$pass" \
+    # The password goes to `dozzle generate` on stdin, which Dozzle (v11)
+    # reads when --password is not given: --password put it on docker's
+    # command line, where any local user can read it (Kamino 196). No gum
+    # spin here: it would not pass stdin on. Older Dozzle versions refuse to
+    # run without --password (they do not hash an empty one); for those it is
+    # passed that way, and said so.
+    local image="${DOZZLE_IMAGE}:${DOZZLE_VERSION:-latest}" users_yml
+    if ! users_yml=$(printf '%s\n' "$pass" | docker run -i --rm "$image" generate "$user" \
             ${email:+--email "$email"} \
-            --name "$name"); then
-        error_exit "Failed to generate users.yml. Is Docker reachable and is the image pullable?"
+            --name "$name" 2>/dev/null); then
+        warn "${image} does not read the password from stdin: passing it with --password, on docker's command line for this one call."
+        if ! users_yml=$(gum spin --spinner dot --title "Generating users.yml..." -- \
+            docker run -i --rm "$image" generate "$user" \
+                --password "$pass" \
+                ${email:+--email "$email"} \
+                --name "$name"); then
+            error_exit "Failed to generate users.yml. Is Docker reachable and is the image pullable?"
+        fi
     fi
 
     if [[ -z "$users_yml" ]]; then
