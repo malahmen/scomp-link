@@ -18,6 +18,10 @@ FRONT="${TEST_DIR}/../scripts/starlight/starlight_astro.sh"
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 T="$(cd "$T" && pwd -P)"
+# The real node and ruby, looked up before the stubs shadow node: case 18
+# checks the generated config parses and the YAML loads, when they exist.
+REAL_NODE="$(command -v node || true)"
+REAL_RUBY="$(command -v ruby || true)"
 FAILS=0
 check() { local d="$1"; shift; if "$@"; then echo "   ok   - $d"; else echo "   FAIL - $d"; FAILS=$((FAILS + 1)); fi; }
 has()   { grep -qF -- "$1" "$2"; }
@@ -248,5 +252,65 @@ check "normal project created in the sites folder" test -f "$T/home/home-default
 run "$T/other" "── create site over an existing folder ──" "$SRC" "Ext Default" "" \
     "$T/home/ext-default  (scomp-link's sites folder)" "Quit" "── quit ──"
 check "external site there: no note (its pages stay in the source)" lacks "is not under version control" "$T/out"
+
+echo "# 18. typed labels reach JS, YAML, Markdown and sed escaped (Kamino 196)"
+# One label with every character that broke a target: ' ends a JS string, "
+# and \ a YAML one, & and / and \ are sed's, and \ & / are Markdown's.
+L='O'"'"'Brien "x" \ & /path'
+JS="'O\'Brien \"x\" \\\\ & /path'"            # the JS literal: 'O\'Brien "x" \\ & /path'
+YM='"O'"'"'Brien \"x\" \\ & /path"'           # the YAML scalar: "O'Brien \"x\" \\ & /path"
+MD='O\'"'"'Brien \"x\" \\ \& \/path'          # the Markdown text, every ASCII punctuation escaped
+slug="obrien-x---path"
+run "$T/start" \
+    "── create new project ──" "$L" "$T/start/${slug}  (here)" "$L" "no" \
+    "guides" "$L" "autogenerate" \
+    "ref" "$L" "strict (manual items)" "ref/$L" "" \
+    "plain" "" "autogenerate" \
+    "" \
+    "https://g.example" "$L" "inside a sidebar group" "$L" \
+    "https://t.example" "$L|x" "top-level sidebar link" \
+    "https://h.example/a>b" "$L" "homepage only (no sidebar)" \
+    "" \
+    "Manage it now" \
+    "Add section" "lsec" "$L" "autogenerate" \
+    "Add file" "lsec" "lpage" "md" "$L" "$L" "no" \
+    "Rename section" "plain" "$L" "" \
+    "Quit"
+S="$T/start/$slug"; C="$S/astro.config.mjs"
+check "the project was created" test -f "$C"
+check "site title: a JS literal" has "title: ${JS}," "$C"
+check "site description: a JS literal" has "description: ${JS}," "$C"
+check "autogenerate group label" has "{ label: ${JS}, items: [{ autogenerate: { directory: 'guides' } }] }" "$C"
+check "strict group label and item slug" has "{ label: ${JS}, items: [ 'ref/O\\'Brien \"x\" \\\\ & /path' ] }" "$C"
+check "linked group and its item" has "{ label: ${JS}, items: [ { label: ${JS}, link: 'https://g.example'" "$C"
+check "a | in a label stays in the label (not the URL)" has "{ label: 'O\\'Brien \"x\" \\\\ & /path|x', link: 'https://t.example'" "$C"
+check "a section added later (awk insert keeps the escapes)" has "{ label: ${JS}, items: [{ autogenerate: { directory: 'lsec' } }] }" "$C"
+check "a renamed section (sed replacement escaped)" has "{ label: ${JS}, items: [{ autogenerate: { directory: 'plain' } }] }" "$C"
+if [[ -n "$REAL_NODE" ]]; then
+    check "node --check: the config parses" "$REAL_NODE" --check "$C"
+    t_line="$(grep -m1 '^      title: ' "$C")"; t_line="${t_line#      title: }"; t_line="${t_line%,}"
+    check "node: the title literal evaluates to the typed label" [ "$("$REAL_NODE" -p "$t_line")" = "$L" ]
+else
+    echo "   (node not found: parse checks skipped, the literal checks above stand)"
+fi
+check "homepage frontmatter title" has "title: ${YM}" "$S/src/content/docs/index.mdx"
+check "homepage frontmatter tagline" has "  tagline: ${YM}" "$S/src/content/docs/index.mdx"
+check "homepage body: Markdown-escaped" has "Welcome to the **${MD}** documentation." "$S/src/content/docs/index.mdx"
+check "homepage link: escaped label, < > in the URL encoded" has "- [${MD}](<https://h.example/a%3Eb>)" "$S/src/content/docs/index.mdx"
+check "section page frontmatter" has "title: ${YM}" "$S/src/content/docs/guides/index.md"
+check "added section page frontmatter" has "title: ${YM}" "$S/src/content/docs/lsec/index.md"
+check "added file frontmatter" has "description: ${YM}" "$S/src/content/docs/lsec/lpage.md"
+check "added file heading" has "## ${MD}" "$S/src/content/docs/lsec/lpage.md"
+# Round trip: the homepage re-created from the config's title (read_config_string).
+rm -f "$S/src/content/docs/index.mdx"
+run "$T/start" "$slug" "Edit homepage" "yes" "Quit" "── quit ──"
+check "re-created homepage: the title read back from the config" has "title: ${YM}" "$S/src/content/docs/index.mdx"
+if [[ -n "$REAL_RUBY" ]]; then
+    for f in index.mdx guides/index.md lsec/index.md lsec/lpage.md; do
+        check "YAML loads with the label intact: $f" "$REAL_RUBY" -ryaml -e '
+            fm = File.read(ARGV[0])[/\A---\n(.*?)\n---\n/m, 1] or exit 1
+            exit(YAML.safe_load(fm)["title"] == ARGV[1] ? 0 : 1)' "$S/src/content/docs/$f" "$L"
+    done
+fi
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi

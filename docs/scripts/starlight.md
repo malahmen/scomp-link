@@ -90,6 +90,13 @@ Actions:
   (see below)
 - **Switch project** · **Quit**
 
+Titles, descriptions, sidebar labels, strict-mode slugs and link labels are
+written exactly as typed, whatever characters they hold (`'`, `"`, `\`, `&`,
+`/`, `|`, `{`...): each is escaped for where it lands - a single-quoted
+JavaScript string in `astro.config.mjs`, a double-quoted YAML string in page
+front matter, backslash-escaped text in a page body. A homepage-only link's
+URL is written as `<url>`, with any `<`/`>` in it percent-encoded.
+
 ## Sites over an existing folder
 
 **Create site over an existing folder** builds a Starlight site whose pages are
