@@ -513,6 +513,11 @@ address) and install it again so the container is recreated. Dozzle refuses a
 non-loopback address while its authentication is off: it hands out the Docker
 socket.
 
+Two are LAN services, published on every interface (`0.0.0.0`) by default,
+deliberately, and say so when installed: **speaches** and **protocol**, whose
+purpose is other machines reaching them (Kamino 235). `SCOMP_BIND_ADDR`
+overrides them the same way - `127.0.0.1` keeps one on this machine.
+
 ### GUM_INPUT_WIDTH
 
 On macOS/zsh, gum v0.15+ has a known double-render bug. The setup script will prompt you to set `GUM_INPUT_WIDTH` to fix this. This value is saved to your shell profile.

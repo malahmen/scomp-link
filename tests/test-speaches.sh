@@ -21,7 +21,13 @@
 #     Whisper already loaded leaves the load unmeasured, with the reason;
 #     a short command spoken by Kokoro takes the cold run;
 #   - status lists loaded models from 0.8.3's {"models": [...]}, and
-#     installed models without the voices nested in them.
+#     installed models without the voices nested in them;
+#   - where the port is published (Kamino 235): every interface by default -
+#     a LAN service, deliberately, and the install says so - or where
+#     SCOMP_BIND_ADDR says, with the URLs, the firewall offer and status
+#     following it;
+#   - the settings file is parsed, never sourced, and a value a setting may
+#     not hold (there or typed under 'config') keeps the default (Kamino 235).
 # shellcheck disable=SC2016
 # Single-quoted heredoc stubs expand their own $1/$@ at run time, on purpose.
 set -uo pipefail
@@ -137,6 +143,7 @@ mkdir -p "$T/bench" "$T/audio"
 echo "0.50 0.40 0.30 1/500 1" > "$T/loadavg"
 head -c 1000 /dev/zero > "$T/audio/short.wav"; head -c 9000 /dev/zero > "$T/audio/long.mp3"
 UNIT="$T/quadlet/speaches.container"
+unset SCOMP_BIND_ADDR
 
 # The report a bench run wrote. Only at the top of $T/bench: the transcripts
 # beside it are .json too, and find lists files in whatever order the
@@ -162,7 +169,8 @@ echo "install"
 run install yes yes yes "← back"
 check "the Quadlet unit is written" test -f "$UNIT"
 check "it pins the stable CPU image" has "Image=ghcr.io/speaches-ai/speaches:0.8.3-cpu" "$UNIT"
-check "it publishes the port" has "PublishPort=8000:8000" "$UNIT"
+check "it publishes the port, on every interface: a LAN service (Kamino 235)" has "PublishPort=0.0.0.0:8000:8000" "$UNIT"
+check "...and says so" has "every interface: this is a LAN service" "$T/out"
 check "the model cache is a named volume" has "Volume=speaches-hf-cache:/home/ubuntu/.cache/huggingface/hub" "$UNIT"
 check "the idle time is set for 0.8 and 0.9 alike" has "Environment=WHISPER__TTL=300" "$UNIT"
 check "Whisper gets corelia's measured threads" has "Environment=WHISPER__CPU_THREADS=16" "$UNIT"
@@ -195,6 +203,28 @@ rm -f "$T/state/port-open"
 run status "← back"
 check "a closed port reads as closed, not unknown" has "8000/tcp closed" "$T/out"
 : > "$T/state/port-open"
+
+# ---- where the port is published (Kamino 235) -------------------------------------
+echo "bind address"
+SCOMP_BIND_ADDR=127.0.0.1 run install yes "← back"
+check "SCOMP_BIND_ADDR=127.0.0.1: published on loopback only" has "PublishPort=127.0.0.1:8000:8000" "$UNIT"
+check "...it says it is not reachable from the LAN" has "not reachable from the LAN" "$T/out"
+check "...no LAN URL is offered" lacks "From the LAN" "$T/out"
+check "...and no firewall port is touched" bash -c '! grep -q "firewall-cmd" "$1"' _ "$T/calls"
+check "...the address is saved for status" has "SP_BIND_ADDR=127.0.0.1" "$T/config/speaches.conf"
+run status "← back"
+check "status, without SCOMP_BIND_ADDR, still says loopback only" has "Published on 127.0.0.1 only" "$T/out"
+check "...and skips the firewall" lacks "Firewall" "$T/out"
+SCOMP_BIND_ADDR=192.0.2.7 run install yes "← back"
+check "SCOMP_BIND_ADDR=192.0.2.7: published there" has "PublishPort=192.0.2.7:8000:8000" "$UNIT"
+check "...said, with SCOMP_BIND_ADDR named" has "Published on 192.0.2.7 (SCOMP_BIND_ADDR)" "$T/out"
+check "...Speaches is reached at that address" has "curl -fsS --max-time 10 http://192.0.2.7:8000/v1/models" "$T/calls"
+check "...which is the LAN URL" has "From the LAN: http://192.0.2.7:8000/v1" "$T/out"
+SCOMP_BIND_ADDR=nope run install yes "← back"
+check "a SCOMP_BIND_ADDR that is not an address stops before anything" bash -c 'grep -q "is not an IPv4 address" "$1" && ! grep -q "podman pull" "$2"' _ "$T/out" "$T/calls"
+run install yes "← back"
+check "unset again: every interface" has "PublishPort=0.0.0.0:8000:8000" "$UNIT"
+check "...and the address saved follows" has "SP_BIND_ADDR=0.0.0.0" "$T/config/speaches.conf"
 
 # ---- bench ------------------------------------------------------------------------
 echo "bench"
@@ -285,7 +315,7 @@ check "status lists the loaded models, from 0.8.3's answer" has "Loaded now: dee
 echo "settings"
 run config port 8010 "done" yes yes "← back"
 check "a changed port is saved" has "SP_PORT=8010" "$T/config/speaches.conf"
-check "re-applying rewrites the unit with it" has "PublishPort=8010:8000" "$UNIT"
+check "re-applying rewrites the unit with it" has "PublishPort=0.0.0.0:8010:8000" "$UNIT"
 run config "cpu threads" 8 "compute type" float32 "done" yes yes "← back"
 check "threads are saved" has "SP_CPU_THREADS=8" "$T/config/speaches.conf"
 check "...and reach the unit" has "Environment=WHISPER__CPU_THREADS=8" "$UNIT"
@@ -310,6 +340,43 @@ check "...a relative one" has "Not a volume name: ../etc" "$T/out"
 check "...a newline (a line of its own in the unit)" has "Not a volume name: v" "$T/out"
 check "...one character (podman and docker want two)" has "Not a volume name: x" "$T/out"
 check "nothing refused was saved" cmp -s "$T/config/speaches.conf" "$T/conf.before"
+# The settings file is parsed, not sourced (Kamino 235): a $(...) in it ran
+# as code. Each value is checked like a typed one; a bad one keeps the default.
+cp "$T/config/speaches.conf" "$T/conf.good"
+{ cat "$T/conf.good"
+  printf '%s\n' "SP_VERSION=\$(touch $T/pwned)" 'SP_MODELS=not-a-repo' "SP_K8S_STORAGE=20Gi\\ --privileged" \
+      'SP_K8S_STORAGE_CLASS=Bad_Class' 'SP_PORT=99999' 'SP_VOLUME=/etc' 'SP_TTL=-5' 'SP_BIND_ADDR=lan'; } > "$T/config/speaches.conf"
+run "← back"
+check "a \$(...) in the settings file does not run" test ! -e "$T/pwned"
+for k in SP_VERSION SP_MODELS SP_K8S_STORAGE SP_K8S_STORAGE_CLASS SP_PORT SP_VOLUME SP_TTL SP_BIND_ADDR; do
+    check "a bad ${k} is ignored, with a warning" has "Ignoring ${k}" "$T/out"
+done
+(
+    # shellcheck disable=SC1090
+    source "$FRONT"
+    set +e
+    cfg_load 2>/dev/null
+    TARGET_TYPE=k8s render_k8s "$(TARGET_TYPE=k8s sp_image)" > "$T/k8s-bad.yaml"
+    printf '%s\n' "$SP_MODELS" > "$T/models-bad"
+)
+check "...and the line before it, or the default, is used: the image" grep -qxE '          image: ghcr.io/speaches-ai/speaches:[0-9][A-Za-z0-9.-]*-cpu' "$T/k8s-bad.yaml"
+check "...the PVC size" has "storage: 20Gi" "$T/k8s-bad.yaml"
+check "...no storage class" lacks "storageClassName" "$T/k8s-bad.yaml"
+check "...the models" has "deepdml/faster-whisper-large-v3-turbo-ct2" "$T/models-bad"
+cp "$T/conf.good" "$T/config/speaches.conf"
+cp "$T/config/speaches.conf" "$T/conf.before"
+run config models "not-a-repo" models "a/b *" "k8s storage" "lots" "k8s storage" "20Gi --x" "k8s storage class" "Bad_Class" "done" "← back"
+check "a model that is not owner/name is refused" has "Not a model list: not-a-repo" "$T/out"
+check "...a glob" has "Not a model list: a/b *" "$T/out"
+check "a PVC size that is not a quantity" has "Not a PVC size: lots" "$T/out"
+check "...or with a flag after it" has "Not a PVC size: 20Gi --x" "$T/out"
+check "a StorageClass that is not a DNS name" has "Not a StorageClass name: Bad_Class" "$T/out"
+check "nothing refused was saved" cmp -s "$T/config/speaches.conf" "$T/conf.before"
+run config models "a/b   org/m-2.x" "k8s storage" "40Gi" "k8s storage class" "local-path" "done" no "← back"
+check "a model list is saved, one space between" has "SP_MODELS=a/b\\ org/m-2.x" "$T/config/speaches.conf"
+check "a PVC size" has "SP_K8S_STORAGE=40Gi" "$T/config/speaches.conf"
+check "a StorageClass" has "SP_K8S_STORAGE_CLASS=local-path" "$T/config/speaches.conf"
+cp "$T/conf.before" "$T/config/speaches.conf"
 run config "reset to defaults" yes "done" no "← back"
 check "reset brings the defaults back" has "SP_PORT=8000" "$T/config/speaches.conf"
 check "...threads included" has "SP_CPU_THREADS=16" "$T/config/speaches.conf"
@@ -342,6 +409,7 @@ check "k8s: no storage class unless set" lacks "storageClassName" "$T/k8s.yaml"
 check "k8s: a set storage class is used" has "storageClassName: local-path" "$T/k8s-class.yaml"
 check "k8s: ready only when /health answers" has "httpGet: {path: /health, port: 8000}" "$T/k8s.yaml"
 check "docker: restarts unless stopped" has "unless-stopped" "$T/docker.args"
+check "docker: published on every interface by default (Kamino 235)" grep -qxF "0.0.0.0:8000:8000" "$T/docker.args"
 check "docker: no GPU flag on CPU" lacks "--gpus=all" "$T/docker.args"
 check "docker: the GPU flag on CUDA" has "--gpus=all" "$T/docker-cuda.args"
 

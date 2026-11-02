@@ -17,6 +17,12 @@
 #
 # A bad SCOMP_BIND_ADDR stops the script here, before anything is published:
 # falling back to a default would publish somewhere the user did not ask for.
+#
+# A LAN service - one whose whole purpose is to be reached from other
+# machines (speaches, protocol) - sets SVC_BIND_DEFAULT=0.0.0.0 before
+# sourcing this file: it is published on every interface unless
+# SCOMP_BIND_ADDR says otherwise, deliberately, and svc_bind_notice says so
+# (Kamino 235).
 # -----------------------------------------------------------------------------
 
 _svc_ipv4() {
@@ -25,7 +31,7 @@ _svc_ipv4() {
     for o in "${BASH_REMATCH[@]:1}"; do (( 10#$o <= 255 )) || return 1; done
 }
 
-SVC_BIND_ADDR="${SCOMP_BIND_ADDR:-127.0.0.1}"
+SVC_BIND_ADDR="${SCOMP_BIND_ADDR:-${SVC_BIND_DEFAULT:-127.0.0.1}}"
 _svc_ipv4 "$SVC_BIND_ADDR" \
     || error_exit "SCOMP_BIND_ADDR='${SVC_BIND_ADDR}' is not an IPv4 address (e.g. 127.0.0.1, 0.0.0.0 or this host's LAN address)."
 
@@ -44,10 +50,15 @@ svc_host() {
     printf '%s' "$a"
 }
 
-# svc_bind_notice - said after a publish that is not loopback-only.
+# svc_bind_notice - said after a publish that is not loopback-only: by
+# SCOMP_BIND_ADDR, or by a LAN service's own default.
 svc_bind_notice() {
     svc_bind_is_loopback && return 0
-    warn "Published on ${SVC_BIND_ADDR} (SCOMP_BIND_ADDR): reachable from other machines, not only this one."
+    if [[ -n "${SCOMP_BIND_ADDR:-}" ]]; then
+        warn "Published on ${SVC_BIND_ADDR} (SCOMP_BIND_ADDR): reachable from other machines, not only this one."
+    else
+        warn "Published on ${SVC_BIND_ADDR}, every interface: this is a LAN service, so that is its default - reachable from other machines, not only this one. SCOMP_BIND_ADDR=127.0.0.1 keeps it on this machine."
+    fi
 }
 
 # -----------------------------------------------------------------------------
