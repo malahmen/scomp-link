@@ -95,11 +95,7 @@ _prompt_admin_credentials() {
 
     if [[ -z "$GRF_ADMIN_PASSWORD" ]]; then
         GRF_ADMIN_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated password: ${GRF_ADMIN_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "admin password" GF_SECURITY_ADMIN_PASSWORD "$GRF_CONTAINER_NAME" "$GRF_HELM_RELEASE" "$GRF_NAMESPACE"
     fi
 }
 

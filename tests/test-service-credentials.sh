@@ -68,7 +68,7 @@ check "the existing credentials given are the ones used" \
 echo "postgres: a fresh install still asks and generates"
 svc_reset
 svc_run postgres "" install "" "" "" "" "" "← back"
-check "a password is generated" has "Generated password" "$T/out"
+check "a password is generated" has "Generated the password" "$T/out"
 check "...and passed" bash -c "$(declare -f last_run last_env); last_env | grep -qxE 'POSTGRES_PASSWORD=[A-Za-z0-9]{20}'"
 
 for svc in mariadb mysql; do
@@ -197,7 +197,7 @@ svc_reset; k8s_world harbor
 svc_run harbor "" "" install "Upgrade (keep admin password, apply other values)" "" \
     "StorageClass (dynamic provisioning — covers NFS-backed classes)" "" "" "← back"
 k8s_upgrade_ok harbor 'harborAdminPassword'
-check "harbor: the login shown is not a new password" has "Login: admin / (unchanged" "$T/out"
+check "harbor: the login shown is not a new password" has "Login: admin - (unchanged" "$T/out"
 
 echo "n8n k8s: upgrade"
 svc_reset; k8s_world n8n

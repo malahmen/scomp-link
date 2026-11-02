@@ -113,11 +113,7 @@ _prompt_db_credentials() {
 
     if [[ -z "$PG_PASSWORD" ]]; then
         PG_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated password: ${PG_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "password" POSTGRES_PASSWORD "$PG_CONTAINER_NAME" "$PG_HELM_RELEASE" "$PG_NAMESPACE"
     fi
 }
 

@@ -161,3 +161,35 @@ _write_private() {
     [[ -e "$file" ]] && { chmod 600 "$file" || return 1; }
     ( umask 077 && cat > "$file" )
 }
+
+
+# -----------------------------------------------------------------------------
+# A generated secret is never printed (Kamino 235)
+#
+# "Generated password: <it>" put the secret on the screen - in the terminal's
+# scrollback, a screen share, a recorded session - and "it will not be shown
+# again" was untrue: it is kept where the service reads it. That place is
+# said instead, with the command that reads it back when it is needed.
+# -----------------------------------------------------------------------------
+
+# _secret_notice <label> <ENV_VAR> <container> <helm-release> <namespace>
+# Says that <label> was generated and where it is kept for the selected
+# target (TARGET_TYPE): the container's environment (ENV_VAR) on Docker, the
+# Helm release's values on kind/k8s. Prints nothing secret.
+_secret_notice() {
+    local label="$1" var="$2" container="$3" release="$4" ns="$5" where how
+    case "${TARGET_TYPE:-docker}" in
+        kind|k8s)
+            where="the Helm release '${release}' (namespace ${ns}), in its values"
+            how="helm --kube-context ${KUBE_CONTEXT:-<context>} get values ${release} -n ${ns}" ;;
+        *)
+            where="container '${container}', in its environment (${var})"
+            how="docker exec ${container} printenv ${var}" ;;
+    esac
+    gum style \
+        --foreground "${YELLOW:-220}" --border-foreground "${YELLOW:-220}" --border rounded \
+        --align left --width 72 --margin "1 0" --padding "0 2" \
+        "Generated the ${label}: it is not shown here." \
+        "Kept in ${where}." \
+        "To read it: ${how}"
+}

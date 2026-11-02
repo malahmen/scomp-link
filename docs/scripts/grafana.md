@@ -6,7 +6,7 @@
 - Docker secrets: the admin password is passed to `docker run` as `-e NAME`, the value taken from docker's own environment, so it is not on a command line any local user can read (Kamino 196)
 - K8s chart: `grafana/grafana` (official Grafana Helm repo)
 - K8s secrets (the admin password): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
-- **Admin credentials** prompt (default user `admin`); leave the password empty to auto-generate a 20-char one, shown once at install
+- **Admin credentials** prompt (default user `admin`); leave the password empty to auto-generate a 20-char one, never printed: the install says where it is kept and how to read it (`docker exec <container> printenv GF_SECURITY_ADMIN_PASSWORD`, or the release values) (Kamino 235)
 - **Datasource provisioning** at install time: Prometheus, InfluxDB v2 (Flux), or custom
   - Docker: written to `~/.config/scomp-link/grafana/<container>/provisioning/` and bind-mounted, persistent across restarts. The InfluxDB token is not in the file (the container must read it, so it cannot be private to you): the file says `${SCOMP_INFLUXDB_TOKEN}`, which Grafana fills in from the container env, and the token is passed as `-e SCOMP_INFLUXDB_TOKEN` (Kamino 196)
   - K8s: passed to the Helm chart as a values file (`-f`); the chart renders it as a ConfigMap

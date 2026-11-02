@@ -324,11 +324,7 @@ harbor_install_k8s() {
 
         if [[ -z "$HARBOR_ADMIN_PASSWORD" ]]; then
             HARBOR_ADMIN_PASSWORD=$(_gen_secret 24)
-            gum style \
-                --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-                --align center --width 60 --margin "1 0" --padding "0 4" \
-                "Generated admin password: ${HARBOR_ADMIN_PASSWORD}" \
-                "Save this — it will not be shown again."
+            _secret_notice "admin password" - "" "$HARBOR_HELM_RELEASE" "$HARBOR_NAMESPACE"
         fi
     fi
 
@@ -382,7 +378,8 @@ harbor_install_k8s() {
     fi
     _secret_file_rm "$secret_values"
 
-    local shown_pw="$HARBOR_ADMIN_PASSWORD"
+    # The password is not printed (Kamino 235): the release's values keep it.
+    local shown_pw="password in the release's values: helm --kube-context ${KUBE_CONTEXT} get values ${HARBOR_HELM_RELEASE} -n ${HARBOR_NAMESPACE}"
     [[ "$upgrade" == true ]] && shown_pw="(unchanged - the password it was installed with)"
     echo ""
     gum style \
@@ -391,7 +388,7 @@ harbor_install_k8s() {
         "Harbor installed." \
         "" \
         "Use 'connect' to start port-forward → http://localhost:${port}" \
-        "Login: admin / ${shown_pw}" \
+        "Login: admin - ${shown_pw}" \
         "" \
         "To push images, add localhost:${port} as an insecure registry" \
         "in your Docker daemon (or use HTTP in your registry config)."

@@ -126,11 +126,7 @@ _prompt_db_credentials() {
 
     if [[ -z "$MNG_PASSWORD" ]]; then
         MNG_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated password: ${MNG_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "password for the app user" SCOMP_APP_PASSWORD "$MNG_CONTAINER_NAME" "$MNG_HELM_RELEASE" "$MNG_NAMESPACE"
     fi
 }
 
@@ -147,11 +143,7 @@ _prompt_root_credentials() {
 
     if [[ -z "$MNG_ROOT_PASSWORD" ]]; then
         MNG_ROOT_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated root password: ${MNG_ROOT_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "root password" MONGO_INITDB_ROOT_PASSWORD "$MNG_CONTAINER_NAME" "$MNG_HELM_RELEASE" "$MNG_NAMESPACE"
     fi
 }
 

@@ -127,11 +127,7 @@ _prompt_db_credentials() {
 
     if [[ -z "$MDB_PASSWORD" ]]; then
         MDB_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated password: ${MDB_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "password" MARIADB_PASSWORD "$MDB_CONTAINER_NAME" "$MDB_HELM_RELEASE" "$MDB_NAMESPACE"
     fi
 }
 
@@ -143,11 +139,7 @@ _prompt_root_password() {
 
     if [[ -z "$MDB_ROOT_PASSWORD" ]]; then
         MDB_ROOT_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated root password: ${MDB_ROOT_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "root password" MARIADB_ROOT_PASSWORD "$MDB_CONTAINER_NAME" "$MDB_HELM_RELEASE" "$MDB_NAMESPACE"
     fi
 }
 
