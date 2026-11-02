@@ -124,24 +124,26 @@ _prompt_api_key() {
 # -----------------------------------------------------------------------------
 
 _rest_health_check() {
-    local port="$1"
+    # host: where the port is published (svc_host for Docker; a port-forward
+    # listens on 127.0.0.1) - Kamino 196.
+    local port="$1" host="${2:-127.0.0.1}"
 
     if ! _ensure_curl; then
         return
     fi
 
-    info "Querying Qdrant REST API at http://127.0.0.1:${port} ..."
+    info "Querying Qdrant REST API at http://${host}:${port} ..."
     echo ""
 
     # Cluster info
     gum style --foreground "$CYAN" --bold "── Cluster info ──"
-    _qd_curl "http://127.0.0.1:${port}/" 2>/dev/null \
+    _qd_curl "http://${host}:${port}/" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat) \
-        || warn "Could not reach http://127.0.0.1:${port}/ — is Qdrant running?"
+        || warn "Could not reach http://${host}:${port}/ — is Qdrant running?"
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Collections ──"
-    _qd_curl "http://127.0.0.1:${port}/collections" 2>/dev/null \
+    _qd_curl "http://${host}:${port}/collections" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat) \
         || warn "Could not list collections."
 
@@ -293,7 +295,7 @@ qdrant_health_check_docker() {
         "$QD_CONTAINER_NAME" 2>/dev/null)
     port="${port:-$QD_DEFAULT_REST_PORT}"
 
-    _rest_health_check "$port"
+    _rest_health_check "$port" "$(svc_host)"
 }
 
 qdrant_uninstall_docker() {

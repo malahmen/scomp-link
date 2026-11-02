@@ -279,6 +279,12 @@ check "both REST calls read a config from stdin" \
 check "the config holds the api-key header, the key escaped for its double quotes" \
     grep -qsxF 'header = "api-key: P,w=1\\x.{y}'"'"'\"z q"' "$STUB_STATE/curl-config"
 check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
+# Published on one LAN address (SCOMP_BIND_ADDR), the port is not on
+# 127.0.0.1: the Docker health-check asks where it is published (Kamino 196).
+svc_reset
+SCOMP_BIND_ADDR=192.0.2.7 svc_run qdrant "" install "" "" "" "$PW" health-check yes "← back"
+check "bound to one address: the health-check asks there" \
+    bash -c "[[ \$(grep -cE '^curl -sf -K - http://192\.0\.2\.7:.*/(collections)?\$' '$STUB_LOG') == 2 ]]"
 
 # ------------------------------------------------------ secrets in files ---
 # mode <file> - its permission bits, as 600.
