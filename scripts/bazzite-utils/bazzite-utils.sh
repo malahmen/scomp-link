@@ -49,6 +49,8 @@ TEMPLATES_DIR="${SCRIPT_DIR}/templates"
 source "${COMMON_DIR}/ui.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -63,15 +65,13 @@ mkdir -p "$CONFIG_DIR"
 
 cfg_load() {
     EA_PREFIX=""
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+    # Parsed, not sourced: a typed path holding a quote or $(...) ran as
+    # code on the next start (Kamino 196).
+    conf_load "$CONFIG_FILE" EA_PREFIX
 }
 
 cfg_save() {
-    cat > "$CONFIG_FILE" <<EOF
-EA_PREFIX="${EA_PREFIX}"
-EOF
+    conf_write "$CONFIG_FILE" EA_PREFIX
 }
 
 # -----------------------------------------------------------------------------

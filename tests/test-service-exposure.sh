@@ -9,6 +9,10 @@
 #     published on 127.0.0.1 now, SCOMP_BIND_ADDR overrides, and the summary
 #     prints the address used. Dozzle is never published beyond loopback with
 #     its auth off.
+#   - Saved settings: dozzle, lgtm, bazzite-utils and lmstudio wrote
+#     KEY="<raw value>" and `source`d the file back, so a value with a quote,
+#     $(...) or a backtick ran as code. They are written with %q and parsed;
+#     such a value round-trips and runs nothing, and an old file still reads.
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -120,6 +124,82 @@ rm -rf "$T/lgtm-data"
 echo "kind: extraPortMappings listen on 127.0.0.1"
 check "the generated config sets listenAddress from the bind address" \
     grep -qF 'listenAddress: "${SVC_BIND_ADDR}"' "${SVC_DIR}/kind/kind.sh"
+
+# ------------------------------------------------------------ saved settings
+PWN="$T/pwned"
+EVIL="\$(touch $PWN)"          # what a sourced file would run
+nothing_ran() { [[ ! -e "$PWN" && ! -e "$T/work/pwned" ]]; }
+
+echo "conf.sh: values round-trip and run nothing"
+check "a value with \$(...), backticks, quotes, |, &, a newline, non-ASCII round-trips" \
+    bash -c 'warn() { echo "$1" >&2; }; source "$1/_common/conf.sh"; f="$2/rt.conf"
+        for v in "$3" "\`touch $4\`" "a \"b\" '"'"'c'"'"' d" "x|y&z\\w" $'"'"'two\nlines'"'"' "é→" ""; do
+            K="$v"; conf_write "$f" K; K=unset; conf_load "$f" K
+            [[ "$K" == "$v" && "$(conf_get "$f" K)" == "$v" ]] || { echo "lost: [$v] -> [$K]" >&2; exit 1; }
+        done' _ "$SVC_DIR" "$T" "$EVIL" "$PWN"
+check "...and ran nothing" nothing_ran
+check "an old-style KEY=\"\$(...)\" line is read as text, not run" \
+    bash -c 'warn() { :; }; source "$1/_common/conf.sh"; printf "K=\"%s\"\n" "$3" > "$2/old.conf"
+        conf_load "$2/old.conf" K; [[ "$K" == "$3" ]]' _ "$SVC_DIR" "$T" "$EVIL"
+check "...and ran nothing" nothing_ran
+check "a hand-edited \$(...) or ;command is never run (skipped, or read as text)" \
+    bash -c 'warn() { :; }; source "$1/_common/conf.sh"; printf "K=x;touch %s\nK2=\$(touch %s)\n" "$3" "$3" > "$2/bad.conf"
+        K=keep K2=keep; conf_load "$2/bad.conf" K K2; [[ "$K" == "x;touch $3" && "$K2" == keep ]]' _ "$SVC_DIR" "$T" "$PWN"
+check "...and ran nothing" nothing_ran
+check "only the keys asked for are set" \
+    bash -c 'warn() { :; }; source "$1/_common/conf.sh"; printf "PATH=/nowhere\nK=v\n" > "$2/keys.conf"
+        conf_load "$2/keys.conf" K; [[ "$K" == v && "$PATH" != /nowhere ]]' _ "$SVC_DIR" "$T"
+
+DOZZLE_CONF="$HOME/.config/dozzle/dozzle.conf"
+echo "dozzle: an older config holding \$(...) is not run"
+svc_reset; rm -rf "$HOME/.config"; mkdir -p "${DOZZLE_CONF%/*}"
+printf '%s\n' 'TARGET_TYPE="docker"' "DOZZLE_VERSION=\"$EVIL\"" 'STORAGE_MODE="bind"' > "$DOZZLE_CONF"
+svc_cmd dozzle status
+check "status runs (exit 0)" rc_is 0
+check "the \$(...) in the config did not run" nothing_ran
+
+echo "dozzle: a data path with quotes and \$(...) round-trips"
+svc_reset; rm -rf "$HOME/.config"
+ODD="$T/d \"q\" 'a' $EVIL"
+svc_cmd dozzle install no "$ODD"
+check "install finishes (exit 0)" rc_is 0
+check "the config was saved" test -f "$DOZZLE_CONF"
+svc_cmd dozzle uninstall no
+check "uninstall reads it back exactly (the confirm names it)" has "deletes its data folder ${ODD} " "$T/out"
+check "nothing ran" nothing_ran
+rm -rf "$ODD"
+
+LGTM_CONF="$HOME/.config/lgtm/lgtm.conf"
+echo "lgtm: an older config holding \$(...) is not run"
+svc_reset; rm -rf "$HOME/.config"; mkdir -p "${LGTM_CONF%/*}"
+: > "$T/compose.yml"
+printf '%s\n' 'TARGET_TYPE="docker"' 'ENABLED_COMPONENTS="grafana"' "COMPOSE_FILE=\"$T/compose.yml\"" \
+    "NFS_SERVER=\"$EVIL\"" > "$LGTM_CONF"
+svc_cmd lgtm status
+check "status runs (exit 0)" rc_is 0
+check "the \$(...) in the config did not run" nothing_ran
+
+echo "lgtm: a base path with | & quotes and \$(...) round-trips"
+svc_reset; rm -rf "$HOME/.config"
+ODD="$T/l a|b&c \"q\" $EVIL"
+svc_cmd lgtm install 'Grafana' "$ODD"
+check "install finishes (exit 0)" rc_is 0
+check "HOSTPATH_BASE reads back exactly" \
+    bash -c 'warn() { :; }; source "$1/_common/conf.sh"; [[ "$(conf_get "$2" HOSTPATH_BASE)" == "$3" ]]' _ "$SVC_DIR" "$LGTM_CONF" "$ODD"
+svc_cmd lgtm purge yes
+check "purge names the folder it deletes" has "  $ODD" "$T/out"
+check "...and deletes it" test ! -e "$ODD"
+check "nothing ran" nothing_ran
+
+BZ_CONF="$HOME/.config/bazzite-utils/bazzite-utils.conf"
+echo "bazzite-utils: an EA prefix with quotes and \$(...) round-trips"
+svc_reset; rm -rf "$HOME/.config"
+ODD="$T/ea \"q\" 'a' $EVIL"
+svc_cmd bazzite-utils ea-fix "$ODD"
+check "the prefix was saved" test -f "$BZ_CONF"
+svc_cmd bazzite-utils ea-fix no "$T/elsewhere"
+check "the next run offers it back exactly" has "Use saved EA prefix: ${ODD} ?" "$T/out"
+check "nothing ran" nothing_ran
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi

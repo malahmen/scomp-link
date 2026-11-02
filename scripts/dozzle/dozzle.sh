@@ -20,6 +20,7 @@
 #   gh_releases.sh — select_version
 #   portforward.sh — pf_is_running / pf_port / pf_stop (PID-file based)
 #   owned_dirs.sh  — owned_dir_create / owned_dir_plan / owned_dir_remove
+#   conf.sh        — conf_load / conf_write (the config is never sourced)
 #
 # Config: ~/.config/dozzle/dozzle.conf (XDG-style, key=value, one per line)
 # -----------------------------------------------------------------------------
@@ -46,6 +47,8 @@ source "${COMMON_DIR}/gh_releases.sh"
 source "${COMMON_DIR}/portforward.sh"
 # shellcheck source=../_common/owned_dirs.sh
 source "${COMMON_DIR}/owned_dirs.sh"
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -92,27 +95,18 @@ cfg_load() {
     INSTALL_METHOD=""    # "" (script-installed) | "external" (imported)
     BIND_ADDR=""         # docker: the address the port is published on (Kamino 196)
 
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+    # Parsed, not sourced: the values come from prompts and from what a
+    # cluster or docker reported (version, namespace), and a sourced file ran
+    # any $(...) or quote in them (Kamino 196).
+    conf_load "$CONFIG_FILE" "${DOZZLE_CFG_KEYS[@]}"
 }
 
+DOZZLE_CFG_KEYS=(TARGET_TYPE TARGET_CONTEXT DOZZLE_VERSION AUTH_ENABLED AUTH_USER
+    STORAGE_MODE STORAGE_PATH NFS_SERVER NFS_PATH RBAC_SCOPE RESTRICT_NAMESPACE
+    INSTALL_METHOD BIND_ADDR)
+
 cfg_save() {
-    cat > "$CONFIG_FILE" <<EOF
-TARGET_TYPE="${TARGET_TYPE}"
-TARGET_CONTEXT="${TARGET_CONTEXT}"
-DOZZLE_VERSION="${DOZZLE_VERSION}"
-AUTH_ENABLED="${AUTH_ENABLED}"
-AUTH_USER="${AUTH_USER}"
-STORAGE_MODE="${STORAGE_MODE}"
-STORAGE_PATH="${STORAGE_PATH}"
-NFS_SERVER="${NFS_SERVER:-}"
-NFS_PATH="${NFS_PATH:-}"
-RBAC_SCOPE="${RBAC_SCOPE:-}"
-RESTRICT_NAMESPACE="${RESTRICT_NAMESPACE:-}"
-INSTALL_METHOD="${INSTALL_METHOD:-}"
-BIND_ADDR="${BIND_ADDR:-}"
-EOF
+    conf_write "$CONFIG_FILE" "${DOZZLE_CFG_KEYS[@]}"
 }
 
 cfg_require() {
@@ -270,6 +264,7 @@ _prompt_auth() {
     fi
 
     AUTH_ENABLED="true"
+    # shellcheck disable=SC2034  # saved by name (conf_write)
     AUTH_USER="$user"
     AUTH_USERS_YML="$users_yml"
     success "Auth configured for user '${user}'."
@@ -596,6 +591,7 @@ cmd_import() {
     for i in "${!opt_labels[@]}"; do
         if [[ "${opt_labels[$i]}" == "$chosen" ]]; then
             TARGET_TYPE="${opt_types[$i]}"
+            # shellcheck disable=SC2034  # saved by name (conf_write)
             TARGET_CONTEXT="${opt_contexts[$i]}"
             if [[ "$TARGET_TYPE" != "docker" ]]; then
                 NAMESPACE="${opt_namespaces[$i]}"

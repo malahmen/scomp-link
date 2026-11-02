@@ -6,7 +6,7 @@
 # scripts/lgtm/lgtm.sh — LGTM stack manager (Loki · Grafana · Tempo · Mimir)
 # Supports Docker Compose and kind/k8s targets.
 # Sourced helpers: _common/ui.sh, _common/cluster.sh, _common/portforward.sh,
-#                  _common/deps.sh, _common/owned_dirs.sh
+#                  _common/deps.sh, _common/owned_dirs.sh, _common/conf.sh
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -33,6 +33,8 @@ source "${COMMON_DIR}/portforward.sh"
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/owned_dirs.sh
 source "${COMMON_DIR}/owned_dirs.sh"
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"
 
 # pinned chart versions
 # Update these explicitly when you want to bump a component.
@@ -135,27 +137,16 @@ declare -A COMP_IMAGE=(
 
 # config helpers────
 
-cfg_get() {
-    grep -E "^${1}=" "$CONFIG_FILE" 2>/dev/null \
-        | cut -d= -f2- \
-        | sed 's/^"\(.*\)"$/\1/' \
-        || true
-}
-cfg_set() {
-    local key="$1" val="$2"
-    local quoted="\"${val}\""
-    if grep -qE "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
-        sed -i.bak "s|^${key}=.*|${key}=${quoted}|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
-    else
-        echo "${key}=${quoted}" >> "$CONFIG_FILE"
-    fi
-}
+# The config is parsed, never sourced (conf.sh): values were written raw
+# inside quotes - typed paths, an NFS server, namespaces and components found
+# on a cluster - and sourcing ran any quote or $(...) in them (Kamino 196).
+# cfg_set also no longer goes through sed, where a | or & in a value broke it.
+LGTM_CFG_KEYS=(TARGET_TYPE TARGET_CONTEXT NAMESPACE ENABLED_COMPONENTS RESOURCE_PROFILE
+    INSTALL_METHOD HOSTPATH_BASE STORAGE_TYPE NFS_SERVER NFS_PATH COMPOSE_FILE BIND_ADDR)
 
-cfg_load() {
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
-}
+cfg_get() { conf_get "$CONFIG_FILE" "$1"; }
+cfg_set() { conf_set "$CONFIG_FILE" "$1" "$2"; }
+cfg_load() { conf_load "$CONFIG_FILE" "${LGTM_CFG_KEYS[@]}"; }
 
 # cfg_require [error-message]
 # Loads config, validates TARGET_TYPE is set, echoes it for capture.

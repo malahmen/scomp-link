@@ -11,7 +11,7 @@ Installs and manages [LM Studio](https://lmstudio.ai) (Flatpak) so the `lms` CLI
 - **Headless service** (`service-enable`): sets up a persistent Xvfb + `systemd --user` service pair so LM Studio can run headless and start at boot without anyone logged in (via `loginctl` linger). `service-disable` stops and disables the units but leaves the unit files under `~/.config/systemd/user`.
 - **`status`**: install state, sandbox overrides (including ROCm fix applied / not), service state and `lms status`
 - **`uninstall`**: removes the Flatpak and service units, then offers to delete `~/.lmstudio` (models and data)
-- Config: `~/.config/lmstudio-tui/lmstudio.conf`
+- Config: `~/.config/lmstudio-tui/lmstudio.conf`. The file holds `KEY=value` lines written with shell quoting (`printf %q`) and is parsed, never `source`d (Kamino 196): a value with quotes, `$(...)` or backticks is kept as text and runs nothing; a line the script did not write is skipped with a warning. Files from older versions (`KEY="value"`) still read.
 - Commands: `install`, `status`, `bench` (how fast, below), `fix-rocm`, `service-enable`, `service-disable`, `uninstall`
 
 ## bench
