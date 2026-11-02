@@ -45,7 +45,7 @@ and a world server); then it manages it and its bots.
 | **Provision** | install (a short wizard - the client folder, realm name and address, how many bots - then one confirmation; steps already done are skipped, and databases that exist are kept, never replaced), or one step at a time: sources, image, build, extract, databases, configure, containers; remove |
 | **Server** | status (containers, ports, who is online, the LLM endpoint), start, stop, restart (now, or graceful: players warned, the world saved), save, the remote console |
 | **Settings** | the profile (which server everything acts on: an existing one, a new one, or the base config); where the server is - here in containers, another machine in containers, or another machine in Kubernetes, each asking only its own questions; edit one setting (change it, or clear it so the base config's shows through); the console account; db-timeout (`DB_TIMEOUT`: how many seconds install and db-init wait for the database to answer, a whole number above 0); the current settings; rename or delete a profile (its settings only - the server is untouched) |
-| **Accounts** | create, list, set the level (0 player to 3 administrator), delete |
+| **Accounts** | create, list, set the password, set the level (0 player to 3 administrator), delete |
 | **Characters** | rename (refused while the character is online) |
 | **Search** | bots and characters (filters: zone, level range, class, race, guild, online, roster or random), guilds, items, NPCs, objects (herbs, ore, chests - with spawn counts), quests, teleport locations |
 | **Roster** | show the shaped bots as the server has them, plan (what applying would change), check, apply (shows the plan first; a plan that fails - a players' guild the roster may not take over, say - ends it there, without asking) |
@@ -69,11 +69,14 @@ it for such a profile.
 ## Safety
 
 - **Passwords never reach a command line.** A new account's password goes to
-  the engine on stdin; the database and console passwords stay in files the
-  engine reads. The engine takes console commands only as arguments, so the
-  console refuses `account create` and `account set password` (they carry a
-  password) and points to Accounts -> create-account; there is no way to
-  change an account's password from here until the engine reads one on stdin.
+  the engine on stdin (`create-account --pass-stdin`), and so does a changed
+  one (Accounts -> set-account-password, `set-account-password --pass-stdin`,
+  Kamino 232); the database and console passwords stay in files the engine
+  reads. A console command carrying a password (`account create`, `account
+  set password`) is sent with `console --stdin`, the command on stdin; other
+  console commands stay one argument each. (It was refused here, Kamino 196,
+  while the engine took console commands only as arguments.) Needs teldrassil
+  fix/kamino-232.
 - **Every destructive action asks, and defaults to no:** stop, restart,
   deleting an account, applying the roster or attunements (both stop the world
   server for about a minute), restore, apply SQL.
@@ -96,16 +99,19 @@ it for such a profile.
 - **Accounts-only dumps** leave out `realmlist`, which holds this realm's
   address: restored elsewhere, a whole realm database would send that server's
   clients here.
-- **Restoring an accounts-only dump replaces every account.** The engine dumps
-  `account`, `account_banned` and `realmcharacters` with `mariadb-dump
-  --tables`, which writes `DROP TABLE` and `CREATE TABLE` for each: restored,
-  the target's console account (TELDRASSIL) and its random bots' accounts
-  become the source server's. A dump holding the account table therefore asks
+- **Restoring an accounts-only dump merges** (Kamino 232). The engine marks
+  such a dump on its first line, and restores it by name into the realm
+  database: an account of the same name takes the dump's password, GM level
+  and lock, a new one is added, and the target's bot accounts and console
+  account are never touched; the world server may run. The front-end reads the
+  mark, says so, asks one question (default no) and passes no `--db`.
+- **An older, unmarked accounts-only dump replaces every account.** Made before
+  Kamino 232 with `mariadb-dump --tables`, it holds `DROP TABLE` and `CREATE
+  TABLE` for each table: restored, the target's console account (TELDRASSIL)
+  and its random bots' accounts become the source server's. Such a dump asks
   a separate question first (defaulting to no), and after the restore offers
   to renew the console account, so this profile's console password works
-  again - harmless if the account survived. The bots' accounts are not
-  repaired: a moved account table belongs on a server whose bots are made
-  afterwards.
+  again. The bots' accounts are not repaired.
 
 ## Tests
 
