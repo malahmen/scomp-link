@@ -152,3 +152,12 @@ _helm_secret_values() {
 
 # _secret_file_rm <file> - removes a file made by _helm_secret_values now.
 _secret_file_rm() { [[ -n "${1:-}" ]] && rm -f -- "$1"; return 0; }
+
+# _write_private <file> - writes stdin to <file> with mode 0600: created that
+# way (umask 077), and an existing file (an older install wrote 0644) is
+# chmod-ed before the new content goes in.
+_write_private() {
+    local file="$1"
+    [[ -e "$file" ]] && { chmod 600 "$file" || return 1; }
+    ( umask 077 && cat > "$file" )
+}

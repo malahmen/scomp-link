@@ -21,6 +21,7 @@
 #   portforward.sh — pf_is_running / pf_port / pf_stop (PID-file based)
 #   owned_dirs.sh  — owned_dir_create / owned_dir_plan / owned_dir_remove
 #   conf.sh        — conf_load / conf_write (the config is never sourced)
+#   secret.sh      — _write_private (users.yml, mode 0600)
 #
 # Config: ~/.config/dozzle/dozzle.conf (XDG-style, key=value, one per line)
 # -----------------------------------------------------------------------------
@@ -37,6 +38,8 @@ TEMPLATES_DIR="${SCRIPT_DIR}/templates"
 
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/cluster.sh
 source "${COMMON_DIR}/cluster.sh"
 # shellcheck source=../_common/deps.sh
@@ -366,7 +369,11 @@ _write_compose_file() {
         > "$COMPOSE_FILE"
 
     if [[ "$AUTH_ENABLED" == "true" ]]; then
-        printf '%s\n' "$AUTH_USERS_YML" > "${STORAGE_PATH}/users.yml"
+        # users.yml holds the password hash: mode 0600, also when an older
+        # install left it 0644 (Kamino 196). Dozzle runs as root in its
+        # container, so it still reads it.
+        printf '%s\n' "$AUTH_USERS_YML" | _write_private "${STORAGE_PATH}/users.yml" \
+            || error_exit "Could not write ${STORAGE_PATH}/users.yml."
         info "Wrote ${STORAGE_PATH}/users.yml"
     fi
 
@@ -460,7 +467,8 @@ _write_k8s_manifests() {
     if [[ "$AUTH_ENABLED" == "true" ]]; then
         local ctx_flags
         ctx_flags="$(kubectl_context_flag)"
-        printf '%s\n' "$AUTH_USERS_YML" > "${WORKDIR}/users.yml"
+        printf '%s\n' "$AUTH_USERS_YML" | _write_private "${WORKDIR}/users.yml" \
+            || error_exit "Could not write ${WORKDIR}/users.yml."
         warn "Auth was requested, but a freshly created PVC mounts empty —"
         warn "users.yml cannot be pre-seeded before the pod exists."
         warn "Saved locally at ${WORKDIR}/users.yml. After 'install' finishes and the"

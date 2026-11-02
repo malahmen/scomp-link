@@ -60,6 +60,7 @@ BLUE=39
 
 # Session state
 GRF_CONTAINER_NAME="grafana"
+GRF_INFLUX_TOKEN=""   # Docker: the InfluxDB datasource token, for the container env
 GRF_IMAGE_TAG="$GRF_DEFAULT_IMAGE_TAG"
 GRF_ADMIN_USER="$GRF_DEFAULT_ADMIN_USER"
 GRF_ADMIN_PASSWORD=""
@@ -181,7 +182,8 @@ _prompt_datasources() {
             echo "        organization: ${org}"
             echo "        defaultBucket: ${bucket}"
             echo "      secureJsonData:"
-            echo "        token: ${token}"
+            # Quoted: the token reaches Grafana as typed (Kamino 196).
+            echo "        token: $(_yaml_squote "$token" || echo "''")"
             [[ "$is_default" == true ]] && echo "      isDefault: true"
         } >> "$out_file"
         is_default=false
@@ -296,6 +298,7 @@ _docker_write_datasources() {
         bucket="${bucket:-default}"
 
         token=$(gum input --placeholder "" --password --header "InfluxDB API token:") || true
+        GRF_INFLUX_TOKEN="$token"
 
         {
             echo "- name: InfluxDB"
@@ -307,7 +310,12 @@ _docker_write_datasources() {
             echo "    organization: ${org}"
             echo "    defaultBucket: ${bucket}"
             echo "  secureJsonData:"
-            echo "    token: ${token}"
+            # Not the token itself: Grafana substitutes it from the container
+            # env (Kamino 196). This file is bind-mounted into the container,
+            # which must read it - on Linux as its own grafana user, not the
+            # host user owning the file - so it cannot be made 0600 instead.
+            # shellcheck disable=SC2016
+            echo '    token: ${SCOMP_INFLUXDB_TOKEN}'
             [[ "$is_default" == true ]] && echo "  isDefault: true"
         } >> "$ds_file"
         is_default=false
@@ -397,6 +405,7 @@ grafana_install_docker() {
             docker rm -f "$GRF_CONTAINER_NAME"
     fi
 
+    GRF_INFLUX_TOKEN=""
     _docker_write_datasources
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -414,6 +423,7 @@ grafana_install_docker() {
     [[ -n "$GRF_ADMIN_PASSWORD" ]] && docker_args+=(-e GF_SECURITY_ADMIN_PASSWORD)
 
     [[ -n "$plugins_input" ]] && docker_args+=(-e "GF_INSTALL_PLUGINS=${plugins_input}")
+    [[ -n "$GRF_INFLUX_TOKEN" ]] && docker_args+=(-e SCOMP_INFLUXDB_TOKEN)
 
     # Mount provisioning dir only if datasources were configured
     if [[ -d "${prov_dir}/datasources" ]] && \
@@ -426,7 +436,8 @@ grafana_install_docker() {
     # Secrets are passed as -e NAME, the value taken from docker's own
     # environment: not on its command line, where any local user can read it
     # (Kamino 196).
-    if ! GF_SECURITY_ADMIN_PASSWORD="$GRF_ADMIN_PASSWORD" docker "${docker_args[@]}" &>/dev/null; then
+    if ! GF_SECURITY_ADMIN_PASSWORD="$GRF_ADMIN_PASSWORD" SCOMP_INFLUXDB_TOKEN="$GRF_INFLUX_TOKEN" \
+        docker "${docker_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${GRF_CONTAINER_NAME}'."
     fi
 

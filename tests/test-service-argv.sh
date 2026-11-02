@@ -17,6 +17,11 @@
 #     is not cut short;
 #   - qdrant's health-check sends the API key as a header in a curl config
 #     on stdin (-K -), not as an unquoted, word-split -H on curl's argv;
+#   - no file the scripts write holds a secret readable by other users:
+#     dozzle's users.yml is 0600 (also an older 0644 one); mongodb's init
+#     script and grafana's Docker datasource file are bind-mounted into the
+#     container, which must read them, so they hold no secret at all - the
+#     container gets it in its env;
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -265,6 +270,80 @@ check "both REST calls read a config from stdin" \
 check "the config holds the api-key header, the key escaped for its double quotes" \
     grep -qxF 'header = "api-key: P,w=1\\x.{y}'"'"'\"z q"' "$STUB_STATE/curl-config"
 check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
+
+# ------------------------------------------------------ secrets in files ---
+# mode <file> - its permission bits, as 600.
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+
+echo "mongodb docker: install with an app user"
+svc_reset
+svc_run mongodb "" install "" "" "" "$PW" "" "u" "$PW2" "← back"
+INIT="$HOME/.config/scomp-link/mongodb/mongodb/init/create-app-user.js"
+check "the script finishes (exit 0)" rc_is 0
+check "the init script is written and mounted" \
+    bash -c "[[ -f '$INIT' ]] && grep -q 'docker-entrypoint-initdb.d:ro' '$STUB_LOG'"
+check "it holds no password" bash -c "! grep -qF -- 'K,e' '$INIT'"
+check "it reads the app password from the container env" grep -qF 'pwd: process.env.SCOMP_APP_PASSWORD,' "$INIT"
+check "which the container gets" env_is mongodb SCOMP_APP_PASSWORD "$PW2"
+
+echo "mongodb docker: kept data, an init script an older install wrote with the password"
+svc_reset
+old_container mongodb MONGO_INITDB_ROOT_USERNAME=root "MONGO_INITDB_ROOT_PASSWORD=$PW" \
+    MONGO_INITDB_DATABASE=d SCOMP_APP_USERNAME=u "SCOMP_APP_PASSWORD=$PW2"
+printf 'db.getSiblingDB("d").createUser({ user: "u", pwd: "%s" });\n' "oldsecret" > "$INIT"
+chmod 644 "$INIT"
+svc_run mongodb "" install "" "" "Remove and recreate" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "the old init script no longer holds the password" bash -c "! grep -q oldsecret '$INIT'"
+
+echo "mongodb docker: a tag before 6.0 (legacy mongo shell runs init scripts)"
+svc_reset; rm -f "$INIT"
+svc_run mongodb "" install "5.0" "" "" "$PW" "" "u" "$PW2" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "it says the app user is not created" grep -q "the app user 'u' is not created" "$T/out"
+check "no init script is written or mounted" \
+    bash -c "[[ ! -e '$INIT' ]] && ! grep -q 'docker-entrypoint-initdb.d' '$STUB_LOG'"
+
+echo "grafana docker: an InfluxDB datasource with a token"
+svc_reset
+svc_run grafana "" install "" "" "" "$PW" "" yes "InfluxDB v2" "" "" "" "$PW2" "← back"
+DS="$HOME/.config/scomp-link/grafana/grafana/provisioning/datasources/datasources.yaml"
+check "the script finishes (exit 0)" rc_is 0
+check "the datasource file holds no token" bash -c "[[ -f '$DS' ]] && ! grep -qF -- 'K,e' '$DS'"
+check "...but Grafana's reference to the container env" grep -qxF '    token: ${SCOMP_INFLUXDB_TOKEN}' "$DS"
+check "the container gets the token exactly" env_is grafana SCOMP_INFLUXDB_TOKEN "$PW2"
+check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\" && argv_clean \"\$2\"" _ "$PW" "$PW2"
+
+echo "grafana k8s: an InfluxDB datasource with a token"
+svc_reset; k8s_world
+svc_run grafana "" "" install "" "$PW" "" "" "" yes "InfluxDB v2" "" "" "" "$PW2" "← back"
+check "the script finishes (exit 0)" rc_is 0
+q="'"; q="${q}${PW2//"$q"/"$q$q"}${q}"   # PW2 as a single-quoted YAML scalar
+check "the token reaches helm exactly (quoted YAML)" bash -c 'grep -qxF -- "        token: $1" "$2"/values/*.yaml' _ "$q" "$STUB_STATE"
+check "the values files were mode 600 and are removed" values_private
+
+echo "dozzle docker: auth - users.yml (password hash)"
+svc_reset; rm -rf "$HOME/.config/dozzle"
+# This file's docker wraps the stub: `generate` prints a users.yml, as the
+# image does, and keeps what it read on stdin.
+mv "$T/bin/docker" "$T/bin/docker.stub"
+cat > "$T/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == run && " $* " == *" generate "* ]]; then
+    printf 'docker %s\n' "$*" >> "$STUB_LOG"
+    [[ -t 0 ]] || cat > "$STUB_STATE/generate-stdin"
+    printf 'users:\n    admin:\n        password: $2a$11$stubhash\n'
+    exit 0
+fi
+exec "$(dirname "$0")/docker.stub" "$@"
+EOF
+chmod +x "$T/bin/docker"
+mkdir -p "$T/dz"; echo "users: []" > "$T/dz/users.yml"; chmod 644 "$T/dz/users.yml"
+svc_cmd dozzle install yes admin "$PW" "" "" "$T/dz"
+check "install finishes (exit 0)" rc_is 0
+check "users.yml is written" grep -q 'stubhash' "$T/dz/users.yml"
+check "...mode 600, though an older one was 644" bash -c "[[ \$($(declare -f mode); mode '$T/dz/users.yml') == 600 ]]"
+rm -rf "$T/dz"
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi

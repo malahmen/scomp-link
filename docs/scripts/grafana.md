@@ -8,7 +8,7 @@
 - K8s secrets (the admin password): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - **Admin credentials** prompt (default user `admin`); leave the password empty to auto-generate a 20-char one, shown once at install
 - **Datasource provisioning** at install time: Prometheus, InfluxDB v2 (Flux), or custom
-  - Docker: written to `~/.config/scomp-link/grafana/<container>/provisioning/` and bind-mounted, persistent across restarts
+  - Docker: written to `~/.config/scomp-link/grafana/<container>/provisioning/` and bind-mounted, persistent across restarts. The InfluxDB token is not in the file (the container must read it, so it cannot be private to you): the file says `${SCOMP_INFLUXDB_TOKEN}`, which Grafana fills in from the container env, and the token is passed as `-e SCOMP_INFLUXDB_TOKEN` (Kamino 196)
   - K8s: passed to the Helm chart as a values file (`-f`); the chart renders it as a ConfigMap
 - **Plugins**: comma-separated list of plugins to pre-install
 - **Docker**: container name chosen per session (default `grafana`), data in the `<container>-data` volume; uninstall optionally removes that volume
