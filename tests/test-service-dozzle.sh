@@ -21,7 +21,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/service-stubs.sh"
 cat > "$T/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 printf 'curl %s\n' "$*" >> "$STUB_LOG"
-[[ "$*" == *api.github.com* ]] && printf '  "tag_name": "v11.0.2",\n  "tag_name": "v8.14.1",\n'
+[[ "$*" == *api.github.com* ]] && printf '  "tag_name": "v11.0.2",\n  "tag_name": "v10.4.1",\n  "tag_name": "v8.14.1",\n'
 exit 0
 EOF
 # docker: `generate` prints a users.yml and keeps its stdin, or fails when
@@ -43,7 +43,7 @@ PW="s3cret pass"
 generated() { grep -q ' generate ' "$STUB_LOG"; }
 installed() { grep -qE '^docker-compose .* up' "$STUB_LOG"; }
 
-for v in v8.14.1; do
+for v in v8.14.1 v10.4.1; do
     echo "dozzle docker: authentication with Dozzle ${v#v} is refused"
     svc_reset; rm -rf "$HOME/.config/dozzle"
     svc_cmd dozzle install "$v" yes admin "$PW" "" "" "$T/dz"
