@@ -94,6 +94,9 @@ resolve_engine() {
 # on it (a roster plan that failed). eget reads one setting, for pre-filling
 # a prompt.
 ENGINE_RC=0
+# The first line of an accounts-only dump teldrassil writes (Kamino 232): its
+# restore merges the accounts instead of replacing the table.
+ACCOUNTS_MARK="-- teldrassil accounts-only dump: restore merges it (Kamino 232)"
 engine_foreground() {
     trap ':' INT
     ENGINE_RC=0
@@ -384,11 +387,14 @@ action_console() {
         c="$(_ask "Console command:")"
         [[ -n "$c" ]] || return 0
         if _console_has_password "$c"; then
-            # The engine takes console commands only as arguments, so a
-            # password in one would sit in the process list (here, and on
-            # SSH_HOST) for as long as the command runs (Kamino 196).
-            warn "Not sent: 'account create' and 'account set password' carry a password, and the console takes it as an argument."
-            info "Create accounts under Accounts -> create-account (the password goes on stdin)."
+            # A password goes on stdin (console --stdin, Kamino 232): as an
+            # argument it sat in the process list, here and on SSH_HOST, for
+            # as long as the command ran. It was refused here instead (Kamino
+            # 196); the engine now refuses it as an argument too.
+            trap ':' INT
+            ENGINE_RC=0
+            printf '%s\n' "$c" | bash "$ENGINE" "${PROFILE_FLAGS[@]}" console --stdin || ENGINE_RC=$?
+            trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
             unset c
             continue
         fi
@@ -418,6 +424,22 @@ action_create_account() {
     # On stdin: an argument would show in the process list and shell history.
     trap ':' INT
     printf '%s\n' "$pass" | bash "$ENGINE" "${PROFILE_FLAGS[@]}" create-account --name "$name" --pass-stdin --level "$level" || true
+    trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
+    unset pass
+}
+
+action_set_account_password() {
+    header "teldrassil — Set account password"
+    engine_foreground list-accounts
+    local name pass
+    name="$(_ask "Account to change:")"
+    [[ -n "$name" ]] || { info "Cancelled."; return 0; }
+    pass=$(gum input --password --header "New password for ${name} (4-16 characters):") || { info "Cancelled."; return 0; }
+    [[ -n "$pass" ]] || { info "Cancelled."; return 0; }
+    # On stdin (Kamino 232): there was no way to change a password without
+    # putting it on a command line.
+    trap ':' INT
+    printf '%s\n' "$pass" | bash "$ENGINE" "${PROFILE_FLAGS[@]}" set-account-password --name "$name" --pass-stdin || true
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
     unset pass
 }
@@ -599,13 +621,22 @@ action_restore() {
     if [[ "$file" == *.gz ]]; then mapfile -t head < <(gzip -dc -- "$file" 2>/dev/null | head -200 || true)
     else mapfile -t head < <(head -200 -- "$file" 2>/dev/null || true); fi
     local accounts=0
+    # An accounts-only dump teldrassil marks as such (Kamino 232) is merged by
+    # name into the realm database: no database to pick, the world server may
+    # run, and the target's bot and console accounts are never touched.
+    if [[ "${head[0]:-}" == "$ACCOUNTS_MARK" ]]; then
+        warn "An accounts-only dump: it is MERGED into ${PROFILE_LABEL}'s accounts - an account of the same name takes the dump's password, GM level and lock, a new one is added. Bot accounts and the console account are not touched."
+        gum confirm --default=false "Merge the accounts in $(basename "$file") into ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
+        engine_foreground restore --file "$file" --yes
+        return 0
+    fi
     if ! printf '%s\n' "${head[@]}" | grep -qiE '^CREATE DATABASE'; then
         local into; into="$(_pick_db "This dump names no database (a table subset) - restore into which?")" || { info "Cancelled."; return 0; }
         dbflag=(--db "$into")
-        # An "Accounts only" dump: mariadb-dump writes DROP TABLE and CREATE
-        # TABLE for each table it names, so restoring it replaces this
-        # server's whole account table - its console account and its bots'
-        # accounts with the other server's (Kamino 196; see the docs).
+        # An "Accounts only" dump made before Kamino 232 (no mark):
+        # mariadb-dump wrote DROP TABLE and CREATE TABLE for each table, so
+        # restoring it replaces this server's whole account table - its
+        # console account and its bots' accounts with the other server's.
         printf '%s\n' "${head[@]}" | grep -qiE '^(DROP TABLE IF EXISTS|CREATE TABLE) `account`' && accounts=1
     fi
     warn "RESTORE REPLACES DATA and cannot be undone. The world server must be stopped first."
@@ -660,6 +691,7 @@ _submenu() {
             create-account)    action_create_account || true ;;
             list-accounts)     engine_foreground list-accounts ;;
             set-account-level) action_set_account_level || true ;;
+            set-account-password) action_set_account_password || true ;;
             delete-account)    action_delete_account || true ;;
             rename-character)  action_rename_character || true ;;
             check)             engine_foreground roster check ;;
@@ -691,7 +723,7 @@ main() {
             Server)         _submenu "Server"         status start stop restart save console ;;
             Provision)      _submenu "Provision"      install source build-image build extract db-init configure create remove ;;
             Settings)       _submenu "Settings"       profile where-is-it edit-setting console-account db-timeout settings rename-profile delete-profile ;;
-            Accounts)       _submenu "Accounts"       create-account list-accounts set-account-level delete-account ;;
+            Accounts)       _submenu "Accounts"       create-account list-accounts set-account-password set-account-level delete-account ;;
             Characters)     _submenu "Characters"     rename-character ;;
             Search)         action_search || true ;;
             Roster)         _submenu "Roster"         show plan check apply ;;

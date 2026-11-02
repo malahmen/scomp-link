@@ -114,11 +114,7 @@ _prompt_db_credentials() {
 
     if [[ -z "$MY_PASSWORD" ]]; then
         MY_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated password: ${MY_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "password" MYSQL_PASSWORD "$MY_CONTAINER_NAME" "$MY_HELM_RELEASE" "$MY_NAMESPACE"
     fi
 }
 
@@ -130,11 +126,7 @@ _prompt_root_password() {
 
     if [[ -z "$MY_ROOT_PASSWORD" ]]; then
         MY_ROOT_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated root password: ${MY_ROOT_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "root password" MYSQL_ROOT_PASSWORD "$MY_CONTAINER_NAME" "$MY_HELM_RELEASE" "$MY_NAMESPACE"
     fi
 }
 

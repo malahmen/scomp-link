@@ -364,6 +364,7 @@ scomp-link/
 │   ├── test-navicomputer.sh          # the navicomputer front-end (real engine, temp ~/.ssh): key deletion
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-service-credentials.sh   # the service scripts keep a kept volume's / release's credentials
+│   ├── test-service-dozzle.sh        # dozzle: auth only with v11+ (password on stdin); port-forward failure stays in the TUI
 │   ├── test-service-kube-context.sh  # the service scripts act only on the chosen kube-context
 │   ├── test-service-paths.sh         # dozzle uninstall / lgtm purge delete only folders they created
 │   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
@@ -511,6 +512,11 @@ service from the LAN, set `SCOMP_BIND_ADDR=0.0.0.0` (or the host's LAN
 address) and install it again so the container is recreated. Dozzle refuses a
 non-loopback address while its authentication is off: it hands out the Docker
 socket.
+
+Two are LAN services, published on every interface (`0.0.0.0`) by default,
+deliberately, and say so when installed: **speaches** and **protocol**, whose
+purpose is other machines reaching them (Kamino 235). `SCOMP_BIND_ADDR`
+overrides them the same way - `127.0.0.1` keeps one on this machine.
 
 ### GUM_INPUT_WIDTH
 

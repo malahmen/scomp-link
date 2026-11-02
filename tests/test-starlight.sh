@@ -275,13 +275,19 @@ run "$T/start" \
     "Add section" "lsec" "$L" "autogenerate" \
     "Add file" "lsec" "lpage" "md" "$L" "$L" "no" \
     "Rename section" "plain" "$L" "" \
+    "Rename section" "guides" "Guides two" "" \
+    "Rename section" "ref" "Reference" "manual" \
     "Quit"
 S="$T/start/$slug"; C="$S/astro.config.mjs"
 check "the project was created" test -f "$C"
 check "site title: a JS literal" has "title: ${JS}," "$C"
 check "site description: a JS literal" has "description: ${JS}," "$C"
-check "autogenerate group label" has "{ label: ${JS}, items: [{ autogenerate: { directory: 'guides' } }] }" "$C"
-check "strict group label and item slug" has "{ label: ${JS}, items: [ 'ref/O\\'Brien \"x\" \\\\ & /path' ] }" "$C"
+# Renamed below (Kamino 235): the group holding the folder gets the new label
+# whatever its label was - not only one equal to the folder name.
+check "a renamed group whose label was not its folder name" has "{ label: 'Guides two', items: [{ autogenerate: { directory: 'guides' } }] }" "$C"
+check "  no other group took the label" bash -c '[ "$(grep -c "Guides two" "$1")" = 1 ]' _ "$C"
+check "a strict group, renamed with its folder: label and item slugs follow" has "{ label: 'Reference', items: [ 'manual/O\\'Brien \"x\" \\\\ & /path' ] }" "$C"
+check "  and the folder moved" test -d "$S/src/content/docs/manual"
 check "linked group and its item" has "{ label: ${JS}, items: [ { label: ${JS}, link: 'https://g.example'" "$C"
 check "a | in a label stays in the label (not the URL)" has "{ label: 'O\\'Brien \"x\" \\\\ & /path|x', link: 'https://t.example'" "$C"
 check "a section added later (awk insert keeps the escapes)" has "{ label: ${JS}, items: [{ autogenerate: { directory: 'lsec' } }] }" "$C"

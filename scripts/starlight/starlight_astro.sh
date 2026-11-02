@@ -1391,15 +1391,46 @@ rename_section_in_config() {
     local old_folder="$1"
     local new_folder="$2"
     local new_label="$3"
-    sed -i.bak \
-        -e "s|directory: '${old_folder}'|directory: '${new_folder}'|g" \
-        -e "s|'${old_folder}'|'${new_folder}'|g" \
-        "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
-    # The label is typed: a JS string literal, then escaped for sed (a & in it
-    # was the matched text, a \ an escape, a | the end of the command).
-    sed -i.bak \
-        -e "s|label: '${old_folder}'|label: $(sed_repl "$(js_str "$new_label")")|g" \
-        "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
+    # The group whose label changes is the one that holds the folder - its
+    # autogenerate `directory: '<folder>'`, or a strict item '<folder>/...' -
+    # whatever its label is now. A label is typed, so it rarely equals the
+    # folder name, and matching `label: '<folder>'` changed nothing for most
+    # sections while saying "Config updated" (Kamino 235). The label nearest
+    # above that line is replaced (one line for what this script writes, the
+    # line above for a group formatted over several). awk takes the values
+    # from the environment, as they are: the label is a JS literal (js_str),
+    # never seen by sed. The folder names are slugs (slugify).
+    local tmp="${CONFIG_FILE}.tmp.$$"
+    OLD="$old_folder" NEW="$new_folder" LABEL="$(js_str "$new_label")" awk -v q="'" '
+        function swap(s, from, to,   out, k) {
+            out = ""
+            while ((k = index(s, from)) > 0) { out = out substr(s, 1, k - 1) to; s = substr(s, k + length(from)) }
+            return out s
+        }
+        { line[NR] = $0 }
+        END {
+            old = ENVIRON["OLD"]; new = ENVIRON["NEW"]; label = ENVIRON["LABEL"]
+            lre = "label: " q "([^" q "\\\\]|\\\\.)*" q
+            for (i = 1; i <= NR; i++) {
+                if (index(line[i], "directory: " q old q) || index(line[i], q old "/")) {
+                    for (j = i; j >= 1; j--) {
+                        if (match(line[j], lre)) {
+                            if (!done[j]) line[j] = substr(line[j], 1, RSTART - 1) "label: " label substr(line[j], RSTART + RLENGTH)
+                            done[j] = 1
+                            break
+                        }
+                    }
+                }
+            }
+            for (i = 1; i <= NR; i++) {
+                if (old != new) {
+                    line[i] = swap(line[i], q old q, q new q)        # directory: and any exact reference
+                    line[i] = swap(line[i], q old "/", q new "/")    # strict items: the slugs follow the folder
+                }
+                print line[i]
+            }
+        }' "$CONFIG_FILE" > "$tmp" && mv -f "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
 }
 
 remove_section_from_config() {
@@ -1538,7 +1569,9 @@ rename_section() {
 
     rename_section_in_config "$old_folder" "$new_folder" "$new_label"
     success "Config updated for '${new_label}'."
-    warn "If you use strict mode items, check astro.config.mjs for any remaining references to '${old_folder}'."
+    if [[ "$new_folder" != "$old_folder" ]]; then
+        info "Strict-mode items '${old_folder}/...' now point at '${new_folder}/...'; links written inside pages are not changed."
+    fi
 }
 
 remove_section() {

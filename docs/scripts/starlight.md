@@ -79,7 +79,7 @@ the pre-0.39 group shape (`{ label, autogenerate }`, which Starlight 0.39+
 refuses to build) offers to convert it to `{ label, items: [{ autogenerate }] }`.
 Actions:
 
-- **Sections** — Add section · Rename section · Remove section · Reorder sections
+- **Sections** — Add section · Rename section · Remove section · Reorder sections. Rename finds the sidebar group by its folder (its `directory:`, or a strict item `folder/...`), whatever its label is, and gives it the new label; a renamed folder takes its strict items' slugs with it (Kamino 235: only a label equal to the folder name used to change)
   (reorder opens `astro.config.mjs` in vim)
 - **Files** — Add file (md/mdx with title/description front matter) · Edit file ·
   Rename file · Move file (to another section) · Delete file. Rename/Move warn

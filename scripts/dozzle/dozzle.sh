@@ -232,11 +232,26 @@ inject_block() {
 # install — auth (bcrypt generation requires local Docker, any target)
 # -----------------------------------------------------------------------------
 
+# _dozzle_before_11 <version> - a release tag (v8.12.3, 10.4.1) older than 11.
+# "latest", or anything without a leading number, is not.
+_dozzle_before_11() {
+    [[ "$1" =~ ^v?([0-9]+) ]] || return 1
+    (( 10#${BASH_REMATCH[1]} < 11 ))
+}
+
 _prompt_auth() {
     AUTH_ENABLED="false"
     AUTH_USER=""
 
     gum confirm "Enable Dozzle's built-in authentication (--auth-provider simple)?" || return 0
+
+    # Dozzle before 11 hashes a password only when it is given as --password,
+    # on docker's command line, where any local user can read it: refused
+    # (Kamino 235), where it used to be the fallback, with a warning.
+    if _dozzle_before_11 "${DOZZLE_VERSION:-latest}"; then
+        warn "Dozzle ${DOZZLE_VERSION} takes the password to hash only on its command line (--password), where any local user can read it; Dozzle 11 and later read it from stdin. Authentication needs Dozzle 11 or later: install again and pick one. Nothing was installed."
+        return 1
+    fi
 
     _check_docker
 
@@ -256,25 +271,19 @@ _prompt_auth() {
     # The password goes to `dozzle generate` on stdin, which Dozzle (v11)
     # reads when --password is not given: --password put it on docker's
     # command line, where any local user can read it (Kamino 196). No gum
-    # spin here: it would not pass stdin on. Older Dozzle versions refuse to
-    # run without --password (they do not hash an empty one); for those it is
-    # passed that way, and said so.
+    # spin here: it would not pass stdin on. There is no --password fallback
+    # any more (Kamino 235): a failure here is reported and nothing installed.
     local image="${DOZZLE_IMAGE}:${DOZZLE_VERSION:-latest}" users_yml
     if ! users_yml=$(printf '%s\n' "$pass" | docker run -i --rm "$image" generate "$user" \
             ${email:+--email "$email"} \
-            --name "$name" 2>/dev/null); then
-        warn "${image} does not read the password from stdin: passing it with --password, on docker's command line for this one call."
-        if ! users_yml=$(gum spin --spinner dot --title "Generating users.yml..." -- \
-            docker run -i --rm "$image" generate "$user" \
-                --password "$pass" \
-                ${email:+--email "$email"} \
-                --name "$name"); then
-            error_exit "Failed to generate users.yml. Is Docker reachable and is the image pullable?"
-        fi
+            --name "$name"); then
+        warn "'docker run ${image} generate' failed (above). Is Docker reachable and the image pullable? Nothing was installed."
+        return 1
     fi
 
     if [[ -z "$users_yml" ]]; then
-        error_exit "'docker run amir20/dozzle generate' produced no output."
+        warn "'docker run ${image} generate' produced no output. Nothing was installed."
+        return 1
     fi
 
     AUTH_ENABLED="true"
@@ -507,7 +516,9 @@ cmd_install() {
     select_version "$DOZZLE_GH_API" "Dozzle"
     DOZZLE_VERSION="$SELECTED_VERSION"
 
-    _prompt_auth
+    # A refusal or a failed hash says why and leaves the menu running
+    # (Kamino 235): nothing is written or started.
+    _prompt_auth || return 0
 
     case "$TARGET_TYPE" in
         docker)
@@ -893,7 +904,10 @@ cmd_port_forward() {
     if ! lsof -i ":${local_port}" -sTCP:LISTEN >/dev/null 2>&1; then
         pkill -P "$pid" 2>/dev/null || true
         kill "$pid" 2>/dev/null || true
-        error_exit "Port-forward failed to start (port in use, or service not ready)."
+        # warn, not error_exit: from the menu, error_exit ended the whole TUI
+        # (Kamino 235). The menu asks "Back to main menu?" next.
+        warn "Port-forward failed to start (port in use, or service not ready). Nothing is forwarded."
+        return 0
     fi
 
     pf_write "$pf_file" "${pid}" "${local_port}"

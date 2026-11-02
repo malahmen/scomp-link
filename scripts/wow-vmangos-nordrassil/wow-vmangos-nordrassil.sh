@@ -124,6 +124,17 @@ engine()     { bash "$ENGINE" "${PROFILE_FLAGS[@]}" "${GLOBAL_FLAGS[@]}" "$@"; }
 # profile — the settings wizard would quietly show one server's values and
 # write them onto another.
 eget()       { bash "$ENGINE" "${PROFILE_FLAGS[@]}" get "$1" 2>/dev/null || true; }
+# _save <KEY> <value> - `set` KEY only when <value> differs from what the
+# engine has now. Every prompt below opens holding the current value (gum
+# --value, a picker's current choice), so Enter or Esc hands that value back:
+# saving it anyway wrote each visited key into the active profile (or the
+# base config), pinning a value inherited from the base config or the
+# engine's default, which then stopped following them - teldrassil's
+# _set_if class (Kamino 196, 235).
+_save() {
+    [[ "$2" == "$(eget "$1")" ]] || engine_foreground set "$1" "$2"
+    return 0
+}
 engine_foreground() {
     trap ':' INT
     bash "$ENGINE" "${PROFILE_FLAGS[@]}" "${GLOBAL_FLAGS[@]}" "$@" || true
@@ -182,61 +193,61 @@ _prompt_server_settings() {
     local v
 
     v=$(gum input --value "$(eget REALM_NAME)" --header "Realm name (shown in the realm list):") || true
-    [[ -n "$v" ]] && engine_foreground set REALM_NAME "$v"
+    [[ -n "$v" ]] && _save REALM_NAME "$v"
 
     v=$(_pick_value_label "Realm zone (character-name alphabet / client compatibility)" "$(eget REALM_ZONE)" "Development" \
         "1|Development (any language)" "2|United States" "3|Oceanic" "4|Latin America" \
         "6|Korea" "8|English" "9|German" "10|French" "11|Spanish" "12|Russian" \
         "14|Taiwan" "16|China" "26|Test Server" "28|QA Server")
-    engine_foreground set REALM_ZONE "$v"
+    _save REALM_ZONE "$v"
 
     v=$(_pick_value_label "Realm style" "$(eget GAME_TYPE)" "Normal" \
         "0|Normal" "1|PvP" "6|RP" "8|RP-PvP" "16|FFA PvP (custom — arena rules everywhere)")
-    engine_foreground set GAME_TYPE "$v"
+    _save GAME_TYPE "$v"
 
     v=$(gum input --value "$(eget PLAYER_LIMIT)" \
         --header "Player limit (0 = infinite, -1 = mods/GMs/admins only, -2 = GMs/admins only, -3 = admins only):") || true
-    [[ -n "$v" ]] && engine_foreground set PLAYER_LIMIT "$v"
+    [[ -n "$v" ]] && _save PLAYER_LIMIT "$v"
 
     v=$(_pick_value_label "Progression content patch (quest/NPC/dungeon/raid data — independent of the compiled client build)" "$(eget WOW_PATCH)" "1.12" \
         "0|1.2" "1|1.3" "2|1.4" "3|1.5" "4|1.6" "5|1.7" "6|1.8" "7|1.9" "8|1.10" "9|1.11" "10|1.12")
-    engine_foreground set WOW_PATCH "$v"
+    _save WOW_PATCH "$v"
 
     # MOTD — strip literal quotes so it can't break the conf file's own quoting.
     v=$(gum input --value "$(eget MOTD)" --header "Message of the day (shown at login):") || true
-    [[ -n "$v" ]] && engine_foreground set MOTD "${v//\"/}"
+    [[ -n "$v" ]] && _save MOTD "${v//\"/}"
 
     v=$(gum input --value "$(eget XP_RATE)" --header "XP rate multiplier (1 = normal, 2 = double, 0.5 = half):") || true
-    [[ -n "$v" ]] && engine_foreground set XP_RATE "$v"
+    [[ -n "$v" ]] && _save XP_RATE "$v"
 
     v=$(gum input --value "$(eget DROP_RATE)" --header "Loot/gold drop rate multiplier (1 = normal, 2 = double, 0.5 = half):") || true
-    [[ -n "$v" ]] && engine_foreground set DROP_RATE "$v"
+    [[ -n "$v" ]] && _save DROP_RATE "$v"
 
     # realmd.conf — login/security behavior.
     v=$(gum input --value "$(eget WRONG_PASS_MAX_COUNT)" \
         --header "Wrong-password attempts before a ban (0 = disabled):") || true
-    [[ -n "$v" ]] && engine_foreground set WRONG_PASS_MAX_COUNT "$v"
+    [[ -n "$v" ]] && _save WRONG_PASS_MAX_COUNT "$v"
 
     if [[ "$(eget WRONG_PASS_MAX_COUNT)" != "0" ]]; then
         v=$(gum input --value "$(eget WRONG_PASS_BAN_TIME)" --header "Ban duration in seconds:") || true
-        [[ -n "$v" ]] && engine_foreground set WRONG_PASS_BAN_TIME "$v"
+        [[ -n "$v" ]] && _save WRONG_PASS_BAN_TIME "$v"
 
         v=$(_pick_value_label "Ban target" "$(eget WRONG_PASS_BAN_TYPE)" "Ban IP" "0|Ban IP" "1|Ban Account")
-        engine_foreground set WRONG_PASS_BAN_TYPE "$v"
+        _save WRONG_PASS_BAN_TYPE "$v"
     fi
 
     v=$(_pick_value_label "Require email verification before login" "$(eget REQ_EMAIL_VERIFICATION)" "No" "0|No" "1|Yes")
-    engine_foreground set REQ_EMAIL_VERIFICATION "$v"
+    _save REQ_EMAIL_VERIFICATION "$v"
 
     v=$(_pick_value_label "Reject modified/mismatched game clients (strict version check)" "$(eget STRICT_VERSION_CHECK)" "Yes" "1|Yes" "0|No")
-    engine_foreground set STRICT_VERSION_CHECK "$v"
+    _save STRICT_VERSION_CHECK "$v"
 
     v=$(_pick_value_label "Warden anti-cheat (client-side scans; irrelevant on a private/trusted LAN server)" "$(eget WARDEN_ENABLED)" "Enabled" "1|Enabled" "0|Disabled")
-    engine_foreground set WARDEN_ENABLED "$v"
+    _save WARDEN_ENABLED "$v"
 
     v=$(_pick_value_label "Strict player names (character-set + profanity/reserved-name checks on every login)" "$(eget STRICT_PLAYER_NAMES)" "Disabled" \
         "0|Disabled" "1|Basic Latin only" "2|Realm zone specific" "3|Basic Latin + server timezone")
-    engine_foreground set STRICT_PLAYER_NAMES "$v"
+    _save STRICT_PLAYER_NAMES "$v"
 }
 
 # Kube target for the deploy actions → sets GLOBAL_FLAGS (--kind/--context/none).
@@ -298,12 +309,12 @@ action_configure() {
     header "nordrassil — Configure"
     local src
     src=$(gum input --value "$(eget SOURCE_DIR)" --header "Path to the repack (contains mangosd.conf, sql/, data/):") || return 0
-    [[ -n "$src" ]] && engine_foreground set SOURCE_DIR "$src"
+    [[ -n "$src" ]] && _save SOURCE_DIR "$src"
 
     local addr
     addr=$(gum input --value "$(eget REALM_ADDRESS)" \
         --header "LAN-reachable address for this realm (what WoW clients connect to after login):") || return 0
-    [[ -n "$addr" ]] && engine_foreground set REALM_ADDRESS "$addr"
+    [[ -n "$addr" ]] && _save REALM_ADDRESS "$addr"
 
     _prompt_server_settings
 
@@ -362,27 +373,27 @@ action_run_k8s() {
     # answers silently. The operator types an address, sees an error about an
     # image, and the setting never changed. Both prompts are pre-filled from
     # the current value, which makes them look like settings; now they are.
-    [[ -n "$ns" ]] && engine_foreground set K8S_NAMESPACE "$ns"
+    [[ -n "$ns" ]] && _save K8S_NAMESPACE "$ns"
     addr=$(gum input --value "$(eget REALM_ADDRESS)" \
         --header "LAN-reachable address for this realm (the k8s NODE's IP, since the pod uses hostNetwork):") || return 0
-    [[ -n "$addr" ]] && engine_foreground set REALM_ADDRESS "$addr"
+    [[ -n "$addr" ]] && _save REALM_ADDRESS "$addr"
 
     # Storage backend → persisted config the engine reads on run-k8s.
     local st
     st=$(_pick_value_label "Storage backend for game data + DB" "$(eget K8S_STORAGE_TYPE)" "hostPath" \
         "hostpath|hostPath (single-node / home-lab — path on the node)" \
         "storageclass|StorageClass (dynamic provisioning)")
-    engine_foreground set K8S_STORAGE_TYPE "$st"
+    _save K8S_STORAGE_TYPE "$st"
     if [[ "$st" == "hostpath" ]]; then
         local dp bp
         dp=$(gum input --value "$(eget K8S_DATA_HOSTPATH)" --header "hostPath for game data (on the k8s node):") || return 0
-        [[ -n "$dp" ]] && engine_foreground set K8S_DATA_HOSTPATH "$dp"
+        [[ -n "$dp" ]] && _save K8S_DATA_HOSTPATH "$dp"
         bp=$(gum input --value "$(eget K8S_DB_HOSTPATH)" --header "hostPath for MariaDB data (on the k8s node):") || return 0
-        [[ -n "$bp" ]] && engine_foreground set K8S_DB_HOSTPATH "$bp"
+        [[ -n "$bp" ]] && _save K8S_DB_HOSTPATH "$bp"
     else
         local sc
         sc=$(gum input --value "$(eget K8S_STORAGECLASS)" --placeholder "leave empty for cluster default" --header "StorageClass name:") || true
-        engine_foreground set K8S_STORAGECLASS "$sc"
+        _save K8S_STORAGECLASS "$sc"
     fi
 
     local -a args=(run-k8s)
@@ -402,20 +413,19 @@ action_create_account() {
     local name pass level
     name=$(gum input --placeholder "username" --header "New account username:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
-    # The engine's create-account takes the password only as --pass, so it
-    # is on the engine's command line - readable by any local user (ps) for
-    # as long as the call runs, a few seconds with a GM level. Said in the
-    # prompt and the docs until the engine reads it from stdin (Kamino 196).
     pass=$(gum input --password --placeholder "password" \
-        --header "New account password (1-16 characters, no spaces). Passed to the engine as an argument: other users of this machine can see it while it runs - set a new one in game if this host is shared:") || return 0
+        --header "New account password (1-16 characters, no spaces):") || return 0
     [[ -n "$pass" ]] || { info "Cancelled."; return 0; }
     # The engine's own rule for console arguments (lib/transport.sh
     # _validate_console_arg), checked first: a password it would refuse is
-    # not put on a command line at all.
+    # not sent at all.
     [[ "$name" =~ ^[[:graph:]]{1,16}$ ]] || { warn "The username must be 1-16 characters with no spaces."; return 0; }
     [[ "$pass" =~ ^[[:graph:]]{1,16}$ ]] || { warn "The password must be 1-16 characters with no spaces; nothing was sent."; return 0; }
     level=$(_pick_gm_level "Account access level" "0")
-    engine_foreground create-account --name "$name" --pass "$pass" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    # On stdin (--pass-stdin, Kamino 233): as --pass it sat on the engine's
+    # command line, readable by any local user (ps) while the call ran.
+    printf '%s\n' "$pass" | engine_foreground create-account --name "$name" --pass-stdin --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    unset pass
 }
 
 action_list_accounts() {
@@ -498,7 +508,7 @@ _prompt_transport_settings() {
     v=$(_pick_value_label "Who provisions this server" "$(eget MANAGED_EXTERNALLY)" "this tool" \
         "0|this tool — configure, run-docker, run-k8s" \
         "1|something else — Ansible, GitOps, CI (administration only)")
-    engine_foreground set MANAGED_EXTERNALLY "$v"
+    _save MANAGED_EXTERNALLY "$v"
 
     v=$(_pick_value_label "Where this profile's DATABASE is reached" "$(eget DB_TRANSPORT)" "auto" \
         "auto|auto — probe this machine (local servers only)" \
@@ -506,7 +516,7 @@ _prompt_transport_settings() {
         "podman|podman exec into a container" \
         "kubectl|kubectl exec into a pod" \
         "tcp|connect straight to a MariaDB port")
-    engine_foreground set DB_TRANSPORT "$v"
+    _save DB_TRANSPORT "$v"
 
     # Empty is a meaningful answer for the ssh hosts (it means "this
     # machine"), so these use `if gum input` rather than the
@@ -516,33 +526,33 @@ _prompt_transport_settings() {
     if [[ "$v" != auto && "$v" != tcp ]]; then
         if h=$(gum input --value "$(eget DB_SSH_HOST)" \
                  --header "ssh host the database's engine runs on (empty = this machine):"); then
-            engine_foreground set DB_SSH_HOST "$h"
+            _save DB_SSH_HOST "$h"
         fi
     fi
 
     case "$v" in
         docker|podman)
             if h=$(gum input --value "$(eget DB_CONTAINER_NAME)" --header "MariaDB container name:"); then
-                [[ -n "$h" ]] && engine_foreground set DB_CONTAINER_NAME "$h"
+                [[ -n "$h" ]] && _save DB_CONTAINER_NAME "$h"
             fi
             ;;
         kubectl)
             if h=$(gum input --value "$(eget DB_POD_SELECTOR)" --header "Label selector for the MariaDB pod:"); then
-                [[ -n "$h" ]] && engine_foreground set DB_POD_SELECTOR "$h"
+                [[ -n "$h" ]] && _save DB_POD_SELECTOR "$h"
             fi
             ;;
         tcp)
             if h=$(gum input --value "$(eget DB_HOST)" --header "MariaDB host:"); then
-                [[ -n "$h" ]] && engine_foreground set DB_HOST "$h"
+                [[ -n "$h" ]] && _save DB_HOST "$h"
             fi
             if h=$(gum input --value "$(eget DB_PORT)" --header "MariaDB port:"); then
-                [[ -n "$h" ]] && engine_foreground set DB_PORT "$h"
+                [[ -n "$h" ]] && _save DB_PORT "$h"
             fi
             ;;
     esac
 
     if h=$(gum input --value "$(eget DB_USER)" --header "MariaDB user:"); then
-        [[ -n "$h" ]] && engine_foreground set DB_USER "$h"
+        [[ -n "$h" ]] && _save DB_USER "$h"
     fi
     v=$(_pick_value_label "MariaDB password" "$(eget DB_PASS)" "stored" \
         "ask|Ask once per session (never written to disk)" \
@@ -557,11 +567,11 @@ _prompt_transport_settings() {
             # Typed with --password so it is not echoed; it does land in the
             # profile file, which is why 'ask' is offered first.
             if h=$(gum input --password --header "MariaDB password (stored in the profile file):"); then
-                [[ -n "$h" ]] && engine_foreground set DB_PASS "$h"
+                [[ -n "$h" ]] && _save DB_PASS "$h"
             fi
             ;;
         ask)
-            engine_foreground set DB_PASS ask
+            _save DB_PASS ask
             ;;
         *)
             # Cancelled. Anything that is not one of the two offered values is
@@ -576,34 +586,34 @@ _prompt_transport_settings() {
         "docker|docker exec into a container" \
         "podman|podman exec into a container" \
         "kubectl|kubectl exec into a pod")
-    engine_foreground set SERVER_TRANSPORT "$v"
+    _save SERVER_TRANSPORT "$v"
 
     if [[ "$v" != auto && "$v" != local ]]; then
         if h=$(gum input --value "$(eget SERVER_SSH_HOST)" \
                  --header "ssh host the server's orchestrator runs on (empty = this machine):"); then
-            engine_foreground set SERVER_SSH_HOST "$h"
+            _save SERVER_SSH_HOST "$h"
         fi
         if h=$(gum input --value "$(eget SERVER_FIFO)" \
                  --header "mangosd's console FIFO path INSIDE the container:"); then
-            [[ -n "$h" ]] && engine_foreground set SERVER_FIFO "$h"
+            [[ -n "$h" ]] && _save SERVER_FIFO "$h"
         fi
     fi
     case "$v" in
         docker|podman)
             if h=$(gum input --value "$(eget SERVER_CONTAINER_NAME)" --header "Server container name:"); then
-                [[ -n "$h" ]] && engine_foreground set SERVER_CONTAINER_NAME "$h"
+                [[ -n "$h" ]] && _save SERVER_CONTAINER_NAME "$h"
             fi
             ;;
         kubectl)
             if h=$(gum input --value "$(eget K8S_NAMESPACE)" --header "Kubernetes namespace:"); then
-                [[ -n "$h" ]] && engine_foreground set K8S_NAMESPACE "$h"
+                [[ -n "$h" ]] && _save K8S_NAMESPACE "$h"
             fi
             if h=$(gum input --value "$(eget SERVER_POD_SELECTOR)" --header "Label selector for the server pod:"); then
-                [[ -n "$h" ]] && engine_foreground set SERVER_POD_SELECTOR "$h"
+                [[ -n "$h" ]] && _save SERVER_POD_SELECTOR "$h"
             fi
             if h=$(gum input --value "$(eget SERVER_K8S_CONTAINER)" \
                      --header "Container in that pod (empty = let kubectl choose):"); then
-                engine_foreground set SERVER_K8S_CONTAINER "$h"
+                _save SERVER_K8S_CONTAINER "$h"
             fi
             ;;
     esac
@@ -656,7 +666,7 @@ action_profile_managed() {
     v=$(_pick_value_label "Who provisions ${PROFILE_LABEL}" "$(eget MANAGED_EXTERNALLY)" "this tool" \
         "0|this tool — configure, run-docker, run-k8s" \
         "1|something else — Ansible, GitOps, CI (administration only)")
-    engine_foreground set MANAGED_EXTERNALLY "$v"
+    _save MANAGED_EXTERNALLY "$v"
     # Re-read so the category list changes now rather than next launch.
     _set_profile "$PROFILE"
     success "Saved. Acting on: ${PROFILE_LABEL}."

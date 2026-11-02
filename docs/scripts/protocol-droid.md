@@ -131,10 +131,13 @@ Convert first asks **how** to pick the source:
   single-file conversion; a **folder** → the whole folder is batch-converted
   (every supported file under it, no picker — use *Scan a folder* to choose).
 
-A relative path that starts with `-` (`-notes/`) is passed as `./-notes/`, typed
-or picked from a scan: the engine reads anything starting with `-` as a flag
-and has no end-of-options `--` (its `--` forwards what follows to the
-converter), so the bare name was refused as an unknown flag.
+Every path goes to the engine after `--` (Kamino 234): a `--` before the first
+path ends the engine's options, so a relative path that starts with `-`
+(`-notes/`) is a path, typed or picked from a scan, and is passed as typed (the
+`./-notes/` rewrite is gone). A second `--` after the paths still forwards
+marker's or markitdown's own flags: `local convert --backend marker -- -notes/a.pdf -- --force_ocr`.
+The folder scanned goes after `--` as well. Needs a protocol-droid with this
+`--` (Kamino 234).
 
 One file → marker's single CLI; several files (or a whole folder) → marker's
 batch CLI, which loads its models once (a selection is symlinked into a temp dir
@@ -370,8 +373,9 @@ flag reference.
 
 `tests/test-protocol-droid.sh` drives the menus through the gum stub against a
 fake engine that answers `local scan` and records every other call: a path
-starting with `-` reaches the engine as `./-path` whether typed, picked from a
-scan of `.`, or scanned as the folder, in the local and the container convert;
+starting with `-` reaches the engine after `--`, as typed, whether typed, picked
+from a scan of `.`, or scanned as the folder, in the local and the container
+convert and the bench, and converter flags follow a second `--`;
 an LLM API key reaches the engine in its environment and in no argument;
 clearing the model cache, uninstalling a backend and tearing a stack down are
 driven with Enter, no and yes, and only yes calls the engine; Esc at each

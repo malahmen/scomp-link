@@ -95,12 +95,19 @@ _prompt_admin_credentials() {
 
     if [[ -z "$GRF_ADMIN_PASSWORD" ]]; then
         GRF_ADMIN_PASSWORD=$(_gen_secret 20)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated password: ${GRF_ADMIN_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "admin password" GF_SECURITY_ADMIN_PASSWORD "$GRF_CONTAINER_NAME" "$GRF_HELM_RELEASE" "$GRF_NAMESPACE"
     fi
+}
+
+# _ds_q <value> [k8s] - a typed datasource field as a YAML scalar (Kamino 235).
+# Single-quoted (_yaml_squote): unquoted, a ': ' or ' #' in a URL or name, a
+# leading quote, or a value like `yes` changed the YAML or its meaning. Every
+# $ is doubled: Grafana expands $VAR and ${VAR} in provisioning files, and $$
+# is its literal $. Returns 1 for control characters, and on k8s for '{{',
+# which the chart's tpl would run as a template.
+_ds_q() {
+    [[ "${2:-}" == k8s && "$1" == *'{{'* ]] && return 1
+    _yaml_squote "${1//\$/\$\$}"
 }
 
 # Prompts the user to select and configure datasources.
@@ -140,14 +147,19 @@ _prompt_datasources() {
             --header "Prometheus URL:") || true
         url="${url:-http://prometheus-server.monitoring.svc.cluster.local}"
 
+        local q_url
+        if ! q_url="$(_ds_q "$url" k8s)"; then
+            warn "Prometheus skipped: its URL has control characters or '{{'."
+        else
         {
             echo "    - name: Prometheus"
             echo "      type: prometheus"
-            echo "      url: ${url}"
+            echo "      url: ${q_url}"
             echo "      access: proxy"
             [[ "$is_default" == true ]] && echo "      isDefault: true"
         } >> "$out_file"
         is_default=false
+        fi
     fi
 
     if echo "$selected" | grep -q "InfluxDB"; then
@@ -172,21 +184,27 @@ _prompt_datasources() {
             --password \
             --header "InfluxDB API token:") || true
 
+        local q_url q_org q_bucket q_token
+        if ! { q_url="$(_ds_q "$url" k8s)" && q_org="$(_ds_q "$org" k8s)" \
+                && q_bucket="$(_ds_q "$bucket" k8s)" && q_token="$(_ds_q "$token" k8s)"; }; then
+            warn "InfluxDB skipped: a field has control characters or '{{'."
+        else
         {
             echo "    - name: InfluxDB"
             echo "      type: influxdb"
-            echo "      url: ${url}"
+            echo "      url: ${q_url}"
             echo "      access: proxy"
             echo "      jsonData:"
             echo "        version: Flux"
-            echo "        organization: ${org}"
-            echo "        defaultBucket: ${bucket}"
+            echo "        organization: ${q_org}"
+            echo "        defaultBucket: ${q_bucket}"
             echo "      secureJsonData:"
-            # Quoted: the token reaches Grafana as typed (Kamino 196).
-            echo "        token: $(_yaml_squote "$token" || echo "''")"
+            # Quoted: the token reaches Grafana as typed (Kamino 196, 235).
+            echo "        token: ${q_token}"
             [[ "$is_default" == true ]] && echo "      isDefault: true"
         } >> "$out_file"
         is_default=false
+        fi
     fi
 
     if echo "$selected" | grep -q "Custom"; then
@@ -206,13 +224,18 @@ _prompt_datasources() {
             --header "URL:") || true
         url="${url:-http://my-service:9090}"
 
+        local q_name q_type q_url
+        if ! { q_name="$(_ds_q "$name" k8s)" && q_type="$(_ds_q "$ds_type" k8s)" && q_url="$(_ds_q "$url" k8s)"; }; then
+            warn "${name} skipped: a field has control characters or '{{'."
+        else
         {
-            echo "    - name: ${name}"
-            echo "      type: ${ds_type}"
-            echo "      url: ${url}"
+            echo "    - name: ${q_name}"
+            echo "      type: ${q_type}"
+            echo "      url: ${q_url}"
             echo "      access: proxy"
             [[ "$is_default" == true ]] && echo "      isDefault: true"
         } >> "$out_file"
+        fi
     fi
 }
 
@@ -274,14 +297,19 @@ _docker_write_datasources() {
             --header "Prometheus URL:") || true
         url="${url:-http://host.docker.internal:9090}"
 
+        local q_url
+        if ! q_url="$(_ds_q "$url")"; then
+            warn "Prometheus skipped: its URL has control characters."
+        else
         {
             echo "- name: Prometheus"
             echo "  type: prometheus"
-            echo "  url: ${url}"
+            echo "  url: ${q_url}"
             echo "  access: proxy"
             [[ "$is_default" == true ]] && echo "  isDefault: true"
         } >> "$ds_file"
         is_default=false
+        fi
     fi
 
     if echo "$selected" | grep -q "InfluxDB"; then
@@ -300,15 +328,20 @@ _docker_write_datasources() {
         token=$(gum input --placeholder "" --password --header "InfluxDB API token:") || true
         GRF_INFLUX_TOKEN="$token"
 
+        local q_url q_org q_bucket
+        if ! { q_url="$(_ds_q "$url")" && q_org="$(_ds_q "$org")" && q_bucket="$(_ds_q "$bucket")"; }; then
+            warn "InfluxDB skipped: a field has control characters."
+            GRF_INFLUX_TOKEN=""
+        else
         {
             echo "- name: InfluxDB"
             echo "  type: influxdb"
-            echo "  url: ${url}"
+            echo "  url: ${q_url}"
             echo "  access: proxy"
             echo "  jsonData:"
             echo "    version: Flux"
-            echo "    organization: ${org}"
-            echo "    defaultBucket: ${bucket}"
+            echo "    organization: ${q_org}"
+            echo "    defaultBucket: ${q_bucket}"
             echo "  secureJsonData:"
             # Not the token itself: Grafana substitutes it from the container
             # env (Kamino 196). This file is bind-mounted into the container,
@@ -319,6 +352,7 @@ _docker_write_datasources() {
             [[ "$is_default" == true ]] && echo "  isDefault: true"
         } >> "$ds_file"
         is_default=false
+        fi
     fi
 
     if echo "$selected" | grep -q "Custom"; then
@@ -330,13 +364,18 @@ _docker_write_datasources() {
         url=$(gum input --placeholder "http://my-service:9090" --header "URL:") || true
         url="${url:-http://my-service:9090}"
 
+        local q_name q_type q_url
+        if ! { q_name="$(_ds_q "$name")" && q_type="$(_ds_q "$ds_type")" && q_url="$(_ds_q "$url")"; }; then
+            warn "${name} skipped: a field has control characters."
+        else
         {
-            echo "- name: ${name}"
-            echo "  type: ${ds_type}"
-            echo "  url: ${url}"
+            echo "- name: ${q_name}"
+            echo "  type: ${q_type}"
+            echo "  url: ${q_url}"
             echo "  access: proxy"
             [[ "$is_default" == true ]] && echo "  isDefault: true"
         } >> "$ds_file"
+        fi
     fi
 
     success "Datasource config written to ${ds_file}"

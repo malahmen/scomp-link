@@ -92,13 +92,8 @@ _prompt_encryption_key() {
 
     if [[ -z "$key_input" ]]; then
         N8N_ENCRYPTION_KEY=$(_gen_secret 32)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated encryption key:" \
-            "${N8N_ENCRYPTION_KEY}" \
-            "" \
-            "SAVE THIS. Changing it makes all stored credentials unreadable."
+        _secret_notice "encryption key" N8N_ENCRYPTION_KEY "$N8N_CONTAINER_NAME" "$N8N_HELM_RELEASE" "$N8N_NAMESPACE"
+        warn "Back it up from there: changing it makes all stored credentials unreadable."
     else
         N8N_ENCRYPTION_KEY="$key_input"
     fi

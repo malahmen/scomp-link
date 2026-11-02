@@ -6,7 +6,7 @@
 # What it protects: removing an instance (which deletes its bottle and client
 # files) does nothing on Enter or no (--default=false, Kamino 196); Esc on a
 # question returns to the menu with nothing set; configure saves what was
-# picked, with ~ expanded; add, edit, launch (several at once), stop, discover
+# changed, with ~ expanded, and nothing that was only pre-filled (Kamino 235); add, edit, launch (several at once), stop, discover
 # and status reach the engine with their flags.
 set -uo pipefail
 
@@ -37,7 +37,7 @@ fi
 case "\$*" in
     "list-instances --names") printf 'box1\nbox2\n'; exit 0 ;;
     list-runners)             printf 'soda-9\ncaffe-8\n'; exit 0 ;;
-    discover-realm)           printf '192.168.1.60\n'; exit 0 ;;
+    discover-realm)           printf '192.168.1.60\n192.168.1.50\n'; exit 0 ;;
 esac
 (IFS='|'; printf '%s\n' "\$*") >> "$T/calls"
 exit 0
@@ -47,6 +47,7 @@ chmod +x "$T/bin/"*
 
 SHARED="shared (symlinked install, private WTF/Cache only — lowest disk use)"
 WIN32="win32 (matches this 32-bit-era client)"
+FULL="full (complete copy per instance — best at high instance counts)"
 
 # drive <answer>... - one answer per prompt, in order; the session ends at Quit.
 drive() {
@@ -75,14 +76,24 @@ echo "# configure"
 # shellcheck disable=SC2088  # a literal ~, typed: the front-end must expand it
 drive Setup configure "~/games/wow" "$SHARED" "$WIN32" caffe-8 "" "Enter manually" "" 3725 back Quit
 check "the client path is saved with ~ expanded" called "set|CLIENT_SOURCE_DIR|$T/home/games/wow"
-check "the picks are saved" bash -c 'grep -qxF "set|CLIENT_ISOLATION_MODE|shared" "$1" && grep -qxF "set|WINE_ARCH|win32" "$1" && grep -qxF "set|BOTTLES_RUNNER|caffe-8" "$1"' _ "$T/calls"
+check "the changed picks are saved" bash -c 'grep -qxF "set|CLIENT_ISOLATION_MODE|shared" "$1" && grep -qxF "set|BOTTLES_RUNNER|caffe-8" "$1"' _ "$T/calls"
+check "  win32, picked again, is not re-saved (Kamino 235)" not_called "set|WINE_ARCH"
 check "the realm port typed is saved" called "set|DEFAULT_REALM_PORT|3725"
 check "  and configure validates at the end" called "configure"
 drive Setup configure esc back Quit
 check "Esc on the client path: nothing set, nothing configured" no_calls
 check "  back at the menu" at_quit
 drive Setup configure "" esc esc esc "" esc back Quit
-check "Esc on each picker keeps the current value" bash -c 'grep -qxF "set|CLIENT_ISOLATION_MODE|full" "$1" && grep -qxF "set|WINE_ARCH|win32" "$1" && ! grep -q "BOTTLES_RUNNER" "$1"' _ "$T/calls"
+check "Esc on each picker keeps the current value: nothing set" not_called "set|"
+check "  configure still validates" called "configure"
+# Enter on every prompt: each opens holding the current value (gum --value,
+# the picker's current choice). Saving that anyway pinned the engine's
+# defaults into its config (Kamino 235, teldrassil's _set_if class).
+drive Setup configure "" "$FULL" "$WIN32" soda-9 "" "Enter manually" "" "" back Quit
+check "Enter (or the current pick) throughout: nothing is set" not_called "set|"
+check "  configure still validates" called "configure"
+drive Setup discover-realm 192.168.1.50 back Quit
+check "discover the realm already set: not re-set" bash -c '! grep -q "set|DEFAULT_REALM_ADDRESS" "$1"' _ "$T/calls"
 drive Setup discover-realm 192.168.1.60 back Quit
 check "discover: the picked realm becomes the default" called "set|DEFAULT_REALM_ADDRESS|192.168.1.60"
 

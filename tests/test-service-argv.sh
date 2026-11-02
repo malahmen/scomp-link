@@ -23,6 +23,13 @@
 #     container, which must read them, so they hold no secret at all - the
 #     container gets it in its env;
 #   - dozzle generate gets the password on stdin, not --password;
+#   - grafana's datasource fields are quoted YAML with $ doubled, and on
+#     kind/k8s a '{{' skips the datasource (Kamino 235);
+#   - lgtm's Grafana is no longer admin/admin: Docker gets a generated
+#     password from a 0600 env_file, kind/k8s the chart's generated Secret
+#     (Kamino 235);
+#   - redis on Docker gets its password in the container env, written by the
+#     container into a config file, not as --requirepass (Kamino 235);
 #   - postgres 18+ gets its volume at /var/lib/postgresql (17 and older at
 #     .../data, where 18 refuses to start); a kept volume laid out for the
 #     other kind is not used without a warning and a confirm.
@@ -235,6 +242,26 @@ check "the script finishes (exit 0)" rc_is 0
 check "redis-cli gets the password as REDISCLI_AUTH" exec_env_has REDISCLI_AUTH "$PW"
 check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
 
+echo "redis docker: install with a password (Kamino 235)"
+# The password was --requirepass: on docker's argv, and redis-server's inside
+# the container. It goes in the container env, and the container writes it
+# into a 0600 config file for redis-server.
+svc_reset
+svc_run redis "" "" install "" "" "$PW" "← back"
+e="${PW//\\/\\\\}"; e="${e//\"/\\\"}"
+check "the script finishes (exit 0)" rc_is 0
+check "docker run ran" bash -c "grep -q '^docker run ' '$STUB_LOG'"
+check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
+check "no --requirepass at all" lacks "--requirepass" "$STUB_LOG"
+check "the container gets the requirepass line, the password escaped for redis.conf" \
+    env_is redis SCOMP_REDIS_CONF "requirepass \"${e}\""
+check "...which its shell writes to a file redis-server is started on" \
+    bash -c "grep '^docker run ' '$STUB_LOG' | grep -qF -- 'sh -c umask 077; f=/tmp/scomp-redis.conf; rm -f \"\$f\"; printf \"%s\\n\" \"\$SCOMP_REDIS_CONF\" > \"\$f\"' && grep '^docker run ' '$STUB_LOG' | grep -qF -- 'exec docker-entrypoint.sh redis-server \"\$f\" --appendonly yes'"
+svc_reset
+svc_run redis "" "" install "" "" "" "← back"
+check "no password: plain redis-server, no config file" \
+    bash -c "grep '^docker run ' '$STUB_LOG' | grep -qE -- ' redis-server --appendonly yes\$' && ! grep -q SCOMP_REDIS_CONF '$STUB_LOG'"
+
 # ------------------------------------------------------- values with '=' ---
 for svc in mariadb mysql; do
     up="$(tr '[:lower:]' '[:upper:]' <<< "$svc")"
@@ -311,13 +338,47 @@ svc_run mongodb "" install "" "" "Remove and recreate" "← back"
 check "the script finishes (exit 0)" rc_is 0
 check "the old init script no longer holds the password" bash -c "! grep -q oldsecret '$INIT'"
 
-echo "mongodb docker: a tag before 6.0 (legacy mongo shell runs init scripts)"
-svc_reset; rm -f "$INIT"
-svc_run mongodb "" install "5.0" "" "" "$PW" "" "u" "$PW2" "← back"
+# Before 6.0 the image runs init scripts with the legacy mongo shell, which
+# cannot read the app password from the environment: install used to go on
+# without the app user (Kamino 196's regression). Those releases are past
+# their end of life, so it refuses them before asking or changing anything
+# (Kamino 235).
+for tag in 5.0 4.4.29 3.6; do
+    echo "mongodb docker: mongo:${tag} (before 6.0) is refused"
+    svc_reset; rm -f "$INIT"
+    svc_run mongodb "" install "$tag" "← back"
+    check "the script finishes (exit 0), back at the menu" rc_is 0
+    check "it says why, and what to choose" bash -c 'grep -q "older than 6.0" "$1" && grep -q "Choose 6.0 or later" "$1"' _ "$T/out"
+    check "nothing is pulled, removed or started" bash -c "! grep -qE '^docker (pull|rm|run) ' '$STUB_LOG'"
+    check "no init script is written" test ! -e "$INIT"
+done
+echo "mongodb docker: an existing container, recreated as mongo:5.0 - refused, kept"
+svc_reset
+old_container mongodb MONGO_INITDB_ROOT_USERNAME=root "MONGO_INITDB_ROOT_PASSWORD=$PW"
+svc_run mongodb "" install "5.0" "← back"
+check "the container is not removed" bash -c "! grep -qE '^docker (rm|run) ' '$STUB_LOG'"
+for tag in 6.0 7 8.0.3 latest jammy; do
+    svc_reset
+    svc_run mongodb "" install "$tag" "" "" "$PW" "" "u" "$PW2" "← back"
+    check "mongo:${tag} installs, the app user's init script mounted" \
+        bash -c "grep -q '^docker run .*docker-entrypoint-initdb.d' '$STUB_LOG'"
+done
+
+echo "mongodb docker: connect to a container from before 6.0 (legacy mongo shell)"
+# This file's docker wraps the stub: the container has no mongosh, only mongo.
+mv "$T/bin/docker" "$T/bin/docker.stub"
+printf '#!/usr/bin/env bash\n[[ "$1 ${3:-} ${4:-}" == "exec which mongosh" ]] && { printf "docker %%s\\n" "$*" >> "$STUB_LOG"; exit 1; }\nexec "$(dirname "$0")/docker.stub" "$@"\n' > "$T/bin/docker"
+chmod +x "$T/bin/docker"
+svc_reset
+old_container mongodb MONGO_INITDB_ROOT_USERNAME=root "MONGO_INITDB_ROOT_PASSWORD=$PW" \
+    MONGO_INITDB_DATABASE=d SCOMP_APP_USERNAME=u "SCOMP_APP_PASSWORD=$PW2"
+svc_run mongodb "" connect "← back"
 check "the script finishes (exit 0)" rc_is 0
-check "it says the app user is not created" grep -q "the app user 'u' is not created" "$T/out"
-check "no init script is written or mounted" \
-    bash -c "[[ ! -e '$INIT' ]] && ! grep -q 'docker-entrypoint-initdb.d' '$STUB_LOG'"
+check "the legacy shell is asked to prompt: -p last, no value (Kamino 235)" \
+    bash -c "grep -qxE -- 'docker(\.stub)? exec -it mongodb mongo d -u u --authenticationDatabase d -p' '$STUB_LOG'"
+check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\" && argv_clean \"\$2\"" _ "$PW" "$PW2"
+check "it says where the password is" has "docker exec mongodb printenv SCOMP_APP_PASSWORD" "$T/out"
+mv "$T/bin/docker.stub" "$T/bin/docker"
 
 echo "grafana docker: an InfluxDB datasource with a token"
 svc_reset
@@ -336,6 +397,55 @@ check "the script finishes (exit 0)" rc_is 0
 q="'"; q="${q}${PW2//"$q"/"$q$q"}${q}"   # PW2 as a single-quoted YAML scalar
 check "the token reaches helm exactly (quoted YAML)" bash -c 'grep -qxF -- "        token: $1" "$2"/values/*.yaml' _ "$q" "$STUB_STATE"
 check "the values files were mode 600 and are removed" values_private
+
+# Every typed datasource field is a quoted YAML scalar, with $ doubled
+# (Grafana expands $VAR in provisioning files; $$ is a literal $): unquoted,
+# " #" started a comment, ": " a mapping, and yes a boolean (Kamino 235).
+DS_URL='http://h:1/a #frag' DS_ORG='acme: ops' DS_BUCKET='yes' DS_NAME="it's \$HOME" DS_TYPE='prom'
+echo "grafana docker: datasource fields YAML would misread"
+svc_reset
+svc_run grafana "" install "" "" "" "$PW" "" yes 'InfluxDB v2\nCustom' "$DS_URL" "$DS_ORG" "$DS_BUCKET" "$PW2" "$DS_NAME" "$DS_TYPE" "$DS_URL" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "the URL is single-quoted, whole" grep -qxF "  url: 'http://h:1/a #frag'" "$DS"
+check "the organisation" grep -qxF "    organization: 'acme: ops'" "$DS"
+check "the bucket stays a string" grep -qxF "    defaultBucket: 'yes'" "$DS"
+check "the name: quote doubled, \$ doubled for Grafana" grep -qxF -- "- name: 'it''s \$\$HOME'" "$DS"
+check "the type" grep -qxF "  type: 'prom'" "$DS"
+echo "grafana k8s: datasource fields YAML would misread, and a template"
+svc_reset; k8s_world
+svc_run grafana "" "" install "" "$PW" "" "" "" yes 'InfluxDB v2\nCustom' "$DS_URL" "$DS_ORG" "$DS_BUCKET" "$PW2" "{{ .Values }}" "$DS_TYPE" "$DS_URL" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "the URL is single-quoted, whole" bash -c 'grep -qxF -- "      url: '"'"'http://h:1/a #frag'"'"'" "$1"/values/*.yaml' _ "$STUB_STATE"
+check "the organisation" bash -c 'grep -qxF -- "        organization: '"'"'acme: ops'"'"'" "$1"/values/*.yaml' _ "$STUB_STATE"
+check "a name with {{ (the chart's tpl would run it) is skipped, said" bash -c '! grep -q "{{" "$1"/values/*.yaml && grep -q "skipped" "$2"' _ "$STUB_STATE" "$T/out"
+
+echo "lgtm docker: Grafana's admin password is generated, kept 0600, never admin (Kamino 235)"
+svc_reset; rm -rf "$HOME/.config/lgtm" "$T/lgtm-data"
+svc_cmd lgtm install 'Grafana\nLoki' "$T/lgtm-data"
+GENV="$HOME/.config/lgtm/compose/grafana.env"
+LC="$HOME/.config/lgtm/compose/docker-compose.yml"
+gpw="$(sed -n 's/^GF_SECURITY_ADMIN_PASSWORD=//p' "$GENV" 2>/dev/null)"
+check "install finishes (exit 0)" rc_is 0
+check "the compose file has no admin/admin" bash -c '! grep -q "GF_SECURITY_ADMIN_PASSWORD=admin" "$1"' _ "$LC"
+check "...but an env_file, quoted" grep -qxF "      - '${GENV}'" "$LC"
+check "which holds a generated password (24 alphanumerics)" grep -qxE '[A-Za-z0-9]{24}' <<< "$gpw"
+check "...mode 600" bash -c "[[ \$($(declare -f mode); mode '$GENV') == 600 ]]"
+check "the password is never printed" bash -c '[[ -n "$1" ]] && ! grep -qF -- "$1" "$2"' _ "$gpw" "$T/out"
+check "...the output says how to read it" has "docker exec lgtm_grafana printenv GF_SECURITY_ADMIN_PASSWORD" "$T/out"
+svc_cmd lgtm install "Use existing config"
+check "a re-install keeps the password (the data keeps the first)" \
+    bash -c '[[ "$(sed -n "s/^GF_SECURITY_ADMIN_PASSWORD=//p" "$1")" == "$2" ]]' _ "$GENV" "$gpw"
+svc_cmd lgtm purge yes
+check "purge removes it with the data" test ! -e "$GENV"
+rm -rf "$T/lgtm-data"
+
+echo "lgtm k8s: Grafana's values carry no admin password (the chart generates one)"
+gv="$(bash -c 'set -e; warn() { :; }; NAMESPACE=monitoring TARGET_TYPE=k8s
+    declare -A PROF_REPLICAS=([grafana]=1) PROF_CPU_REQ=([grafana]=1) PROF_MEM_REQ=([grafana]=1) \
+        PROF_CPU_LIM=([grafana]=1) PROF_MEM_LIM=([grafana]=1) PROF_PVC=([grafana]=1Gi)
+    source <(sed -n "/^_helm_values_grafana()/,/^}/p" "$1"); _helm_values_grafana' _ "$SVC_DIR/lgtm/lgtm.sh")"
+check "the values render" grep -q "datasources.yaml:" <<< "$gv"
+check "no adminPassword in them" bash -c '! grep -qE "^ *adminPassword:" <<< "$1"' _ "$gv"
 
 echo "dozzle docker: auth - users.yml (password hash)"
 svc_reset; rm -rf "$HOME/.config/dozzle"

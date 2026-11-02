@@ -40,6 +40,12 @@ fi
 source "${COMMON_DIR}/ui.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
+# protocol's API is a LAN service - Padme and n8n on other machines submit to
+# it - so its port is published on every interface unless SCOMP_BIND_ADDR
+# names one (Kamino 235). Deliberate, and install and status say so.
+SVC_BIND_DEFAULT=0.0.0.0
+# shellcheck source=../_common/portforward.sh
+source "${COMMON_DIR}/portforward.sh"
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -117,9 +123,16 @@ cfg_defaults() {
 
 cfg_load() {
     cfg_defaults
+    # Where install published the API (SCOMP_BIND_ADDR, or every interface):
+    # saved by install for status and the URLs, not a setting 'config' edits.
+    PR_BIND_ADDR=""
     [[ -f "$CONFIG_FILE" ]] || return 0
     # shellcheck disable=SC1090
     source "$CONFIG_FILE"
+    if [[ -n "$PR_BIND_ADDR" ]] && ! _svc_ipv4 "$PR_BIND_ADDR"; then
+        warn "Ignoring PR_BIND_ADDR='${PR_BIND_ADDR}' in ${CONFIG_FILE}: not an IPv4 address."
+        PR_BIND_ADDR=""
+    fi
 }
 
 cfg_save() {
@@ -127,7 +140,7 @@ cfg_save() {
     {
         printf '# protocol.sh settings - see the defaults in protocol.sh\n'
         local key
-        for key in "${PR_SETTINGS[@]}"; do printf '%s=%q\n' "$key" "${!key}"; done
+        for key in "${PR_SETTINGS[@]}" PR_BIND_ADDR; do printf '%s=%q\n' "$key" "${!key:-}"; done
     } > "$CONFIG_FILE"
 }
 
@@ -179,7 +192,18 @@ _pr_env_lines() {
     return 0
 }
 
-pr_local_url() { echo "http://127.0.0.1:${PR_PORT}"; }
+# The address the API is published on: what install used (saved), or this
+# run's. pr_local_url reaches it from this machine; pr_lan_url is where other
+# machines do, or nothing when it is on loopback only.
+pr_bind_addr() { printf '%s' "${PR_BIND_ADDR:-$SVC_BIND_ADDR}"; }
+pr_local_url() { echo "http://$(svc_host "$(pr_bind_addr)"):${PR_PORT}"; }
+pr_lan_url() {
+    local a; a="$(pr_bind_addr)"
+    [[ "$a" == 127.* ]] && return 0
+    [[ "$a" == 0.0.0.0 ]] && a="$(pr_lan_address)"
+    [[ -n "$a" ]] && printf 'http://%s:%s' "$a" "$PR_PORT"
+    return 0
+}
 
 pr_lan_address() { { hostname -I 2>/dev/null || true; } | awk '{print $1}'; }
 
@@ -221,7 +245,7 @@ EOF
         IFS=: read -r secret var _ <<< "$entry"
         echo "Secret=${secret},type=env,target=${var}"
     done
-    [[ "$unit" == protocol-api ]] && echo "PublishPort=${PR_PORT}:${PR_API_CONTAINER_PORT}"
+    [[ "$unit" == protocol-api ]] && echo "PublishPort=$(svc_publish "$PR_PORT" "$PR_API_CONTAINER_PORT")"
     if [[ "$image" == "$PR_IMAGE_MARKER" ]]; then
         echo "Volume=${PR_MODELS_VOLUME}:/models"
         echo "SecurityLabelLevel=${PR_MARKER_SELINUX_LEVEL}"
@@ -486,6 +510,7 @@ pr_install() {
         return 0
     fi
     mkdir -p "$QUADLET_DIR"
+    PR_BIND_ADDR="$SVC_BIND_ADDR"   # saved below: status and the URLs read it
     local unit start
     for unit in "${PR_UNITS[@]}"; do
         render_quadlet "$unit" > "${QUADLET_DIR}/${unit}.container"
@@ -513,9 +538,16 @@ pr_install() {
     fi
     cfg_save
     pr_healthy "$(pr_local_url)" && success "The API is up at $(pr_local_url)" || warn "The API is not answering yet - see 'logs'."
+    # Said, not left to the URL line: reaching it from other machines is the
+    # point of the API (Kamino 235).
+    if svc_bind_is_loopback; then
+        info "Published on ${SVC_BIND_ADDR} only (SCOMP_BIND_ADDR): not reachable from the LAN, so no firewall port is opened."
+        return 0
+    fi
+    svc_bind_notice
     pr_firewall_offer "$PR_PORT"
-    local lan; lan="$(pr_lan_address)"
-    [[ -n "$lan" ]] && info "From the LAN: http://${lan}:${PR_PORT}  (POST /documents)"
+    local lan; lan="$(pr_lan_url)"
+    [[ -n "$lan" ]] && info "From the LAN: ${lan}  (POST /documents)"
     return 0
 }
 
@@ -536,12 +568,17 @@ pr_status() {
     done
     if pr_healthy "$(pr_local_url)"; then success "API: ok ($(pr_local_url))"; else warn "API: not answering at $(pr_local_url)"; fi
     if _linger_on; then info "Linger: on - starts at boot"; else warn "Linger: off - starts only after a login"; fi
-    case "$(pr_firewall_state "$PR_PORT")" in
-        open)    info "Firewall ($(_fw_tool)): ${PR_PORT}/tcp open" ;;
-        closed)  warn "Firewall ($(_fw_tool)): ${PR_PORT}/tcp closed - the LAN cannot reach the API" ;;
-        unknown) warn "Firewall ($(_fw_tool)): state of ${PR_PORT}/tcp unknown (reading it needs sudo)" ;;
-        none)    info "Firewall: none active" ;;
-    esac
+    if [[ "$(pr_bind_addr)" == 127.* ]]; then
+        info "Published on $(pr_bind_addr) only (SCOMP_BIND_ADDR at install): not reachable from the LAN."
+    else
+        info "Published on $(pr_bind_addr)$([[ "$(pr_bind_addr)" == 0.0.0.0 ]] && echo ', every interface' || true)."
+        case "$(pr_firewall_state "$PR_PORT")" in
+            open)    info "Firewall ($(_fw_tool)): ${PR_PORT}/tcp open" ;;
+            closed)  warn "Firewall ($(_fw_tool)): ${PR_PORT}/tcp closed - the LAN cannot reach the API" ;;
+            unknown) warn "Firewall ($(_fw_tool)): state of ${PR_PORT}/tcp unknown (reading it needs sudo)" ;;
+            none)    info "Firewall: none active" ;;
+        esac
+    fi
     local missing; missing="$(pr_missing_secrets)"
     [[ -n "$missing" ]] && warn "Secrets not set: $(tr '\n' ' ' <<< "$missing")(see 'secrets')"
     if [[ -z "$missing" ]] && podman image exists "$PR_IMAGE_API"; then

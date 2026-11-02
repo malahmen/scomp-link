@@ -104,11 +104,7 @@ _prompt_admin_config() {
 
     if [[ -z "$IDB_ADMIN_PASSWORD" ]]; then
         IDB_ADMIN_PASSWORD=$(_gen_secret 24)
-        gum style \
-            --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
-            --align center --width 60 --margin "1 0" --padding "0 4" \
-            "Generated password: ${IDB_ADMIN_PASSWORD}" \
-            "Save this — it will not be shown again."
+        _secret_notice "admin password" DOCKER_INFLUXDB_INIT_PASSWORD "$IDB_CONTAINER_NAME" "$IDB_HELM_RELEASE" "$IDB_NAMESPACE"
     fi
 
     IDB_ORG=$(gum input \

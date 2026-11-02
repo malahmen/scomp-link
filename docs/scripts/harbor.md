@@ -6,7 +6,7 @@ Kubernetes only.
 
 - K8s chart: `harbor/harbor` (official Harbor Helm repo) · Namespace / release: `harbor` / `harbor` (both prompted)
 - K8s secrets (the admin password): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
-- **Admin password** prompt (user `admin`); leave empty to auto-generate a 24-char one, shown once at install
+- **Admin password** prompt (user `admin`); leave empty to auto-generate a 24-char one, never printed: the install says where it is kept (the release values: `helm get values`) (Kamino 235)
 - Expose: `clusterIP` + port-forward (no ingress required), TLS disabled
 - `externalURL` is set to `http://localhost:<port>` at install time (default `8080`), must match the port-forward port for image push/pull to work
 - **Storage options** at install:

@@ -83,6 +83,16 @@ engine_foreground() {
     bash "$ENGINE" "$@" || true
     trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 }
+# _save <KEY> <value> - `set` KEY only when <value> differs from what the
+# engine has now. configure's prompts open holding the current value (gum
+# --value, a picker's current choice), so Enter or Esc hands it back: saving
+# it anyway wrote every visited key into the config, pinning the engine's
+# defaults there so a changed default never reached it (Kamino 235, the
+# teldrassil _set_if class of Kamino 196).
+_save() {
+    [[ "$2" == "$(eget "$1")" ]] || engine_foreground set "$1" "$2"
+    return 0
+}
 
 # -----------------------------------------------------------------------------
 # gum pickers — all interactivity lives here.
@@ -144,7 +154,7 @@ _discover_and_set() {
     [[ -n "$candidates" ]] || { warn "No realm candidates found on the LAN."; return 1; }
     chosen=$(printf '%s\n' "$candidates" | gum choose --header "Candidate realm(s) (port open — not protocol-verified):") || true
     [[ -n "$chosen" ]] || return 1
-    engine_foreground set DEFAULT_REALM_ADDRESS "$chosen"
+    _save DEFAULT_REALM_ADDRESS "$chosen"
     success "Default realm address set to ${chosen}."
 }
 
@@ -162,18 +172,18 @@ action_configure() {
     # CONFIG_DIR — a typed "~/games/wow" would be stored literally and make
     # `configure` fail on a path that does not exist.
     src="${src/#\~/$HOME}"
-    [[ -n "$src" ]] && engine_foreground set CLIENT_SOURCE_DIR "$src"
+    [[ -n "$src" ]] && _save CLIENT_SOURCE_DIR "$src"
 
     local mode
     mode=$(_pick_value_label "Client file isolation mode" "$(eget CLIENT_ISOLATION_MODE)" "full" \
         "full|full (complete copy per instance — best at high instance counts)" \
         "shared|shared (symlinked install, private WTF/Cache only — lowest disk use)")
-    engine_foreground set CLIENT_ISOLATION_MODE "$mode"
+    _save CLIENT_ISOLATION_MODE "$mode"
 
     local arch
     arch=$(_pick_value_label "Bottle architecture" "$(eget WINE_ARCH)" "win32" \
         "win32|win32 (matches this 32-bit-era client)" "win64|win64")
-    engine_foreground set WINE_ARCH "$arch"
+    _save WINE_ARCH "$arch"
 
     local runners runner cur_runner
     # Bare `engine`: captured listing, `|| true` handled by the branch below.
@@ -181,14 +191,14 @@ action_configure() {
     cur_runner="$(eget BOTTLES_RUNNER)"; cur_runner="${cur_runner:-<none>}"
     if [[ -n "$runners" ]]; then
         runner=$(printf '%s\n' "$runners" | gum choose --header "Wine runner (current: ${cur_runner}):") || true
-        [[ -n "$runner" ]] && engine_foreground set BOTTLES_RUNNER "$runner"
+        [[ -n "$runner" ]] && _save BOTTLES_RUNNER "$runner"
     else
         warn "No Bottles Wine runner available yet — run 'Install dependencies', then launch Bottles once from your app menu so it downloads a runner."
     fi
 
     local res
     res=$(gum input --value "$(eget DEFAULT_RESOLUTION)" --header "Default window resolution (WxH):") || return 0
-    [[ -n "$res" ]] && engine_foreground set DEFAULT_RESOLUTION "$res"
+    [[ -n "$res" ]] && _save DEFAULT_RESOLUTION "$res"
 
     local realm_choice
     realm_choice=$(gum choose "Enter manually" "Discover on LAN" \
@@ -198,9 +208,9 @@ action_configure() {
         "Enter manually")
             local addr port
             addr=$(gum input --value "$(eget DEFAULT_REALM_ADDRESS)" --placeholder "192.168.1.50" --header "Realm address:") || true
-            [[ -n "$addr" ]] && engine_foreground set DEFAULT_REALM_ADDRESS "$addr"
+            [[ -n "$addr" ]] && _save DEFAULT_REALM_ADDRESS "$addr"
             port=$(gum input --value "$(eget DEFAULT_REALM_PORT)" --header "Realm port:") || true
-            [[ -n "$port" ]] && engine_foreground set DEFAULT_REALM_PORT "$port"
+            [[ -n "$port" ]] && _save DEFAULT_REALM_PORT "$port"
             ;;
     esac
 

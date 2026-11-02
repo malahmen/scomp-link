@@ -43,7 +43,9 @@ fi
 [[ "\${1:-}" == profiles ]] && { echo "  far"; exit 0; }
 [[ "\${1:-}" == config ]] && { printf '  DB_USER                root      the database user\n* DB_CONTAINER           db        the MariaDB container\n'; exit 0; }
 (IFS='|'; printf '%s\n' "\$*") >> "$T/calls"
-[[ "\${1:-}" == create-account ]] && cat > "$T/stdin"
+case "\${1:-} \${2:-}" in
+    "create-account "*|"set-account-password "*|"console --stdin") cat >> "$T/stdin" ;;
+esac
 # A roster plan the engine cannot make: as teldrassil, "cannot plan" and a
 # non-zero exit, when the test leaves a status in plan-rc.
 if [[ "\${1:-} \${2:-}" == "roster plan" && -s "$T/plan-rc" ]]; then
@@ -302,19 +304,43 @@ echo "# console: one command is one argument, however many words"
 drive Server console "account onlinelist" "server info" "" back Quit
 check "a two-word command arrives whole" called "console|account onlinelist"
 check "  and the next one as its own call" called "console|server info"
-echo "# console: a password never goes on the engine's command line (Kamino 196)"
-# The engine takes console commands only as arguments: one carrying a
-# password would be in the process list. They are refused here instead.
+echo "# console: a password goes on stdin, never the command line (Kamino 196, 232)"
+# One carrying a password was refused here (Kamino 196): the engine took
+# console commands only as arguments. It is sent with console --stdin now.
 drive Server console "account create Alice s3cretpw" ".ACCOUNT SET PASSWORD Alice n3wpw n3wpw" "  account   create Bob pw2" "server info" "" back Quit
-check "account create is not sent" not_called "s3cretpw"
-check "  nor account set password (any case, a leading dot)" not_called "n3wpw"
-check "  nor with extra spaces" not_called "pw2"
-check "  the operator is told where to create one" grep -q "create-account" "$T/out"
-check "  and the console goes on: the next command is sent" called "console|server info"
+check "no password is on any argv" bash -c '! grep -qE "s3cretpw|n3wpw|pw2" "$1"' _ "$T/calls"
+check "  each is sent with console --stdin" bash -c '[ "$(grep -cxF "console|--stdin" "$1")" = 3 ]' _ "$T/calls"
+check "  account create arrives on stdin, as typed" grep -qxF "account create Alice s3cretpw" "$T/stdin"
+check "  account set password too (any case, a leading dot)" grep -qxF ".ACCOUNT SET PASSWORD Alice n3wpw n3wpw" "$T/stdin"
+check "  and with extra spaces" grep -qxF "  account   create Bob pw2" "$T/stdin"
+check "  nothing is refused any more" bash -c '! grep -q "Not sent" "$1"' _ "$T/out"
+check "  and the console goes on: the next command is an argument" called "console|server info"
 drive Server console "account onlinelist" "account set gmlevel Bob 1" "" back Quit
 check "other account commands still go through" bash -c 'grep -qxF "console|account onlinelist" "$1" && grep -qxF "console|account set gmlevel Bob 1" "$1"' _ "$T/calls"
 
-echo "# restore: an accounts-only dump replaces every account (Kamino 196)"
+echo "# accounts: a password change goes on stdin (Kamino 232)"
+drive Accounts set-account-password Bob 'n3w pass!' back Quit
+check "set-account-password --name Bob --pass-stdin" called "set-account-password|--name|Bob|--pass-stdin"
+check "  the password is on no argv" not_called "n3w pass"
+check "  it arrives on stdin" [ "$(cat "$T/stdin" 2>/dev/null)" = 'n3w pass!' ]
+drive Accounts set-account-password Bob "" back Quit
+check "  a blank password: nothing sent" not_called "set-account-password"
+
+echo "# restore: an accounts-only dump teldrassil marks is merged (Kamino 232)"
+merged="classicrealmd-tables-20261101-000000.sql"
+printf -- '-- teldrassil accounts-only dump: restore merges it (Kamino 232)\nINSERT INTO `account` VALUES (1);\n' > "$T/config/teldrassil/dumps/$merged"
+drive Administration restore "$merged" no back Quit
+check "the question says it merges, and leaves bots and the console account" bash -c 'grep -q "MERGED into" "$1" && grep -q "Bot accounts and the console account are not touched" "$1"' _ "$T/out"
+check "  no database is asked: the engine merges into the realm database" bash -c '! grep -q "restore into which" "$1"' _ "$T/out"
+check "  declined: no restore" not_called "restore"
+drive Administration restore "$merged" enter back Quit
+check "  Enter: no restore" not_called "restore"
+drive Administration restore "$merged" yes back Quit
+check "  confirmed: restore --file --yes, no --db" called "restore|--file|$T/config/teldrassil/dumps/${merged}|--yes"
+check "  no console account renewal is offered" bash -c '! grep -q "Renew the console account" "$1" && ! grep -q console-account "$2"' _ "$T/out" "$T/calls"
+rm -f "$T/config/teldrassil/dumps/$merged"
+
+echo "# restore: an older, unmarked accounts-only dump replaces every account (Kamino 196)"
 acc="classicrealmd-tables-20261024-000000.sql"
 drive Administration restore "$acc" classicrealmd no back Quit
 check "the account table: a separate question first; declined, no restore" not_called "restore"

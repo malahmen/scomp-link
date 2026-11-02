@@ -36,10 +36,16 @@ fi
 source "${COMMON_DIR}/ui.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
+# Speaches is a LAN service - the point is other machines reaching it - so
+# its port is published on every interface unless SCOMP_BIND_ADDR names one
+# (Kamino 235). Deliberate, and the install and status say so.
+SVC_BIND_DEFAULT=0.0.0.0
 # shellcheck source=../_common/portforward.sh
 source "${COMMON_DIR}/portforward.sh"
 # shellcheck source=../_common/cluster.sh
 source "${COMMON_DIR}/cluster.sh"
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"   # conf_load: the settings file is parsed, never sourced
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -88,13 +94,60 @@ cfg_defaults() {
     SP_VOLUME="speaches-hf-cache"
     SP_K8S_STORAGE="20Gi"
     SP_K8S_STORAGE_CLASS=""     # empty = the cluster's default class
+    SP_BIND_ADDR=""             # where install published the port (SCOMP_BIND_ADDR or 0.0.0.0); set by install
 }
 
+SP_KEYS=(SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_CPU_THREADS SP_COMPUTE_TYPE SP_MODELS SP_VOLUME
+    SP_K8S_STORAGE SP_K8S_STORAGE_CLASS SP_BIND_ADDR)
+
+# sp_valid <KEY> <value> - the value is one the setting may hold. Every
+# setting reaches a Quadlet unit, docker run's argv, a k8s manifest or a URL
+# as it is, so each is checked the same way whether it was typed under
+# 'config' or read from the settings file (Kamino 196, 235).
+sp_valid() {
+    local v="$2" m
+    local -a ms
+    case "$1" in
+        # An image tag (-cpu/-cuda is appended, so 120 leaves room).
+        SP_VERSION)     [[ "$v" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}$ ]] ;;
+        SP_VARIANT)     [[ "$v" == auto || "$v" == cpu || "$v" == cuda ]] ;;
+        SP_PORT)        [[ "$v" =~ ^[0-9]{1,5}$ ]] && (( 10#$v > 0 && 10#$v < 65536 )) ;;
+        SP_TTL)         [[ "$v" == -1 || "$v" =~ ^[0-9]{1,9}$ ]] ;;
+        SP_CPU_THREADS) [[ "$v" =~ ^[0-9]{1,4}$ ]] ;;
+        SP_COMPUTE_TYPE) [[ "$v" =~ ^(default|int8|int8_float32|int16|float32)$ ]] ;;
+        # Hugging Face repositories, owner/name, space-separated: each goes
+        # into a URL path (/v1/models/<id>) and a JSON string.
+        SP_MODELS)
+            [[ -n "$v" && "$v" != *[![:print:]]* ]] || return 1
+            read -r -a ms <<< "$v"   # split without globbing
+            (( ${#ms[@]} )) || return 1
+            for m in "${ms[@]}"; do [[ "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1; done ;;
+        # A volume name: a path there is a bind mount of this host's files.
+        SP_VOLUME)      [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] ;;
+        # A Kubernetes quantity, and a StorageClass name (a DNS subdomain, or
+        # empty for the cluster's default): both go into the manifest as is.
+        SP_K8S_STORAGE) [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([KMGTPE]i?|k)?$ ]] ;;
+        SP_K8S_STORAGE_CLASS) [[ -z "$v" || ( ${#v} -le 253 && "$v" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ) ]] ;;
+        SP_BIND_ADDR)   [[ -z "$v" ]] || _svc_ipv4 "$v" ;;
+        *) return 1 ;;
+    esac
+}
+
+# The settings file is parsed (conf.sh), not sourced: a $(...) or a quote in
+# it ran as code (Kamino 235, the class Kamino 196 fixed for dozzle, lgtm and
+# others). A value that is not one the setting may hold keeps the default.
 cfg_load() {
     cfg_defaults
     [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+    local -A dflt=()
+    local key
+    for key in "${SP_KEYS[@]}"; do dflt[$key]="${!key}"; done
+    conf_load "$CONFIG_FILE" "${SP_KEYS[@]}"
+    for key in "${SP_KEYS[@]}"; do
+        sp_valid "$key" "${!key}" && continue
+        warn "Ignoring ${key}='${!key}' in ${CONFIG_FILE}: not a valid value. Using '${dflt[$key]}' (change it under 'config')."
+        printf -v "$key" '%s' "${dflt[$key]}"
+    done
 }
 
 cfg_save() {
@@ -102,7 +155,7 @@ cfg_save() {
     {
         printf '# speaches.sh settings - see the defaults in speaches.sh\n'
         local key
-        for key in SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_CPU_THREADS SP_COMPUTE_TYPE SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS; do
+        for key in "${SP_KEYS[@]}"; do
             printf '%s=%q\n' "$key" "${!key}"
         done
     } > "$CONFIG_FILE"
@@ -133,7 +186,20 @@ sp_env() {
         "WHISPER__CPU_THREADS=${SP_CPU_THREADS}" "WHISPER__COMPUTE_TYPE=${SP_COMPUTE_TYPE}" "LOG_LEVEL=info"
 }
 
-sp_local_url() { echo "http://127.0.0.1:${SP_PORT}"; }
+# The address the port is published on: what install used (saved), or
+# this run's. sp_local_url reaches it from this machine.
+sp_bind_addr() { printf '%s' "${SP_BIND_ADDR:-$SVC_BIND_ADDR}"; }
+sp_local_url() { echo "http://$(svc_host "$(sp_bind_addr)"):${SP_PORT}"; }
+
+# sp_lan_url - where other machines reach it, or nothing when it is
+# published on loopback only.
+sp_lan_url() {
+    local a; a="$(sp_bind_addr)"
+    [[ "$a" == 127.* ]] && return 0
+    [[ "$a" == 0.0.0.0 ]] && a="$(sp_lan_address)"
+    [[ -n "$a" ]] && printf 'http://%s:%s' "$a" "$SP_PORT"
+    return 0
+}
 
 sp_lan_address() {
     if [[ "$(uname -s)" == Darwin ]]; then
@@ -160,7 +226,7 @@ After=network-online.target
 [Container]
 ContainerName=${SP_NAME}
 Image=${image}
-PublishPort=${SP_PORT}:${SP_CONTAINER_PORT}
+PublishPort=$(svc_publish "$SP_PORT" "$SP_CONTAINER_PORT")
 Volume=${SP_VOLUME}:${SP_CACHE_MOUNT}
 EOF
     while IFS= read -r line; do echo "Environment=${line}"; done < <(sp_env)
@@ -674,14 +740,19 @@ sp_firewall_offer() {
 sp_status_common() {
     local url="$1" lan installed loaded model missing=()
     if sp_healthy "$url"; then success "Health: ok (${url})"; else warn "Health: unreachable at ${url}"; fi
-    lan="$(sp_lan_address)"
-    [[ -n "$lan" ]] && info "LAN URL: http://${lan}:${SP_PORT}  (OpenAI base URL: http://${lan}:${SP_PORT}/v1)"
+    lan="$(sp_lan_url)"
+    if [[ -n "$lan" ]]; then
+        info "Published on $(sp_bind_addr)$([[ "$(sp_bind_addr)" == 0.0.0.0 ]] && echo ', every interface'). LAN URL: ${lan}  (OpenAI base URL: ${lan}/v1)"
+    else
+        info "Published on $(sp_bind_addr) only (SCOMP_BIND_ADDR at install): not reachable from the LAN."
+    fi
     installed="$(sp_models_installed "$url")"
     loaded="$(sp_models_loaded "$url")"
     info "Installed models: $(tr '\n' ' ' <<< "${installed:-none}")"
     info "Loaded now: $(tr '\n' ' ' <<< "${loaded:-none}")"
     for model in $SP_MODELS; do grep -qxF -- "$model" <<< "$installed" || missing+=("$model"); done
     (( ${#missing[@]} )) && warn "Default models not installed: ${missing[*]} (models -> download the defaults)"
+    [[ "$(sp_bind_addr)" == 127.* ]] && return 0   # loopback only: the firewall does not matter
     local fw; fw="$(sp_firewall_state "$SP_PORT")"
     case "$fw" in
         open)    info "Firewall ($(_fw_tool)): ${SP_PORT}/tcp open" ;;
@@ -704,9 +775,16 @@ sp_after_install() {
     fi
     success "Speaches is up at ${url}"
     sp_download_defaults "$url" || true
+    # Said, not left to the URL lines: whether this is reachable from other
+    # machines is the point of the service (Kamino 235).
+    if svc_bind_is_loopback; then
+        info "Published on ${SVC_BIND_ADDR} only (SCOMP_BIND_ADDR): not reachable from the LAN, so no firewall port is opened."
+        return 0
+    fi
+    svc_bind_notice
     sp_firewall_offer "$SP_PORT"
-    local lan; lan="$(sp_lan_address)"
-    [[ -n "$lan" ]] && info "From the LAN: http://${lan}:${SP_PORT}/v1 (OpenAI-compatible base URL)"
+    local lan; lan="$(sp_lan_url)"
+    [[ -n "$lan" ]] && info "From the LAN: ${lan}/v1 (OpenAI-compatible base URL)"
     return 0
 }
 
@@ -751,7 +829,7 @@ sp_show_settings() {
 # Returns 0 when something changed (the caller offers to re-apply).
 sp_config() {
     local field value before
-    before="$(declare -p SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_CPU_THREADS SP_COMPUTE_TYPE SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS)"
+    before="$(declare -p "${SP_KEYS[@]}")"
     while true; do
         header "Speaches - settings"
         sp_show_settings
@@ -765,30 +843,37 @@ sp_config() {
             # podman/docker volume name - a path there is a bind mount of
             # this host's files, and a newline a line of its own in the unit.
             version)  value=$(gum input --value "$SP_VERSION" --header "Speaches version (image tag without -cpu/-cuda):") || continue
-                      [[ "$value" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}$ ]] && SP_VERSION="$value" || warn "Not an image tag: ${value}" ;;
+                      sp_valid SP_VERSION "$value" && SP_VERSION="$value" || warn "Not an image tag: ${value}" ;;
             variant)  value=$(gum choose auto cpu cuda --header "Image variant (auto: cuda when an NVIDIA GPU is visible):") || continue
                       SP_VARIANT="$value" ;;
             port)     value=$(gum input --value "$SP_PORT" --header "Port on this host:") || continue
-                      [[ "$value" =~ ^[0-9]+$ ]] && (( value > 0 && value < 65536 )) && SP_PORT="$value" || warn "Not a port: ${value}" ;;
+                      sp_valid SP_PORT "$value" && SP_PORT="$value" || warn "Not a port: ${value}" ;;
             "idle time") value=$(gum input --value "$SP_TTL" --header "Seconds an unused model stays loaded (-1 = never unload, 0 = unload at once):") || continue
-                      [[ "$value" =~ ^-?[0-9]+$ ]] && (( value >= -1 )) && SP_TTL="$value" || warn "Not a valid idle time: ${value}" ;;
+                      sp_valid SP_TTL "$value" && SP_TTL="$value" || warn "Not a valid idle time: ${value}" ;;
             "cpu threads") value=$(gum input --value "$SP_CPU_THREADS" --header "Threads per Whisper model on CPU (0 = Speaches' default; this host has $(nproc 2>/dev/null || echo '?')):") || continue
-                      [[ "$value" =~ ^[0-9]+$ ]] && SP_CPU_THREADS="$value" || warn "Not a thread count: ${value}" ;;
+                      sp_valid SP_CPU_THREADS "$value" && SP_CPU_THREADS="$value" || warn "Not a thread count: ${value}" ;;
             "compute type") value=$(gum choose default int8 int8_float32 int16 float32 --header "Whisper's precision on CPU (default: the model's own; int8 is usually the fastest):") || continue
                       SP_COMPUTE_TYPE="$value" ;;
             models)   value=$(gum input --value "$SP_MODELS" --width 120 --header "Default models (space-separated):") || continue
-                      [[ -n "$value" ]] && SP_MODELS="$value" ;;
+                      # Several spaces between models are one (Kamino 235).
+                      value="$(tr -s '[:blank:]' ' ' <<< "$value" | sed 's/^ //; s/ $//')"
+                      sp_valid SP_MODELS "$value" && SP_MODELS="$value" \
+                          || warn "Not a model list: ${value} (Hugging Face repositories, owner/name, separated by spaces)" ;;
             "cache volume") value=$(gum input --value "$SP_VOLUME" --header "Named volume for the model cache:") || continue
-                      [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] && SP_VOLUME="$value" || warn "Not a volume name: ${value}" ;;
+                      sp_valid SP_VOLUME "$value" && SP_VOLUME="$value" || warn "Not a volume name: ${value}" ;;
             "k8s storage") value=$(gum input --value "$SP_K8S_STORAGE" --header "PVC size:") || continue
-                      [[ -n "$value" ]] && SP_K8S_STORAGE="$value" ;;
+                      sp_valid SP_K8S_STORAGE "$value" && SP_K8S_STORAGE="$value" || warn "Not a PVC size: ${value} (e.g. 20Gi)" ;;
             "k8s storage class") value=$(gum input --value "$SP_K8S_STORAGE_CLASS" --header "StorageClass (empty = the cluster's default):") || continue
-                      SP_K8S_STORAGE_CLASS="$value" ;;
-            "reset to defaults") gum confirm "Reset every setting to the script's defaults?" && cfg_defaults ;;
+                      sp_valid SP_K8S_STORAGE_CLASS "$value" && SP_K8S_STORAGE_CLASS="$value" \
+                          || warn "Not a StorageClass name: ${value} (lowercase letters, digits, - and .)" ;;
+            "reset to defaults")
+                if gum confirm "Reset every setting to the script's defaults?"; then
+                    value="$SP_BIND_ADDR"; cfg_defaults; SP_BIND_ADDR="$value"   # where it is published is install's
+                fi ;;
             *) break ;;
         esac
     done
-    [[ "$before" == "$(declare -p SP_VERSION SP_VARIANT SP_PORT SP_TTL SP_CPU_THREADS SP_COMPUTE_TYPE SP_MODELS SP_VOLUME SP_K8S_STORAGE SP_K8S_STORAGE_CLASS)" ]] && return 1
+    [[ "$before" == "$(declare -p "${SP_KEYS[@]}")" ]] && return 1
     cfg_save
     success "Saved to ${CONFIG_FILE}"
     return 0
@@ -806,6 +891,7 @@ sp_install_podman() {
     local image; image="$(sp_image)"
     gum spin --spinner dot --title "Pulling ${image}..." -- podman pull "$image" >/dev/null \
         || error_exit "Could not pull ${image}."
+    SP_BIND_ADDR="$SVC_BIND_ADDR"   # saved below: status and the URLs read it
     mkdir -p "$QUADLET_DIR"
     render_quadlet "$image" > "$QUADLET_FILE"
     info "Wrote ${QUADLET_FILE}"
@@ -857,7 +943,7 @@ _docker_exists() { docker inspect "$SP_NAME" &>/dev/null; }
 sp_docker_run_args() {
     local image="$1" line
     local -a args=(run -d --name "$SP_NAME" --restart unless-stopped
-        -p "${SP_PORT}:${SP_CONTAINER_PORT}" -v "${SP_VOLUME}:${SP_CACHE_MOUNT}")
+        -p "$(svc_publish "$SP_PORT" "$SP_CONTAINER_PORT")" -v "${SP_VOLUME}:${SP_CACHE_MOUNT}")
     while IFS= read -r line; do args+=(-e "$line"); done < <(sp_env)
     [[ "$image" == *-cuda ]] && args+=(--gpus=all)
     args+=("$image")
@@ -875,6 +961,7 @@ sp_install_docker() {
     fi
     gum spin --spinner dot --title "Pulling ${image}..." -- docker pull "$image" >/dev/null \
         || error_exit "Could not pull ${image}."
+    SP_BIND_ADDR="$SVC_BIND_ADDR"   # saved below: status and the URLs read it
     local -a args; mapfile -t args < <(sp_docker_run_args "$image")
     docker "${args[@]}" >/dev/null || error_exit "Could not start '${SP_NAME}'."
     cfg_save
