@@ -9,3 +9,4 @@ Manage Kubernetes-in-Docker clusters with an interactive interface:
 - **Single-cluster operations**: set as active context (runs `kubectl config use-context`, so it mutates your ambient context), view nodes, get kubeconfig (prints to stdout), export kubeconfig (merges into default or a custom path), export logs (default dir `./kind-logs`), load image, delete
 - **Bulk operations**: export kubeconfig (all), export logs (all), load image (all), delete all clusters
 - **Dependencies**: hard-requires a running Docker daemon and mise; kind and kubectl are auto-installed via mise if missing
+- **Port mappings** listen on `127.0.0.1` (`listenAddress` in the generated config, Kamino 196); kind's default was every interface. Run with `SCOMP_BIND_ADDR=0.0.0.0` (or one LAN address of this host) at create time to expose them to the LAN.

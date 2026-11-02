@@ -280,7 +280,7 @@ mongodb_install_docker() {
         -e MONGO_INITDB_ROOT_USERNAME="$MNG_ROOT_USER"
         -e MONGO_INITDB_ROOT_PASSWORD="$MNG_ROOT_PASSWORD"
         -e MONGO_INITDB_DATABASE="$MNG_DB"
-        -p "${MNG_PORT}:27017"
+        -p "$(svc_publish "$MNG_PORT" 27017)"
         -v "${volume}:/data/db"
         --restart unless-stopped
     )
@@ -336,8 +336,9 @@ mongodb_install_docker() {
         "Database:   ${MNG_DB}" \
         "User:       ${MNG_USER}" \
         "Root user:  ${MNG_ROOT_USER}" \
-        "Port:       localhost:${MNG_PORT}" \
+        "Port:       $(svc_host):${MNG_PORT}" \
         "Volume:     ${volume}"
+    svc_bind_notice
     # An if, not `[[ ]] && info`: as the last command that would make the
     # function return 1 without an init script, and set -e end the script.
     if [[ -n "$init_dir" ]]; then info "App user init script: ${init_dir}/create-app-user.js"; fi

@@ -191,7 +191,7 @@ postgres_install_docker() {
         -e POSTGRES_DB="$PG_DB" \
         -e POSTGRES_USER="$PG_USER" \
         -e POSTGRES_PASSWORD="$PG_PASSWORD" \
-        -p "${PG_PORT}:5432" \
+        -p "$(svc_publish "$PG_PORT" 5432)" \
         -v "${volume}:/var/lib/postgresql/data" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
@@ -218,8 +218,9 @@ postgres_install_docker() {
         "Image:      ${image}" \
         "Database:   ${PG_DB}" \
         "User:       ${PG_USER}" \
-        "Port:       localhost:${PG_PORT}" \
+        "Port:       $(svc_host):${PG_PORT}" \
         "Volume:     ${volume}"
+    svc_bind_notice
 }
 
 postgres_status_docker() {

@@ -224,7 +224,7 @@ mariadb_install_docker() {
         -e MARIADB_DATABASE="$MDB_DB" \
         -e MARIADB_USER="$MDB_USER" \
         -e MARIADB_PASSWORD="$MDB_PASSWORD" \
-        -p "${MDB_PORT}:3306" \
+        -p "$(svc_publish "$MDB_PORT" 3306)" \
         -v "${volume}:/var/lib/mysql" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
@@ -252,8 +252,9 @@ mariadb_install_docker() {
         "Image:      ${image}" \
         "Database:   ${MDB_DB}" \
         "User:       ${MDB_USER}" \
-        "Port:       localhost:${MDB_PORT}" \
+        "Port:       $(svc_host):${MDB_PORT}" \
         "Volume:     ${volume}"
+    svc_bind_notice
 }
 
 mariadb_status_docker() {

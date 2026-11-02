@@ -198,8 +198,8 @@ qdrant_install_docker() {
     if ! docker run -d \
         --name "$QD_CONTAINER_NAME" \
         "${env_args[@]}" \
-        -p "${QD_REST_PORT}:6333" \
-        -p "${QD_GRPC_PORT}:6334" \
+        -p "$(svc_publish "$QD_REST_PORT" 6333)" \
+        -p "$(svc_publish "$QD_GRPC_PORT" 6334)" \
         -v "${volume}:/qdrant/storage" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
@@ -208,7 +208,7 @@ qdrant_install_docker() {
 
     info "Waiting for Qdrant REST API to become ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${QD_REST_PORT}/healthz" &>/dev/null 2>&1; do
+    until curl -sf "http://$(svc_host):${QD_REST_PORT}/healthz" &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 30 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${QD_CONTAINER_NAME}"
@@ -224,10 +224,11 @@ qdrant_install_docker() {
         "" \
         "Container:   ${QD_CONTAINER_NAME}" \
         "Image:       ${image}" \
-        "REST API:    http://127.0.0.1:${QD_REST_PORT}" \
-        "gRPC:        127.0.0.1:${QD_GRPC_PORT}" \
+        "REST API:    http://$(svc_host):${QD_REST_PORT}" \
+        "gRPC:        $(svc_host):${QD_GRPC_PORT}" \
         "Volume:      ${volume}" \
         "Auth:        ${QD_API_KEY:+API key set}${QD_API_KEY:-none (open access)}"
+    svc_bind_notice
 }
 
 qdrant_status_docker() {

@@ -321,7 +321,7 @@ redis_install_docker() {
 
     if ! docker run -d \
         --name "$RD_CONTAINER_NAME" \
-        -p "${RD_PORT}:6379" \
+        -p "$(svc_publish "$RD_PORT" 6379)" \
         -v "${volume}:/data" \
         --restart unless-stopped \
         "$image" "${server_args[@]}" &>/dev/null; then
@@ -348,10 +348,11 @@ redis_install_docker() {
         "" \
         "Container:  ${RD_CONTAINER_NAME}" \
         "Image:      ${image}" \
-        "Port:       localhost:${RD_PORT}" \
+        "Port:       $(svc_host):${RD_PORT}" \
         "Volume:     ${volume}" \
         "Auth:       ${RD_PASSWORD:+password set}${RD_PASSWORD:-none (open access)}" \
         "Persistence: AOF enabled"
+    svc_bind_notice
 }
 
 redis_status_docker() {

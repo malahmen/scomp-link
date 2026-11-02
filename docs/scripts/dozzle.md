@@ -16,5 +16,6 @@ Lightweight real-time log viewer for Docker / Kubernetes / kind, installs from r
 - **Uninstall** (Docker): `docker-compose down -v`; the bind-mounted data folder is deleted only if `dozzle.sh` created it (it marks the folders it creates), and the confirm names it. A folder that already existed is kept; `/` and `$HOME` are refused at install and at uninstall
 - Config: `~/.config/dozzle/{dozzle.conf,pf/,workdir/}` (workdir holds the rendered compose file / manifests)
 - Commands: `install`, `import`, `uninstall`, `status`, `start`, `stop`, `port-forward`
+- **Network exposure** (Docker, Kamino 196): the port is published on `127.0.0.1` only. Dozzle mounts the Docker socket, so it is published elsewhere only with authentication on: `SCOMP_BIND_ADDR=0.0.0.0` (or one LAN address of this host) at `install` is refused while auth is off. To reach it from the LAN, re-run `install` with `SCOMP_BIND_ADDR` set and auth enabled. The address is saved (`BIND_ADDR` in `dozzle.conf`) and written into the compose file; `status` prints it. K8s/kind port-forwards listen on localhost and are unaffected.
 
 > Docker target requires the `docker-compose` v1 binary; it is not checked up front.

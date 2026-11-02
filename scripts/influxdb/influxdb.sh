@@ -223,7 +223,7 @@ influxdb_install_docker() {
     local docker_args=(
         run -d
         --name "$IDB_CONTAINER_NAME"
-        -p "${IDB_PORT}:8086"
+        -p "$(svc_publish "$IDB_PORT" 8086)"
         -v "${volume}:/var/lib/influxdb2"
         --restart unless-stopped
     )
@@ -242,7 +242,7 @@ influxdb_install_docker() {
 
     info "Waiting for InfluxDB to be ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${IDB_PORT}/ping" &>/dev/null; do
+    until curl -sf "http://$(svc_host):${IDB_PORT}/ping" &>/dev/null; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${IDB_CONTAINER_NAME}"
@@ -256,11 +256,12 @@ influxdb_install_docker() {
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "InfluxDB running" \
         "" \
-        "Web UI:   http://localhost:${IDB_PORT}" \
+        "Web UI:   http://$(svc_host):${IDB_PORT}" \
         "User:     ${IDB_ADMIN_USER:-(unchanged)}" \
         "Org:      ${IDB_ORG:-(unchanged)}" \
         "Bucket:   ${IDB_BUCKET:-(unchanged)}" \
         "Volume:   ${volume}"
+    svc_bind_notice
 }
 
 influxdb_status_docker() {
@@ -290,8 +291,8 @@ influxdb_status_docker() {
     port=$(_docker_get_port "$IDB_CONTAINER_NAME")
 
     echo ""
-    info "Health check (http://127.0.0.1:${port}/health):"
-    if curl -sf "http://127.0.0.1:${port}/health" 2>/dev/null \
+    info "Health check (http://$(svc_host):${port}/health):"
+    if curl -sf "http://$(svc_host):${port}/health" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat); then
         :
     else
@@ -325,7 +326,7 @@ influxdb_connect_docker() {
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
         --align left --width 60 --margin "1 2" --padding "1 4" \
-        "InfluxDB Web UI → http://localhost:${port}" \
+        "InfluxDB Web UI → http://$(svc_host):${port}" \
         "" \
         "Username: ${admin_user:-<see container env>}" \
         "Org:      ${org:-<see container env>}" \

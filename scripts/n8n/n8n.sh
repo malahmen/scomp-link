@@ -239,7 +239,7 @@ n8n_install_docker() {
     local docker_args=(
         run -d
         --name "$N8N_CONTAINER_NAME"
-        -p "${N8N_PORT}:5678"
+        -p "$(svc_publish "$N8N_PORT" 5678)"
         -e GENERIC_TIMEZONE="$timezone"
         -v "${volume}:/home/node/.n8n"
         --restart unless-stopped
@@ -265,7 +265,7 @@ n8n_install_docker() {
 
     info "Waiting for n8n to be ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${N8N_PORT}/healthz" &>/dev/null; do
+    until curl -sf "http://$(svc_host):${N8N_PORT}/healthz" &>/dev/null; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${N8N_CONTAINER_NAME}"
@@ -279,9 +279,10 @@ n8n_install_docker() {
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "n8n running" \
         "" \
-        "Web UI:   http://localhost:${N8N_PORT}" \
+        "Web UI:   http://$(svc_host):${N8N_PORT}" \
         "Database: ${N8N_DB_TYPE}" \
         "Volume:   ${volume}"
+    svc_bind_notice
 }
 
 n8n_status_docker() {
@@ -317,10 +318,10 @@ n8n_status_docker() {
 
     echo ""
     info "Health check:"
-    if curl -sf "http://127.0.0.1:${host_port}/healthz" &>/dev/null; then
+    if curl -sf "http://$(svc_host):${host_port}/healthz" &>/dev/null; then
         success "n8n is healthy."
     else
-        warn "n8n is not responding at http://127.0.0.1:${host_port}/healthz"
+        warn "n8n is not responding at http://$(svc_host):${host_port}/healthz"
     fi
 
     echo ""
@@ -351,7 +352,7 @@ n8n_connect_docker() {
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
         --align left --width 60 --margin "1 2" --padding "1 4" \
-        "n8n Web UI → http://localhost:${host_port}" \
+        "n8n Web UI → http://$(svc_host):${host_port}" \
         "" \
         "Database: ${db_type}" \
         "" \

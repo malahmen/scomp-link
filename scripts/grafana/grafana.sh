@@ -406,7 +406,7 @@ grafana_install_docker() {
     local docker_args=(
         run -d
         --name "$GRF_CONTAINER_NAME"
-        -p "${GRF_PORT}:3000"
+        -p "$(svc_publish "$GRF_PORT" 3000)"
         -v "${volume}:/var/lib/grafana"
         --restart unless-stopped
     )
@@ -429,7 +429,7 @@ grafana_install_docker() {
 
     info "Waiting for Grafana to be ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${GRF_PORT}/api/health" &>/dev/null; do
+    until curl -sf "http://$(svc_host):${GRF_PORT}/api/health" &>/dev/null; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${GRF_CONTAINER_NAME}"
@@ -443,9 +443,10 @@ grafana_install_docker() {
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "Grafana running" \
         "" \
-        "Web UI:   http://localhost:${GRF_PORT}" \
+        "Web UI:   http://$(svc_host):${GRF_PORT}" \
         "Username: ${GRF_ADMIN_USER:-(unchanged)}" \
         "Volume:   ${volume}"
+    svc_bind_notice
 }
 
 grafana_status_docker() {
@@ -478,7 +479,7 @@ grafana_status_docker() {
 
     echo ""
     info "Health check:"
-    if curl -sf "http://127.0.0.1:${host_port}/api/health" 2>/dev/null \
+    if curl -sf "http://$(svc_host):${host_port}/api/health" 2>/dev/null \
             | python3 -m json.tool 2>/dev/null; then
         :
     else
@@ -514,7 +515,7 @@ grafana_connect_docker() {
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
         --align left --width 60 --margin "1 2" --padding "1 4" \
-        "Grafana Web UI → http://localhost:${host_port}" \
+        "Grafana Web UI → http://$(svc_host):${host_port}" \
         "" \
         "Username: ${admin_user}"
 

@@ -21,5 +21,6 @@ Installs and manages the Grafana observability stack (Loki, Grafana, Tempo, Mimi
 - **metrics-server**: offered from the status view when `kubectl top` is unavailable
 - Config: `~/.config/lgtm/{lgtm.conf,pf/,compose/}`
 - Commands: `install`, `import`, `uninstall`, `purge`, `status`, `port-forward`, `start`, `stop`, `update`, `test`
+- **Network exposure** (Docker, Kamino 196): every component port is published on `127.0.0.1` only; the install and `status` print the URLs. To reach them from the LAN, run `install` with `SCOMP_BIND_ADDR=0.0.0.0` (or one LAN address of this host); it is written into the compose file and saved as `BIND_ADDR`. Grafana's Docker admin is `admin`/`admin`: change it before publishing beyond `127.0.0.1`. K8s/kind port-forwards listen on localhost and are unaffected.
 
 > Docker target requires the `docker-compose` v1 binary and `lsof`; neither is checked up front.

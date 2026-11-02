@@ -25,6 +25,9 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# svc_publish/svc_host: the address extraPortMappings listen on (Kamino 196).
+# shellcheck source=../_common/portforward.sh
+source "${COMMON_DIR}/portforward.sh"
 
 # -----------------------------------------------------------------------------
 # Constants
@@ -402,6 +405,7 @@ EOF
             cat >> "${CONFIG_FILE}" <<EOF
       - containerPort: ${container_port}
         hostPort: ${host_port}
+        listenAddress: "${SVC_BIND_ADDR}"
         protocol: TCP
 EOF
         done
@@ -471,9 +475,10 @@ create_verify() {
             local host_port container_port
             host_port=$(echo "$mapping" | cut -d':' -f1)
             container_port=$(echo "$mapping" | cut -d':' -f2)
-            gum log --level info "  localhost:${host_port} → cluster node:${container_port}"
+            gum log --level info "  $(svc_host):${host_port} → cluster node:${container_port}"
         done
         gum log --level warn "Note: on macOS/Windows with Docker Desktop, port mappings are reachable via localhost only — not via Docker bridge IPs."
+        svc_bind_notice
     fi
 }
 

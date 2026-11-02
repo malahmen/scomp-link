@@ -90,6 +90,7 @@ cfg_load() {
     RBAC_SCOPE="cluster" # cluster | namespace
     RESTRICT_NAMESPACE=""
     INSTALL_METHOD=""    # "" (script-installed) | "external" (imported)
+    BIND_ADDR=""         # docker: the address the port is published on (Kamino 196)
 
     [[ -f "$CONFIG_FILE" ]] || return 0
     # shellcheck disable=SC1090
@@ -110,6 +111,7 @@ NFS_PATH="${NFS_PATH:-}"
 RBAC_SCOPE="${RBAC_SCOPE:-}"
 RESTRICT_NAMESPACE="${RESTRICT_NAMESPACE:-}"
 INSTALL_METHOD="${INSTALL_METHOD:-}"
+BIND_ADDR="${BIND_ADDR:-}"
 EOF
 }
 
@@ -365,6 +367,7 @@ _write_compose_file() {
             -e "s|__DOZZLE_VERSION__|$(_sed_escape "${DOZZLE_VERSION:-latest}")|g" \
             -e "s|__STORAGE_PATH__|$(_sed_escape "$STORAGE_PATH")|g" \
             -e "s|__SERVICE_PORT__|$(_sed_escape "$SERVICE_PORT")|g" \
+            -e "s|__BIND_ADDR__|$(_sed_escape "$SVC_BIND_ADDR")|g" \
         > "$COMPOSE_FILE"
 
     if [[ "$AUTH_ENABLED" == "true" ]]; then
@@ -494,12 +497,21 @@ cmd_install() {
 
     case "$TARGET_TYPE" in
         docker)
+            # Dozzle mounts the Docker socket: without its auth, whoever reaches
+            # the port reads every container's logs. The port is on 127.0.0.1
+            # unless SCOMP_BIND_ADDR says otherwise, and then only with auth
+            # (Kamino 196).
+            if ! svc_bind_is_loopback && [[ "$AUTH_ENABLED" != "true" ]]; then
+                error_exit "Refusing to publish Dozzle on ${SVC_BIND_ADDR} (SCOMP_BIND_ADDR) with authentication off: it serves the Docker socket's logs to anyone who reaches it. Enable authentication, or leave SCOMP_BIND_ADDR unset (127.0.0.1)."
+            fi
+            BIND_ADDR="$SVC_BIND_ADDR"
             _prompt_storage_docker
             _write_compose_file
             info "Starting Dozzle via docker-compose..."
             docker-compose -f "$COMPOSE_FILE" up -d \
                 || error_exit "docker-compose up failed."
-            success "Dozzle is running. http://localhost:${SERVICE_PORT}"
+            success "Dozzle is running. http://$(svc_host "$BIND_ADDR"):${SERVICE_PORT}"
+            svc_bind_notice
             ;;
         kind|k8s)
             _prompt_storage_k8s
@@ -512,7 +524,7 @@ cmd_install() {
             kubectl $ctx_flags apply -f "$MANIFEST_FILE" \
                 || error_exit "kubectl apply failed."
             success "Dozzle deployed to namespace '${NAMESPACE}'."
-            info "Use 'dozzle.sh port-forward' to reach it on the LAN."
+            info "Use 'dozzle.sh port-forward' to reach it from this machine."
             ;;
     esac
 
@@ -751,7 +763,7 @@ cmd_status() {
             || warn "Could not retrieve resource usage (is the container running?)."
 
         gum style --foreground "${CYAN}" --bold "── Port Mapping"
-        info "http://localhost:${SERVICE_PORT}"
+        info "http://$(svc_host "${BIND_ADDR:-}"):${SERVICE_PORT}"
         return
     fi
 
@@ -793,7 +805,7 @@ cmd_port_forward() {
 
     if [[ "$TARGET_TYPE" == "docker" ]]; then
         warn "Docker mode publishes the port directly; port-forward is not applicable."
-        info "Reach Dozzle at http://localhost:${SERVICE_PORT}"
+        info "Reach Dozzle at http://$(svc_host "${BIND_ADDR:-}"):${SERVICE_PORT}"
         return
     fi
 

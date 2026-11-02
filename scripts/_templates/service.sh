@@ -75,10 +75,11 @@ foo_install_docker() {
         && docker rm -f "$FOO_CONTAINER_NAME" >/dev/null 2>&1 || true
     gum spin --spinner dot --title "Pulling ${image}..." -- docker pull "$image" || error_exit "pull failed."
     docker run -d --name "$FOO_CONTAINER_NAME" \
-        -p "${FOO_PORT}:${FOO_DEFAULT_PORT}" \
+        -p "$(svc_publish "$FOO_PORT" "$FOO_DEFAULT_PORT")" \
         --restart unless-stopped "$image" >/dev/null \
         || error_exit "Failed to start '${FOO_CONTAINER_NAME}'."   # TODO: -e ENV / -v volume
-    success "Foo running — localhost:${FOO_PORT}"
+    success "Foo running — $(svc_host):${FOO_PORT}"
+    svc_bind_notice
 }
 
 foo_status_docker() {

@@ -211,7 +211,7 @@ mysql_install_docker() {
         -e MYSQL_DATABASE="$MY_DB" \
         -e MYSQL_USER="$MY_USER" \
         -e MYSQL_PASSWORD="$MY_PASSWORD" \
-        -p "${MY_PORT}:3306" \
+        -p "$(svc_publish "$MY_PORT" 3306)" \
         -v "${volume}:/var/lib/mysql" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
@@ -239,8 +239,9 @@ mysql_install_docker() {
         "Image:      ${image}" \
         "Database:   ${MY_DB}" \
         "User:       ${MY_USER}" \
-        "Port:       localhost:${MY_PORT}" \
+        "Port:       $(svc_host):${MY_PORT}" \
         "Volume:     ${volume}"
+    svc_bind_notice
 }
 
 mysql_status_docker() {
