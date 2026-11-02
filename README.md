@@ -381,7 +381,9 @@ scomp-link/
     │   ├── deps.sh                    # helm/kubectl/docker checks, repo management,
     │   │                              #   dnf/apt/rpm-ostree package install helpers
     │   ├── portforward.sh             # Port-forward pid-file helpers (also reused for
-    │   │                              #   tracking arbitrary background processes)
+    │   │                              #   tracking arbitrary background processes; per-user
+    │   │                              #   0700 folder), and svc_publish (SCOMP_BIND_ADDR)
+    │   ├── conf.sh                    # KEY=%q settings files, read without `source`
     │   ├── gh_releases.sh             # GitHub release fetching helpers
     │   ├── owned_dirs.sh              # folders a script created (marker) - the only ones it may delete
     │   ├── secret.sh                  # _gen_secret (pipefail-safe random secrets)
@@ -500,6 +502,15 @@ scomp-link/
 ---
 
 ## Configuration
+
+### SCOMP_BIND_ADDR
+
+The service scripts publish container ports on `127.0.0.1` - what their
+summaries always said - instead of every interface (Kamino 196). To reach a
+service from the LAN, set `SCOMP_BIND_ADDR=0.0.0.0` (or the host's LAN
+address) and install it again so the container is recreated. Dozzle refuses a
+non-loopback address while its authentication is off: it hands out the Docker
+socket.
 
 ### GUM_INPUT_WIDTH
 
