@@ -669,13 +669,16 @@ wrapper, rather than on what appeared on screen.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
 `main`, every pull request, and on demand:
 
-- **`shellcheck -S warning -x`** over every shell file, **found with `find`
+- **`shellcheck -S warning -x --source-path=SCRIPTDIR`** over every shell file, **found with `find`
   rather than globbed**. `scripts/*/*.sh` misses the four scripts at the
   repository root, `scripts/_templates/`, and
   `scripts/starlight/converter/convert.sh` — six files a one-level glob
   quietly stops covering. `tests/stubs/gum` is added by name, being bash with
-  no `.sh` extension. `-x` follows the `source ../_common/ui.sh` chain, without
-  which every front-end looks like a file of undefined helpers. The severity
+  no `.sh` extension. `-x --source-path=SCRIPTDIR` follows the
+  `source ../_common/ui.sh` chain - `-x` alone resolved it against the
+  repository root, followed nothing, and the 118 SC1091 notes saying so were
+  below `-S warning` (Kamino 196). A second run with `--include=SC1091` fails
+  on any source still not followed. The severity
   floor is pinned because SC2002 is off by default in shellcheck 0.11+ and on
   in older releases.
 - **`tests/run-all.sh --strict`**, which needs no gum: the suite prepends

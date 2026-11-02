@@ -48,8 +48,12 @@ jobs:
         # six files that a named list or a one-level glob quietly stops covering.
         # tests/stubs/gum is added by name: it is bash with no .sh extension.
         #
-        # -x so the `source ../_common/ui.sh` chain is followed; without it every
-        # front-end reports a file of apparently undefined helpers.
+        # -x lets shellcheck follow `source`, and --source-path=SCRIPTDIR is what
+        # makes it find ../_common/ui.sh: without it a relative source resolves
+        # against the repository root, nothing was followed (118 SC1091 notes,
+        # hidden by -S warning), and every helper the front-ends call went
+        # unchecked (Kamino 196). The second run fails on any source it still
+        # cannot follow, since SC1091 is only a note.
         #
         # -S warning explicitly: SC2002 is off by default in shellcheck 0.11+ and
         # on in older releases, so the floor has to be pinned or the runner and
@@ -58,7 +62,8 @@ jobs:
           mapfile -t files < <(find . -name '*.sh' -not -path './.git/*' -not -path './_engines/*' | sort)
           files+=(tests/stubs/gum)
           printf 'linting %d files\n' "${#files[@]}"
-          shellcheck -S warning -x "${files[@]}"
+          shellcheck -S warning -x --source-path=SCRIPTDIR "${files[@]}"
+          shellcheck -x --source-path=SCRIPTDIR --include=SC1091 "${files[@]}"
 
       - name: tests
         # --strict: every file has what it needs here, so a skip is a fault.
