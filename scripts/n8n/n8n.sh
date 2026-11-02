@@ -244,7 +244,7 @@ n8n_install_docker() {
         -v "${volume}:/home/node/.n8n"
         --restart unless-stopped
     )
-    [[ -n "$N8N_ENCRYPTION_KEY" ]] && docker_args+=(-e N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY")
+    [[ -n "$N8N_ENCRYPTION_KEY" ]] && docker_args+=(-e N8N_ENCRYPTION_KEY)
 
     if [[ "$N8N_DB_TYPE" == "postgresdb" ]]; then
         docker_args+=(
@@ -253,13 +253,17 @@ n8n_install_docker() {
             -e DB_POSTGRESDB_PORT="$N8N_PG_PORT"
             -e DB_POSTGRESDB_DATABASE="$N8N_PG_DATABASE"
             -e DB_POSTGRESDB_USER="$N8N_PG_USER"
-            -e DB_POSTGRESDB_PASSWORD="$N8N_PG_PASSWORD"
+            -e DB_POSTGRESDB_PASSWORD
         )
     fi
 
     docker_args+=("$image")
 
-    if ! docker "${docker_args[@]}" &>/dev/null; then
+    # Secrets are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY" DB_POSTGRESDB_PASSWORD="$N8N_PG_PASSWORD" \
+        docker "${docker_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${N8N_CONTAINER_NAME}'."
     fi
 

@@ -278,7 +278,7 @@ mongodb_install_docker() {
     local -a docker_args=(
         -d --name "$MNG_CONTAINER_NAME"
         -e MONGO_INITDB_ROOT_USERNAME="$MNG_ROOT_USER"
-        -e MONGO_INITDB_ROOT_PASSWORD="$MNG_ROOT_PASSWORD"
+        -e MONGO_INITDB_ROOT_PASSWORD
         -e MONGO_INITDB_DATABASE="$MNG_DB"
         -p "$(svc_publish "$MNG_PORT" 27017)"
         -v "${volume}:/data/db"
@@ -293,12 +293,12 @@ mongodb_install_docker() {
         # No init script: it would not run on kept data. The app user's
         # existing credentials stay in the env for connect.
         [[ -n "$MNG_USER" ]] && docker_args+=(-e SCOMP_APP_USERNAME="$MNG_USER")
-        [[ -n "$MNG_PASSWORD" ]] && docker_args+=(-e SCOMP_APP_PASSWORD="$MNG_PASSWORD")
+        [[ -n "$MNG_PASSWORD" ]] && docker_args+=(-e SCOMP_APP_PASSWORD)
     elif [[ -n "$MNG_USER" && -n "$MNG_PASSWORD" ]]; then
         if init_dir=$(_docker_write_init_script); then
             docker_args+=(
                 -e SCOMP_APP_USERNAME="$MNG_USER"
-                -e SCOMP_APP_PASSWORD="$MNG_PASSWORD"
+                -e SCOMP_APP_PASSWORD
                 -v "${init_dir}:/docker-entrypoint-initdb.d:ro"
             )
         else
@@ -307,17 +307,27 @@ mongodb_install_docker() {
         fi
     fi
 
-    if ! docker run "${docker_args[@]}" "$image" &>/dev/null; then
+    # The passwords are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! MONGO_INITDB_ROOT_PASSWORD="$MNG_ROOT_PASSWORD" SCOMP_APP_PASSWORD="$MNG_PASSWORD" \
+        docker run "${docker_args[@]}" "$image" &>/dev/null; then
         error_exit "Failed to start container '${MNG_CONTAINER_NAME}'."
     fi
+
+    # The readiness check logs in as root with a script on stdin: -p put the
+    # password on the shell's command line (Kamino 196). Both mongosh and the
+    # legacy mongo shell run a script from stdin; auth throws (mongosh) or
+    # returns 0 (mongo) on failure.
+    local q_user q_pass ping_js
+    q_user=$(_js_quote "$MNG_ROOT_USER") || q_user='""'
+    q_pass=$(_js_quote "$MNG_ROOT_PASSWORD") || q_pass='""'
+    ping_js="var ok = false; try { ok = !!db.getSiblingDB(\"admin\").auth(${q_user}, ${q_pass}) } catch (e) {}; quit(ok && db.adminCommand({ping: 1}).ok ? 0 : 1)"
 
     info "Waiting for MongoDB to accept connections..."
     local cli attempts=0
     until cli=$(_container_mongosh_bin "$MNG_CONTAINER_NAME") && [[ -n "$cli" ]] && \
-        docker exec "$MNG_CONTAINER_NAME" \
-            "$cli" --eval "db.adminCommand('ping')" --quiet \
-            -u "$MNG_ROOT_USER" -p "$MNG_ROOT_PASSWORD" \
-            --authenticationDatabase admin &>/dev/null 2>&1; do
+        printf '%s\n' "$ping_js" | docker exec -i "$MNG_CONTAINER_NAME" "$cli" --quiet &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${MNG_CONTAINER_NAME}"
@@ -410,9 +420,24 @@ mongodb_connect_docker() {
     info "Connecting as ${user} → ${db} (auth db: ${auth_db}). Type exit or quit() to quit."
     echo ""
 
-    docker exec -it "$MNG_CONTAINER_NAME" \
-        "$cli" -u "$user" -p "$pass" \
-        --authenticationDatabase "$auth_db" "$db"
+    # mongosh logs in from --eval with the password read from its environment
+    # (SCOMP_MONGO_PW, passed by name), then stays interactive (--shell): -p
+    # put it on the command line, inside and outside the container (Kamino
+    # 196). The legacy mongo shell (images before 6.0) has no environment
+    # access, so for it the password stays on -p.
+    if [[ "$cli" == mongosh ]]; then
+        local q_user q_auth_db
+        q_user=$(_js_quote "$user") && q_auth_db=$(_js_quote "$auth_db") \
+            || { warn "The username or database contains control characters."; return; }
+        SCOMP_MONGO_PW="$pass" docker exec -it -e SCOMP_MONGO_PW "$MNG_CONTAINER_NAME" \
+            mongosh --quiet --shell \
+            --eval "db.getSiblingDB(${q_auth_db}).auth(${q_user}, process.env.SCOMP_MONGO_PW); undefined" \
+            "$db"
+    else
+        docker exec -it "$MNG_CONTAINER_NAME" \
+            "$cli" -u "$user" -p "$pass" \
+            --authenticationDatabase "$auth_db" "$db"
+    fi
 }
 
 mongodb_uninstall_docker() {

@@ -195,9 +195,12 @@ qdrant_install_docker() {
 
     # Build env args — API key is optional
     local env_args=()
-    [[ -n "$QD_API_KEY" ]] && env_args+=(-e "QDRANT__SERVICE__API_KEY=${QD_API_KEY}")
+    [[ -n "$QD_API_KEY" ]] && env_args+=(-e QDRANT__SERVICE__API_KEY)
 
-    if ! docker run -d \
+    # The API key is passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! QDRANT__SERVICE__API_KEY="$QD_API_KEY" docker run -d \
         --name "$QD_CONTAINER_NAME" \
         "${env_args[@]}" \
         -p "$(svc_publish "$QD_REST_PORT" 6333)" \

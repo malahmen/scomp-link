@@ -26,8 +26,13 @@ out="$(gen 16 'a-f0-9')"
 check "a charset narrows the output (16 hex digits)" grep -qxE '[a-f0-9]{16}' <<< "$out"
 check "a bad length is refused" bash -c 'source "$1"; ! _gen_secret 0 2>/dev/null' _ "${SVC_DIR}/_common/secret.sh"
 
-# docker_run_env <VAR> - the value VAR was given in the last `docker run`.
-docker_run_env() { grep -E '^docker run ' "$STUB_LOG" | tail -1 | tr ' ' '\n' | sed -n "s/^$1=//p"; }
+# docker_run_env <VAR> - the value VAR was given in the last `docker run`:
+# from the container env the docker stub recorded, as a secret is passed as
+# `-e NAME` with its value in docker's environment, not argv (Kamino 196).
+docker_run_env() {
+    local n; n="$(grep -E '^docker run ' "$STUB_LOG" | tail -1 | sed -nE 's/.* --name ([^ ]+) .*/\1/p')"
+    [[ -n "$n" ]] && sed -n "s/^$1=//p" "$STUB_STATE/c/$n/env"
+}
 # secret_ok <VAR> <len> - VAR reached docker run as <len> alphanumerics.
 secret_ok() { grep -qxE "[A-Za-z0-9]{$2}" <<< "$(docker_run_env "$1")"; }
 

@@ -3,6 +3,7 @@
 `n8n/n8n.sh`
 
 - Docker image: `n8nio/n8n` · Port: `5678` · Image tag prompted at install
+- Docker secrets: the encryption key and the Postgres password are passed to `docker run` as `-e NAME`, the value taken from docker's own environment, so it is not on a command line any local user can read (Kamino 196)
 - K8s chart: `community-charts/n8n` · Namespace / release: `n8n` / `n8n` (both prompted)
 - K8s secrets (the encryption key and the external Postgres password): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - **Database backends**: SQLite (zero-config default) or PostgreSQL (for production / multi-instance)

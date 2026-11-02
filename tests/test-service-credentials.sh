@@ -20,8 +20,14 @@ set -uo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/service-stubs.sh"
 
 last_run() { grep -E '^docker run ' "$STUB_LOG" | tail -1; }
-run_has()  { last_run | tr ' ' '\n' | grep -qxF -- "$1"; }
-run_lacks() { ! last_run | tr ' ' '\n' | grep -qE -- "$1"; }
+# Kamino 196: a secret is passed as `-e NAME`, its value taken from docker's
+# environment, so it is not in the argv; the docker stub records the
+# container's resolved env, which is read here as well.
+last_env() { local n; n="$(last_run | sed -nE 's/.* --name ([^ ]+) .*/\1/p')"; [[ -n "$n" ]] && cat "$STUB_STATE/c/$n/env"; }
+# grep without -q: it reads to the end, so the writer never dies of SIGPIPE
+# (which pipefail would report as a failure).
+run_has()  { { last_run | tr ' ' '\n'; last_env; } | grep -xF -- "$1" >/dev/null; }
+run_lacks() { ! { last_run | tr ' ' '\n'; last_env; } | grep -E -- "$1" >/dev/null; }
 helm_cmd() { grep -E "^helm (--kube-context [^ ]+ )?$1 " "$STUB_LOG" | tail -1; }
 
 # old_container <name> <ENV=VAL>... - a container this script made, and its volume.
@@ -45,7 +51,7 @@ check "the script finishes (exit 0)" rc_is 0
 check "it says the credentials are kept" has "keeps the credentials it was created with" "$T/out"
 check "no password is generated" lacks "Generated" "$T/out"
 check "the old password reaches the new container" run_has POSTGRES_PASSWORD=oldpw
-check "...with the old user and database" bash -c "$(declare -f last_run run_has); run_has POSTGRES_USER=olduser && run_has POSTGRES_DB=olddb"
+check "...with the old user and database" bash -c "$(declare -f last_run last_env run_has); run_has POSTGRES_USER=olduser && run_has POSTGRES_DB=olddb"
 check "the old container is read before it is removed" \
     bash -c "grep -n . '$STUB_LOG' | grep -m1 -E 'Config.Env|rm -f' | grep -q Config.Env"
 
@@ -57,13 +63,13 @@ check "the script finishes (exit 0)" rc_is 0
 check "it says the old credentials remain in force" has "remain in force" "$T/out"
 check "nothing is generated" lacks "Generated" "$T/out"
 check "the existing credentials given are the ones used" \
-    bash -c "$(declare -f last_run run_has); run_has POSTGRES_PASSWORD=oldpw && run_has POSTGRES_USER=olduser && run_has POSTGRES_DB=olddb"
+    bash -c "$(declare -f last_run last_env run_has); run_has POSTGRES_PASSWORD=oldpw && run_has POSTGRES_USER=olduser && run_has POSTGRES_DB=olddb"
 
 echo "postgres: a fresh install still asks and generates"
 svc_reset
 svc_run postgres "" install "" "" "" "" "" "← back"
 check "a password is generated" has "Generated password" "$T/out"
-check "...and passed" bash -c "$(declare -f last_run); last_run | grep -qE 'POSTGRES_PASSWORD=[A-Za-z0-9]{20} '"
+check "...and passed" bash -c "$(declare -f last_run last_env); last_env | grep -qxE 'POSTGRES_PASSWORD=[A-Za-z0-9]{20}'"
 
 for svc in mariadb mysql; do
     up="$(tr '[:lower:]' '[:upper:]' <<< "$svc")"
@@ -86,7 +92,7 @@ svc_run mongodb "" install "" "" "Remove and recreate" "← back"
 check "the script finishes (exit 0)" rc_is 0
 check "nothing is generated" lacks "Generated" "$T/out"
 check "the old root pair reaches the new container" \
-    bash -c "$(declare -f last_run run_has); run_has MONGO_INITDB_ROOT_USERNAME=r00t && run_has MONGO_INITDB_ROOT_PASSWORD=oldroot"
+    bash -c "$(declare -f last_run last_env run_has); run_has MONGO_INITDB_ROOT_USERNAME=r00t && run_has MONGO_INITDB_ROOT_PASSWORD=oldroot"
 check "the old app user is kept for connect" run_has SCOMP_APP_PASSWORD=oldapppw
 check "no app-user init script is mounted (it would not run)" run_lacks 'docker-entrypoint-initdb.d'
 
@@ -105,7 +111,7 @@ svc_run influxdb "" install "" "" "Remove and recreate" "← back"
 check "the script finishes (exit 0)" rc_is 0
 check "nothing is generated" lacks "Generated" "$T/out"
 check "the old password and org are carried over" \
-    bash -c "$(declare -f last_run run_has); run_has DOCKER_INFLUXDB_INIT_PASSWORD=oldpw && run_has DOCKER_INFLUXDB_INIT_ORG=oldorg"
+    bash -c "$(declare -f last_run last_env run_has); run_has DOCKER_INFLUXDB_INIT_PASSWORD=oldpw && run_has DOCKER_INFLUXDB_INIT_ORG=oldorg"
 check "no setup is requested on the kept data" run_lacks 'DOCKER_INFLUXDB_INIT_MODE'
 
 echo "grafana: recreate on a kept volume"
@@ -115,7 +121,7 @@ svc_run grafana "" install "" "" "Remove and recreate" "" no "← back"
 check "the script finishes (exit 0)" rc_is 0
 check "nothing is generated" lacks "Generated" "$T/out"
 check "the old admin pair reaches the new container" \
-    bash -c "$(declare -f last_run run_has); run_has GF_SECURITY_ADMIN_USER=oldadmin && run_has GF_SECURITY_ADMIN_PASSWORD=oldpw"
+    bash -c "$(declare -f last_run last_env run_has); run_has GF_SECURITY_ADMIN_USER=oldadmin && run_has GF_SECURITY_ADMIN_PASSWORD=oldpw"
 
 echo "grafana: a volume without its container"
 svc_reset

@@ -218,12 +218,15 @@ mariadb_install_docker() {
         docker pull "$image" \
         || error_exit "Failed to pull image ${image}."
 
-    if ! docker run -d \
+    # The passwords are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196). The same for every docker exec below.
+    if ! MARIADB_ROOT_PASSWORD="$MDB_ROOT_PASSWORD" MARIADB_PASSWORD="$MDB_PASSWORD" docker run -d \
         --name "$MDB_CONTAINER_NAME" \
-        -e MARIADB_ROOT_PASSWORD="$MDB_ROOT_PASSWORD" \
+        -e MARIADB_ROOT_PASSWORD \
         -e MARIADB_DATABASE="$MDB_DB" \
         -e MARIADB_USER="$MDB_USER" \
-        -e MARIADB_PASSWORD="$MDB_PASSWORD" \
+        -e MARIADB_PASSWORD \
         -p "$(svc_publish "$MDB_PORT" 3306)" \
         -v "${volume}:/var/lib/mysql" \
         --restart unless-stopped \
@@ -233,8 +236,8 @@ mariadb_install_docker() {
 
     info "Waiting for MariaDB to accept connections..."
     local attempts=0
-    until docker exec "$MDB_CONTAINER_NAME" \
-        mariadb-admin ping -uroot -p"${MDB_ROOT_PASSWORD}" --silent &>/dev/null 2>&1; do
+    until MYSQL_PWD="$MDB_ROOT_PASSWORD" docker exec -e MYSQL_PWD "$MDB_CONTAINER_NAME" \
+        mariadb-admin ping -uroot --silent &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${MDB_CONTAINER_NAME}"
@@ -314,8 +317,12 @@ mariadb_connect_docker() {
         cli="mysql"
     fi
 
-    docker exec -it "$MDB_CONTAINER_NAME" \
-        "$cli" -u"$user" ${password:+-p"$password"} ${db:+"$db"}
+    # The password goes in MYSQL_PWD, passed by name: -p<password> put it on
+    # the client's command line, inside and outside the container (Kamino 196).
+    local -a pw_env=()
+    [[ -n "$password" ]] && pw_env=(-e MYSQL_PWD)
+    MYSQL_PWD="$password" docker exec -it "${pw_env[@]}" "$MDB_CONTAINER_NAME" \
+        "$cli" -u"$user" ${db:+"$db"}
 }
 
 mariadb_uninstall_docker() {

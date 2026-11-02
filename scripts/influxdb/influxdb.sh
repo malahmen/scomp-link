@@ -229,14 +229,20 @@ influxdb_install_docker() {
     )
     [[ "$kept" == true ]] || docker_args+=(-e DOCKER_INFLUXDB_INIT_MODE=setup)
     local kv
-    for kv in "USERNAME=${IDB_ADMIN_USER}" "PASSWORD=${IDB_ADMIN_PASSWORD}" \
-              "ORG=${IDB_ORG}" "BUCKET=${IDB_BUCKET}" "ADMIN_TOKEN=${IDB_TOKEN}"; do
+    for kv in "USERNAME=${IDB_ADMIN_USER}" "ORG=${IDB_ORG}" "BUCKET=${IDB_BUCKET}"; do
         [[ -n "${kv#*=}" ]] && docker_args+=(-e "DOCKER_INFLUXDB_INIT_${kv}")
     done
+    # The password and token by name only: see the docker run below.
+    [[ -n "$IDB_ADMIN_PASSWORD" ]] && docker_args+=(-e DOCKER_INFLUXDB_INIT_PASSWORD)
+    [[ -n "$IDB_TOKEN" ]] && docker_args+=(-e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN)
 
     docker_args+=("$image")
 
-    if ! docker "${docker_args[@]}" &>/dev/null; then
+    # Secrets are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! DOCKER_INFLUXDB_INIT_PASSWORD="$IDB_ADMIN_PASSWORD" DOCKER_INFLUXDB_INIT_ADMIN_TOKEN="$IDB_TOKEN" \
+        docker "${docker_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${IDB_CONTAINER_NAME}'."
     fi
 

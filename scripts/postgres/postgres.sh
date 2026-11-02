@@ -186,11 +186,14 @@ postgres_install_docker() {
         docker pull "$image" \
         || error_exit "Failed to pull image ${image}."
 
-    if ! docker run -d \
+    # The password is passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! POSTGRES_PASSWORD="$PG_PASSWORD" docker run -d \
         --name "$PG_CONTAINER_NAME" \
         -e POSTGRES_DB="$PG_DB" \
         -e POSTGRES_USER="$PG_USER" \
-        -e POSTGRES_PASSWORD="$PG_PASSWORD" \
+        -e POSTGRES_PASSWORD \
         -p "$(svc_publish "$PG_PORT" 5432)" \
         -v "${volume}:/var/lib/postgresql/data" \
         --restart unless-stopped \

@@ -9,6 +9,10 @@
 #   - helm: a password is never --set (argv, and --set splits it at commas and
 #     parses \ . { } in it); it reaches the chart in a mode-0600 values file
 #     that holds it exactly and is gone when the script ends;
+#   - docker/podman: a secret is `-e NAME` (the value comes from docker's own
+#     environment), and reaches the container exactly; the clients run inside
+#     it get theirs from the environment (MYSQL_PWD, REDISCLI_AUTH, mongosh
+#     reading process.env) or stdin (the mongo readiness check), never -p/-a;
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -17,6 +21,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/service-stubs.sh"
 # A password with every character --set mangles, and YAML or a shell cares about.
 PW="P,w=1\\x.{y}'\"z q"
 PW2="K,e=y\\2.{t}'\"k k"
+PW3="C,o\\n.{c}'\"c c"   # no '=' (connect reads it back from the container env)
 
 k8s_world() {  # k8s_world - one kube-context, no docker
     touch "$STUB_STATE/no-docker"; echo stub-ctx > "$STUB_STATE/contexts"
@@ -126,6 +131,91 @@ svc_reset; k8s_world; touch "$STUB_STATE/helm-fail"
 svc_run harbor "" "" install "$PW" "" "StorageClass (dynamic provisioning — covers NFS-backed classes)" "" "" "← back"
 check "the script finishes (exit 0)" rc_is 0
 check "the values file was mode 600 and is removed all the same" values_private
+
+# ---------------------------------------------------------------- docker ---
+# env_is <container> <VAR> <value> - the container got VAR=value exactly.
+env_is() { grep -qxF -- "$2=$3" "$STUB_STATE/c/$1/env"; }
+# exec_env_has <VAR> <value> - a docker exec got VAR=value from the environment.
+exec_env_has() { grep -qxF -- "$1=$2" "$STUB_STATE/exec-env" 2>/dev/null; }
+# old_container <name> <ENV=VAL>... - a running container this script made.
+old_container() {
+    local name="$1"; shift
+    mkdir -p "$STUB_STATE/c/$name" "$STUB_STATE/v"
+    printf '%s\n' "$@" PATH=/usr/bin > "$STUB_STATE/c/$name/env"
+    : > "$STUB_STATE/v/${name}-data"
+}
+
+# docker_secret_case <svc> <label> <VAR=value>... -- <answer>...
+docker_secret_case() {
+    local svc="$1" label="$2"; shift 2
+    local -a want=()
+    while [[ "$1" != -- ]]; do want+=("$1"); shift; done; shift
+    echo "${svc} docker: ${label}"
+    svc_reset
+    svc_run "$svc" "$@"
+    check "the script finishes (exit 0)" rc_is 0
+    check "docker run ran" bash -c "grep -q '^docker run ' '$STUB_LOG'"
+    check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\" && argv_clean \"\$2\"" _ "$PW" "$PW2"
+    local kv
+    for kv in "${want[@]}"; do
+        check "the container gets ${kv%%=*} exactly" env_is "$svc" "${kv%%=*}" "${kv#*=}"
+    done
+}
+
+docker_secret_case postgres "install" "POSTGRES_PASSWORD=$PW" -- \
+    "" install "" "" "" "" "$PW" "← back"
+
+for svc in mariadb mysql; do
+    up="$(tr '[:lower:]' '[:upper:]' <<< "$svc")"
+    docker_secret_case "$svc" "install" "${up}_ROOT_PASSWORD=$PW" "${up}_PASSWORD=$PW2" -- \
+        "" install "" "" "$PW" "" "" "$PW2" "← back"
+    check "the readiness ping gets the root password as MYSQL_PWD" exec_env_has MYSQL_PWD "$PW"
+    check "...not as -p" bash -c "! grep -qE '^docker exec .* -p' '$STUB_LOG'"
+
+    echo "${svc} docker: connect"
+    svc_reset
+    old_container "$svc" "${up}_ROOT_PASSWORD=$PW" "${up}_USER=u" "${up}_PASSWORD=$PW3" "${up}_DATABASE=d"
+    svc_run "$svc" "" connect "← back"
+    check "the script finishes (exit 0)" rc_is 0
+    check "the client gets the password as MYSQL_PWD" exec_env_has MYSQL_PWD "$PW3"
+    check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW3"
+done
+
+docker_secret_case mongodb "install" "MONGO_INITDB_ROOT_PASSWORD=$PW" "SCOMP_APP_PASSWORD=$PW2" -- \
+    "" install "" "" "" "$PW" "" "" "$PW2" "← back"
+check "the readiness check logs in from a script on stdin, with the password exactly" \
+    grep -qF "auth(\"root\", \"P,w=1\\\\x.{y}'\\\"z q\")" "$STUB_STATE/exec-stdin"
+
+echo "mongodb docker: connect"
+svc_reset
+old_container mongodb MONGO_INITDB_ROOT_USERNAME=root "MONGO_INITDB_ROOT_PASSWORD=$PW" \
+    MONGO_INITDB_DATABASE=d SCOMP_APP_USERNAME=u "SCOMP_APP_PASSWORD=$PW2"
+svc_run mongodb "" connect "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "mongosh gets the app password from its environment" exec_env_has SCOMP_MONGO_PW "$PW2"
+check "...and logs in with it from --eval, then stays interactive" \
+    bash -c "grep -E '^docker exec -it -e SCOMP_MONGO_PW ' '$STUB_LOG' | grep -qF -- '--shell --eval db.getSiblingDB(\"d\").auth(\"u\", process.env.SCOMP_MONGO_PW)'"
+check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\" && argv_clean \"\$2\"" _ "$PW" "$PW2"
+
+docker_secret_case influxdb "install" "DOCKER_INFLUXDB_INIT_PASSWORD=$PW" "DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=$PW2" -- \
+    "" install "" "" "" "$PW" "" "" "$PW2" "← back"
+
+docker_secret_case grafana "install" "GF_SECURITY_ADMIN_PASSWORD=$PW" -- \
+    "" install "" "" "" "$PW" "" no "← back"
+
+docker_secret_case n8n "install with Postgres" "N8N_ENCRYPTION_KEY=$PW2" "DB_POSTGRESDB_PASSWORD=$PW" -- \
+    "" install "" "" "" "$PW2" "PostgreSQL (production / multi-instance)" "db.example" "" "" "" "$PW" "← back"
+
+docker_secret_case qdrant "install" "QDRANT__SERVICE__API_KEY=$PW" -- \
+    "" install "" "" "" "$PW" "← back"
+
+echo "redis docker: status with a password"
+svc_reset
+old_container redis
+svc_run redis "" "$PW" status "" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "redis-cli gets the password as REDISCLI_AUTH" exec_env_has REDISCLI_AUTH "$PW"
+check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi

@@ -151,12 +151,14 @@ _prompt_password() {
 # -----------------------------------------------------------------------------
 # redis-cli wrappers
 # Prefer REDISCLI_AUTH env var over -a flag to keep passwords out of ps output.
+# docker exec gets it as -e REDISCLI_AUTH, by name: -e NAME=value put it on
+# docker's own command line (Kamino 196).
 # -----------------------------------------------------------------------------
 
 # Run redis-cli inside the Docker container.
 _docker_cli() {
     REDISCLI_AUTH="$RD_PASSWORD" \
-        docker exec -e REDISCLI_AUTH="$RD_PASSWORD" \
+        docker exec -e REDISCLI_AUTH \
         "$RD_CONTAINER_NAME" redis-cli "$@"
 }
 
@@ -332,8 +334,8 @@ redis_install_docker() {
 
     info "Waiting for Redis to accept connections..."
     local attempts=0
-    until docker exec \
-        -e REDISCLI_AUTH="$RD_PASSWORD" \
+    until REDISCLI_AUTH="$RD_PASSWORD" docker exec \
+        -e REDISCLI_AUTH \
         "$RD_CONTAINER_NAME" redis-cli ping &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 30 ]]; then
@@ -411,8 +413,8 @@ redis_connect_docker() {
     info "Opening redis-cli inside '${RD_CONTAINER_NAME}'. Type quit or Ctrl+C to exit."
     echo ""
 
-    docker exec -it \
-        -e REDISCLI_AUTH="$RD_PASSWORD" \
+    REDISCLI_AUTH="$RD_PASSWORD" docker exec -it \
+        -e REDISCLI_AUTH \
         "$RD_CONTAINER_NAME" redis-cli
 }
 

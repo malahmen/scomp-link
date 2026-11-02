@@ -36,6 +36,19 @@ cat > "$T/bin/docker" <<'EOF'
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$STUB_LOG"
 S="$STUB_STATE"; mkdir -p "$S/c" "$S/v"
 fmt=""
+# exec: each `-e NAME` (no value - docker takes it from its own environment)
+# is kept as NAME=value in exec-env, and stdin in exec-stdin when -i is given
+# without a terminal, so a test can see what reached the container that is
+# not on argv (Kamino 196).
+if [[ "$1" == exec ]]; then
+    xprev=""; xi=false
+    for a in "${@:2}"; do
+        [[ "$xprev" == -e && "$a" != *=* && -n "${!a+x}" ]] && printf '%s=%s\n' "$a" "${!a}" >> "$S/exec-env"
+        [[ "$a" == -i ]] && xi=true
+        xprev="$a"
+    done
+    [[ "$xi" == true && ! -t 0 ]] && cat >> "$S/exec-stdin"
+fi
 case "$1" in
     info) [[ ! -e "$S/no-docker" ]]; exit $? ;;
     pull|exec|logs|network|start|stop|restart|cp|compose) exit 0 ;;
@@ -75,7 +88,9 @@ case "$1" in
             case "$1" in
                 --name) name="$2"; shift 2 ;;
                 --name=*) name="${1#--name=}"; shift ;;
-                -e|--env) env+=("$2"); shift 2 ;;
+                -e|--env)  # -e NAME: the value comes from the caller's environment
+                    if [[ "$2" == *=* ]]; then env+=("$2"); elif [[ -n "${!2+x}" ]]; then env+=("$2=${!2}"); fi
+                    shift 2 ;;
                 -v|--volume) mounts+=("$2"); shift 2 ;;
                 -p|--restart|--network|--user|-u|--entrypoint|-w|--add-host|--label) shift 2 ;;
                 -*) shift ;;

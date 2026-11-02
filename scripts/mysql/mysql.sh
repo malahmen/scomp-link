@@ -205,12 +205,15 @@ mysql_install_docker() {
         docker pull "$image" \
         || error_exit "Failed to pull image ${image}."
 
-    if ! docker run -d \
+    # The passwords are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196). The same for every docker exec below.
+    if ! MYSQL_ROOT_PASSWORD="$MY_ROOT_PASSWORD" MYSQL_PASSWORD="$MY_PASSWORD" docker run -d \
         --name "$MY_CONTAINER_NAME" \
-        -e MYSQL_ROOT_PASSWORD="$MY_ROOT_PASSWORD" \
+        -e MYSQL_ROOT_PASSWORD \
         -e MYSQL_DATABASE="$MY_DB" \
         -e MYSQL_USER="$MY_USER" \
-        -e MYSQL_PASSWORD="$MY_PASSWORD" \
+        -e MYSQL_PASSWORD \
         -p "$(svc_publish "$MY_PORT" 3306)" \
         -v "${volume}:/var/lib/mysql" \
         --restart unless-stopped \
@@ -220,8 +223,8 @@ mysql_install_docker() {
 
     info "Waiting for MySQL to accept connections..."
     local attempts=0
-    until docker exec "$MY_CONTAINER_NAME" \
-        mysqladmin ping -uroot -p"${MY_ROOT_PASSWORD}" --silent &>/dev/null 2>&1; do
+    until MYSQL_PWD="$MY_ROOT_PASSWORD" docker exec -e MYSQL_PWD "$MY_CONTAINER_NAME" \
+        mysqladmin ping -uroot --silent &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${MY_CONTAINER_NAME}"
@@ -292,8 +295,12 @@ mysql_connect_docker() {
     info "Connecting as ${user}${db:+ → ${db}}. Type exit or \\q to quit."
     echo ""
 
-    docker exec -it "$MY_CONTAINER_NAME" \
-        mysql -u"$user" ${password:+-p"$password"} ${db:+"$db"}
+    # The password goes in MYSQL_PWD, passed by name: -p<password> put it on
+    # the client's command line, inside and outside the container (Kamino 196).
+    local -a pw_env=()
+    [[ -n "$password" ]] && pw_env=(-e MYSQL_PWD)
+    MYSQL_PWD="$password" docker exec -it "${pw_env[@]}" "$MY_CONTAINER_NAME" \
+        mysql -u"$user" ${db:+"$db"}
 }
 
 mysql_uninstall_docker() {

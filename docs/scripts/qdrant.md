@@ -5,6 +5,7 @@
 Follows the shared database-script pattern (see [Databases](../../README.md#databases) in the main README): target picked via `select_target` (Docker, any kind cluster, or any kubeconfig context), multiple named instances, install/status/health-check/uninstall actions (no `connect`); the K8s menu adds `port-forward` (REST + gRPC).
 
 - Docker image: `qdrant/qdrant:latest` · Ports: `6333` (REST) · `6334` (gRPC)
+- Docker secrets: the API key is passed to `docker run` as `-e NAME`, the value taken from docker's own environment, so it is not on a command line any local user can read (Kamino 196)
 - K8s chart: `qdrant/qdrant` (official Qdrant Helm repo)
 - K8s secrets (the API key): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - Optional API key authentication

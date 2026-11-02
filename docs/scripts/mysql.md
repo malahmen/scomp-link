@@ -5,6 +5,7 @@
 Follows the shared database-script pattern (see [Databases](../../README.md#databases) in the main README): target picked via `select_target` (Docker, any kind cluster, or any kubeconfig context), multiple named instances, install/status/connect/uninstall actions; the K8s menu adds `port-forward`.
 
 - Docker image: `mysql:8.4` · Port: `3306`
+- Docker secrets: the passwords are passed to `docker run` as `-e NAME`, the value taken from docker's own environment, so it is not on a command line any local user can read (Kamino 196); the readiness ping and `connect` give the client its password as `MYSQL_PWD` (passed the same way), not `-p`
 - K8s chart: `groundhog2k/mysql` (https://groundhog2k.github.io/helm-charts/ — deploys the official `mysql` image; replaces the deprecated Bitnami chart)
 - K8s secrets (the root and user passwords): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - Configurable: root password, database, username/password

@@ -3,6 +3,7 @@
 `grafana/grafana.sh`
 
 - Docker image: `grafana/grafana` · Port: `3000` · Image tag prompted at install
+- Docker secrets: the admin password is passed to `docker run` as `-e NAME`, the value taken from docker's own environment, so it is not on a command line any local user can read (Kamino 196)
 - K8s chart: `grafana/grafana` (official Grafana Helm repo)
 - K8s secrets (the admin password): passed to helm in a temporary mode-0600 values file (`-f`, removed afterwards), never `--set` (Kamino 196): so they are not on the command line, where any local user can read them, and arrive exactly (`--set` splits a value at commas and parses `\ . { }` in it)
 - **Admin credentials** prompt (default user `admin`); leave the password empty to auto-generate a 20-char one, shown once at install

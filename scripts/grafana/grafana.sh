@@ -411,7 +411,7 @@ grafana_install_docker() {
         --restart unless-stopped
     )
     [[ -n "$GRF_ADMIN_USER" ]]     && docker_args+=(-e "GF_SECURITY_ADMIN_USER=${GRF_ADMIN_USER}")
-    [[ -n "$GRF_ADMIN_PASSWORD" ]] && docker_args+=(-e "GF_SECURITY_ADMIN_PASSWORD=${GRF_ADMIN_PASSWORD}")
+    [[ -n "$GRF_ADMIN_PASSWORD" ]] && docker_args+=(-e GF_SECURITY_ADMIN_PASSWORD)
 
     [[ -n "$plugins_input" ]] && docker_args+=(-e "GF_INSTALL_PLUGINS=${plugins_input}")
 
@@ -423,7 +423,10 @@ grafana_install_docker() {
 
     docker_args+=("$image")
 
-    if ! docker "${docker_args[@]}" &>/dev/null; then
+    # Secrets are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! GF_SECURITY_ADMIN_PASSWORD="$GRF_ADMIN_PASSWORD" docker "${docker_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${GRF_CONTAINER_NAME}'."
     fi
 
