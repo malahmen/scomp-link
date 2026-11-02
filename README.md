@@ -381,7 +381,9 @@ scomp-link/
     │   ├── deps.sh                    # helm/kubectl/docker checks, repo management,
     │   │                              #   dnf/apt/rpm-ostree package install helpers
     │   ├── portforward.sh             # Port-forward pid-file helpers (also reused for
-    │   │                              #   tracking arbitrary background processes)
+    │   │                              #   tracking arbitrary background processes; per-user
+    │   │                              #   0700 folder), and svc_publish (SCOMP_BIND_ADDR)
+    │   ├── conf.sh                    # KEY=%q settings files, read without `source`
     │   ├── gh_releases.sh             # GitHub release fetching helpers
     │   ├── owned_dirs.sh              # folders a script created (marker) - the only ones it may delete
     │   ├── secret.sh                  # _gen_secret (pipefail-safe random secrets)
@@ -500,6 +502,15 @@ scomp-link/
 ---
 
 ## Configuration
+
+### SCOMP_BIND_ADDR
+
+The service scripts publish container ports on `127.0.0.1` - what their
+summaries always said - instead of every interface (Kamino 196). To reach a
+service from the LAN, set `SCOMP_BIND_ADDR=0.0.0.0` (or the host's LAN
+address) and install it again so the container is recreated. Dozzle refuses a
+non-loopback address while its authentication is off: it hands out the Docker
+socket.
 
 ### GUM_INPUT_WIDTH
 
@@ -635,6 +646,16 @@ wrong things passed every test. `esc` (or running out of answers) is the user
 pressing Esc. `spin` runs its command and exits with the command's status, as
 gum does. No network and no terminal: `file://` remotes only.
 
+`input` and `write` open holding their `--value`, as gum does, so a **blank
+answer is Enter** and returns the pre-filled value; `<clear>` is the user
+emptying the field, `esc` (or no answer left) exits 130. `confirm` answers
+`enter` with its `--default`. `filter` is `choose` with a search box, and
+refuses what it did not offer. A command gum does not have exits 80, and one
+the stub does not model fails and is logged: both used to print nothing and
+exit 0, which a front-end reads as an empty answer (Kamino item 196, which also
+found the teldrassil front-end saving every pre-filled answer - see
+`tests/test-gum-stub.sh`).
+
 The service scripts (databases, observability, platform) run against
 recording stubs of `docker`, `docker-compose`, `podman`, `kubectl`, `helm` and
 `kind` (`tests/lib/service-stubs.sh`) on a `PATH` without `/usr/local/bin` or
@@ -659,13 +680,16 @@ wrapper, rather than on what appeared on screen.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to
 `main`, every pull request, and on demand:
 
-- **`shellcheck -S warning -x`** over every shell file, **found with `find`
+- **`shellcheck -S warning -x --source-path=SCRIPTDIR`** over every shell file, **found with `find`
   rather than globbed**. `scripts/*/*.sh` misses the four scripts at the
   repository root, `scripts/_templates/`, and
   `scripts/starlight/converter/convert.sh` — six files a one-level glob
   quietly stops covering. `tests/stubs/gum` is added by name, being bash with
-  no `.sh` extension. `-x` follows the `source ../_common/ui.sh` chain, without
-  which every front-end looks like a file of undefined helpers. The severity
+  no `.sh` extension. `-x --source-path=SCRIPTDIR` follows the
+  `source ../_common/ui.sh` chain - `-x` alone resolved it against the
+  repository root, followed nothing, and the 118 SC1091 notes saying so were
+  below `-S warning` (Kamino 196). A second run with `--include=SC1091` fails
+  on any source still not followed. The severity
   floor is pinned because SC2002 is off by default in shellcheck 0.11+ and on
   in older releases.
 - **`tests/run-all.sh --strict`**, which needs no gum: the suite prepends

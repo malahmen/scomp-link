@@ -36,6 +36,8 @@ fi
 source "${COMMON_DIR}/ui.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"   # _ensure_pkg (dnf/apt/rpm-ostree), _require_sudo_or_instruct
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"   # conf_load / conf_write: the config is never sourced
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -67,17 +69,13 @@ cfg_load() {
     XVFB_DISPLAY="99"
     SERVICE_ENABLED="false"
 
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+    # Parsed, not sourced: the display number is typed in, and a sourced
+    # file ran any quote or $(...) in it on the next start (Kamino 196).
+    conf_load "$CONFIG_FILE" INSTALL_SCOPE XVFB_DISPLAY SERVICE_ENABLED
 }
 
 cfg_save() {
-    cat > "$CONFIG_FILE" <<EOF
-INSTALL_SCOPE="${INSTALL_SCOPE}"
-XVFB_DISPLAY="${XVFB_DISPLAY}"
-SERVICE_ENABLED="${SERVICE_ENABLED}"
-EOF
+    conf_write "$CONFIG_FILE" INSTALL_SCOPE XVFB_DISPLAY SERVICE_ENABLED
 }
 
 # -----------------------------------------------------------------------------
@@ -336,7 +334,18 @@ cmd_service_enable() {
 
     local display
     display=$(gum input --value "${XVFB_DISPLAY}" --header "Xvfb display number to use:") || true
-    XVFB_DISPLAY="${display:-$XVFB_DISPLAY}"
+    display="${display:-$XVFB_DISPLAY}"
+    # A display number and nothing else (Kamino 196): the value is written
+    # into a systemd ExecStart line, a wrapper script and the config file this
+    # script sources, so "99 -listen tcp" opened Xvfb to the network and a
+    # $(...) ran at the next start. ":99" is accepted as 99. Checked after
+    # the prompt, so a bad value hand-edited into the config stops here too.
+    display="${display#:}"
+    if [[ ! "$display" =~ ^[0-9]{1,5}$ ]]; then
+        warn "Not a display number: '${display}' (digits only, e.g. 99 or :99). Nothing was changed."
+        return 0
+    fi
+    XVFB_DISPLAY="$display"
 
     _write_wrapper_script
     _write_systemd_units
@@ -381,6 +390,7 @@ cmd_service_disable() {
         loginctl disable-linger "$(whoami)" 2>/dev/null || true
     fi
 
+    # shellcheck disable=SC2034  # saved by name (conf_write)
     SERVICE_ENABLED="false"
     cfg_save
     success "Headless service disabled. Unit files left in place under ${SYSTEMD_USER_DIR} — re-run 'service-enable' to turn it back on."

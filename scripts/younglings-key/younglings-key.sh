@@ -131,13 +131,21 @@ prompt_path() {  # $1 header, $2 placeholder
 }
 
 # Required domain prompt. Echoes it, or non-zero if cancelled/blank.
+#
+# A caller must turn that non-zero into a return 0 of its own ("Cancelled."),
+# never pass it on with a bare `|| return`: the mode then returns 1 into
+# main's case, which `set -e` reads as a failed command and the whole TUI
+# exits - a blank domain closed younglings-key instead of going back to the
+# menu (Kamino 196, the class of Kamino 104).
 prompt_domain() {
     local d; d=$(_clean_input "$(gum input --header "Domain to certify:" --placeholder "example.com" || true)")
     [[ -n "$d" ]] && { printf '%s' "$d"; return 0; }
     warn "A domain is required."; return 1
 }
 
-pick_numbits() { gum choose "2048" "3072" "4096" --header "RSA key size:" || echo "2048"; }
+# Non-zero on Esc: the run is cancelled rather than going on with 2048 the
+# user never picked (Kamino 196).
+pick_numbits() { gum choose "2048" "3072" "4096" --header "RSA key size:"; }
 
 # Output directory, asked every time rather than defaulted silently.
 #
@@ -192,8 +200,8 @@ prompt_ca_passphrase_file() {
 }
 
 mode_self_signed() {
-    local domain; domain=$(prompt_domain) || return
-    local numbits; numbits=$(pick_numbits)
+    local domain; domain=$(prompt_domain) || { info "Cancelled."; return 0; }
+    local numbits; numbits=$(pick_numbits) || { info "Cancelled."; return 0; }
     # 398, matching the engine. The TUI used to offer 3650 here, which was the
     # engine's default for both certificates at the time; now -t is the LEAF
     # only, and Apple platforms refuse any leaf issued after 2019-07-01 with a
@@ -240,14 +248,15 @@ mode_protect_ca() {
     [[ "$d" == "~"* ]] && d="${d/#\~/$HOME}"
     info "This MOVES ca.key into ${d}/ca-private/ (mode 0700). ca.crt stays where it is,"
     info "so anything reading it by path — kuat's lan_tls role, for one — keeps working."
-    gum confirm "Move the CA key?" || { info "Cancelled."; return; }
+    # Default no (Kamino 196): Enter must not move a CA's private key.
+    gum confirm "Move the CA key?" --default=false || { info "Cancelled."; return; }
     FLAGS=(-R -o "$d")
     run_engine
 }
 
 mode_csr() {
-    local domain; domain=$(prompt_domain) || return
-    local numbits; numbits=$(pick_numbits)
+    local domain; domain=$(prompt_domain) || { info "Cancelled."; return 0; }
+    local numbits; numbits=$(pick_numbits) || { info "Cancelled."; return 0; }
     FLAGS=(-d "$domain" -s 0 -n "$numbits")
     # Asked, not defaulted: these runs write a private key.
     prompt_output_dir >/dev/null || { info "Cancelled."; return; }
@@ -256,8 +265,8 @@ mode_csr() {
 }
 
 mode_template() {
-    local domain; domain=$(prompt_domain) || return
-    local numbits; numbits=$(pick_numbits)
+    local domain; domain=$(prompt_domain) || { info "Cancelled."; return 0; }
+    local numbits; numbits=$(pick_numbits) || { info "Cancelled."; return 0; }
     FLAGS=(-d "$domain" -g 1 -n "$numbits")
     # Asked, not defaulted: these runs write a private key.
     prompt_output_dir >/dev/null || { info "Cancelled."; return; }
@@ -265,7 +274,7 @@ mode_template() {
 }
 
 mode_convert() {
-    local domain; domain=$(prompt_domain) || return
+    local domain; domain=$(prompt_domain) || { info "Cancelled."; return 0; }
     FLAGS=(-d "$domain")
     # Asked, not defaulted: these runs write a private key.
     prompt_output_dir >/dev/null || { info "Cancelled."; return; }
@@ -301,7 +310,8 @@ mode_install() {
 
     # The engine refuses to elevate and prints the commands instead, so the
     # choice is made here, visibly, rather than by a tool reaching for root.
-    if gum confirm "Install into the system trust store? This needs sudo."; then
+    # Default no (Kamino 196): Enter gives the dry view below, never sudo.
+    if gum confirm "Install into the system trust store? This needs sudo." --default=false; then
         ensure_openssl || { warn "openssl unavailable."; return; }
         local preview; printf -v preview ' %q' ignite.sh "${FLAGS[@]}"
         info "Running: sudo${preview}"
@@ -342,7 +352,10 @@ run_engine() {
             [[ "${FLAGS[i]}" == "-o" ]] && od="${FLAGS[i+1]}"
         done
         [[ -z "$od" ]] && od="./certificates"
-        [[ -d "$od" ]] && open_path "$od"
+        # An if, not `[[ -d ]] && open_path`: as the last command that returned
+        # 1 when the directory is missing, run_engine and the mode with it, and
+        # set -e closed the TUI after a run that worked (Kamino 196).
+        if [[ -d "$od" ]]; then open_path "$od"; fi
     else
         warn "ignite.sh reported an error (see the output above)."
     fi

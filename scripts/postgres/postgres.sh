@@ -52,7 +52,7 @@ PG_HELM_REPO_NAME="groundhog2k"
 PG_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 PG_HELM_CHART="groundhog2k/postgres"
 PG_DEFAULT_PORT=5432
-_PG_PF_PID="/tmp/scomp-pf-postgres.pid"
+_PG_PF_PID="$(pf_file postgres)"
 PG_DEFAULT_DB="app"
 PG_DEFAULT_USER="app"
 PG_DEFAULT_IMAGE_TAG="16"
@@ -126,6 +126,26 @@ _prompt_db_credentials() {
 # -----------------------------------------------------------------------------
 
 _docker_container_exists()  { docker inspect "$1" &>/dev/null 2>&1; }
+
+# _pg_data_mount <image-tag> - where the data volume is mounted. The official
+# image 18+ keeps PGDATA in /var/lib/postgresql/<major>/docker and declares
+# /var/lib/postgresql as its volume; it refuses to start with a mount at
+# /var/lib/postgresql/data, where 17 and older keep it (Kamino 196). A tag
+# without a leading version (latest, alpine, bookworm...) is 18 or newer.
+_pg_data_mount() {
+    if [[ "$1" =~ ^([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} <= 17 )); then
+        echo /var/lib/postgresql/data
+    else
+        echo /var/lib/postgresql
+    fi
+}
+
+# _docker_volume_mount <container> <volume> - where the container mounts the
+# volume, or nothing.
+_docker_volume_mount() {
+    docker inspect --format '{{range .Mounts}}{{.Name}}:{{.Destination}}{{println}}{{end}}' "$1" 2>/dev/null \
+        | sed -n "s|^$2:||p" | head -1
+}
 _docker_container_running() { [[ "$(docker inspect --format='{{.State.Running}}' "$1" 2>/dev/null)" == "true" ]]; }
 
 postgres_install_docker() {
@@ -144,6 +164,8 @@ postgres_install_docker() {
 
     local image="postgres:${PG_IMAGE_TAG}"
     local volume="${PG_CONTAINER_NAME}-data"
+    local data_mount
+    data_mount="$(_pg_data_mount "$PG_IMAGE_TAG")"
 
     local old=""
     if _docker_container_exists "$PG_CONTAINER_NAME"; then
@@ -168,6 +190,29 @@ postgres_install_docker() {
     # the old credentials stay in force, so they are carried over, not asked
     # for again (Kamino 174). Read before the old container is removed.
     if docker volume inspect "$volume" &>/dev/null; then
+        # 17 and older and 18+ lay the volume out differently: a kept volume
+        # of the other kind is not used - 18+ would initialise a new, empty
+        # cluster next to the old one - and data from another major version
+        # needs pg_upgrade (or a dump and restore) anyway (Kamino 196).
+        local old_mount=""
+        [[ -n "$old" ]] && old_mount="$(_docker_volume_mount "$old" "$volume")"
+        if [[ -n "$old_mount" && "$old_mount" != "$data_mount" ]]; then
+            gum style \
+                --foreground "$YELLOW" --border-foreground "$YELLOW" --border rounded \
+                --width 60 --margin "1 2" --padding "1 2" \
+                "Volume '${volume}' was mounted at ${old_mount};" \
+                "postgres:${PG_IMAGE_TAG} needs it at ${data_mount}." \
+                "" \
+                "PostgreSQL 18 moved its data directory: it will not use" \
+                "the cluster in this volume (and 17 or older will not use" \
+                "an 18+ one). Upgrade the data with pg_upgrade, or a dump" \
+                "and restore, or keep the image's major version."
+            if ! gum confirm "Start postgres:${PG_IMAGE_TAG} on this volume anyway?" --default=false; then
+                warn "Cancelled."; return
+            fi
+        elif [[ -z "$old_mount" && "$data_mount" == /var/lib/postgresql ]]; then
+            warn "If volume '${volume}' was created by PostgreSQL 17 or older, postgres:${PG_IMAGE_TAG} will not use its data (18 moved the data directory): upgrade it with pg_upgrade first, or use a tag of that major version."
+        fi
         _kept_data_notice "$volume" "$old"
         _keep_credential PG_DB       "$old" POSTGRES_DB       "database name" "=${PG_DEFAULT_DB}" \
             && _keep_credential PG_USER     "$old" POSTGRES_USER     "username"      "=${PG_DEFAULT_USER}" \
@@ -186,13 +231,16 @@ postgres_install_docker() {
         docker pull "$image" \
         || error_exit "Failed to pull image ${image}."
 
-    if ! docker run -d \
+    # The password is passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! POSTGRES_PASSWORD="$PG_PASSWORD" docker run -d \
         --name "$PG_CONTAINER_NAME" \
         -e POSTGRES_DB="$PG_DB" \
         -e POSTGRES_USER="$PG_USER" \
-        -e POSTGRES_PASSWORD="$PG_PASSWORD" \
-        -p "${PG_PORT}:5432" \
-        -v "${volume}:/var/lib/postgresql/data" \
+        -e POSTGRES_PASSWORD \
+        -p "$(svc_publish "$PG_PORT" 5432)" \
+        -v "${volume}:${data_mount}" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
         error_exit "Failed to start container '${PG_CONTAINER_NAME}'."
@@ -218,8 +266,9 @@ postgres_install_docker() {
         "Image:      ${image}" \
         "Database:   ${PG_DB}" \
         "User:       ${PG_USER}" \
-        "Port:       localhost:${PG_PORT}" \
+        "Port:       $(svc_host):${PG_PORT}" \
         "Volume:     ${volume}"
+    svc_bind_notice
 }
 
 postgres_status_docker() {
@@ -264,8 +313,9 @@ postgres_connect_docker() {
     # Read user/db from the running container's env so we don't need to re-prompt.
     local env_vars user db
     env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$PG_CONTAINER_NAME" 2>/dev/null)
-    user=$(echo "$env_vars" | grep '^POSTGRES_USER='     | cut -d= -f2 || echo "postgres")
-    db=$(echo   "$env_vars" | grep '^POSTGRES_DB='       | cut -d= -f2 || echo "$user")
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
+    user=$(echo "$env_vars" | grep '^POSTGRES_USER='     | cut -d= -f2- || echo "postgres")
+    db=$(echo   "$env_vars" | grep '^POSTGRES_DB='       | cut -d= -f2- || echo "$user")
 
     info "Connecting as ${user} → ${db}. Type \\q to exit."
     echo ""
@@ -402,15 +452,23 @@ postgres_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${PG_NAMESPACE}"
     else
+        # The passwords go in a 0600 values file, not --set: on argv they are
+        # readable by every local user, and --set splits a value at commas and
+        # parses \ . { } in it (Kamino 196).
+        local secret_values
+        _helm_secret_values secret_values \
+            settings.superuserPassword "$PG_PASSWORD" \
+            userDatabase.password      "$PG_PASSWORD" \
+            || error_exit "The password contains control characters; it cannot be passed to helm."
         helm_args+=(
-            --set settings.superuserPassword="$PG_PASSWORD"
+            -f "$secret_values"
             --set userDatabase.name="$PG_DB"
             --set userDatabase.user="$PG_USER"
-            --set userDatabase.password="$PG_PASSWORD"
         )
         gum spin --spinner dot --title "Installing PostgreSQL via Helm (may take a few minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${PG_NAMESPACE}"
+        _secret_file_rm "$secret_values"
     fi
 
     local shown_db="$PG_DB" shown_user="$PG_USER"
@@ -479,7 +537,7 @@ postgres_port_forward_k8s() {
     local port="${port_input:-$PG_DEFAULT_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$PG_NAMESPACE" port-forward "svc/${PG_HELM_RELEASE}" "${port}:5432" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_PG_PF_PID"
+    pf_write "$_PG_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

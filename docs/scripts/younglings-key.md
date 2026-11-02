@@ -36,6 +36,11 @@ locally → post-process it → request one from a real CA):
 | **Certificate request (CSR)** | Key + CSR to send to a CA | `-d -s 0 -n (-i\|-f)` |
 | **Protect an existing CA key** | Moves `ca.key` into the engine's `0700` `ca-private/` directory | `-R -o` |
 
+A blank answer to a required question (the domain, the output directory, the
+subject, a path) or Esc anywhere - the RSA key size included - cancels the task
+and returns to the menu; nothing is run. A blank domain used to close the whole
+TUI instead.
+
 For self-signed and CSR you pick a **subject source**: a subject string (`-i`, e.g.
 `/C=PT/O=Acme/CN=example.com`) or an `openssl` config file (`-f`).
 
@@ -71,6 +76,12 @@ public and other things read it by path. **Protect an existing CA key** is the
 menu entry for a CA made before that: it moves the key and leaves `ca.crt`
 alone. It is separate from the certificate modes on purpose — the engine will
 not move somebody's CA key as a side effect of issuing a certificate.
+Its "Move the CA key?" defaults to **no**: Enter moves nothing.
+
+**Install a certificate (trust store)** asks before using `sudo`, and that
+question defaults to **no** too: Enter (or no) runs the engine without root,
+which prints the certificate's subject and the exact commands, and installs
+nothing.
 
 ## Output
 
@@ -91,3 +102,13 @@ ignite.sh -h                           # all options
 
 See the [engine README](https://github.com/malahmen/younglings-key) for the full flag
 reference.
+
+## Tests
+
+`tests/test-younglings-key.sh` drives the menus through the gum stub against a
+fake `ignite.sh` (`YOUNGLINGS_KEY_DIR`) that records each call: a blank or
+Esc'd answer in every mode returns to the menu and runs nothing; each mode
+reaches the engine with its flags, a subject or path with spaces as one
+argument; the CA passphrase reaches argv only as a file path (`-p`), with
+`-E` dropped when no file is given; moving a CA key and the trust-store install
+are driven with Enter, no and yes, and only yes moves the key or reaches `sudo`.

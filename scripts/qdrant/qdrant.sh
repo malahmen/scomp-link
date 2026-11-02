@@ -10,7 +10,7 @@
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   curl (health-check feature).
 # Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh,
-#          deps.sh, portforward.sh.
+#          deps.sh, portforward.sh, secret.sh.
 #
 # Ports:  6333 — REST / HTTP API
 #         6334 — gRPC
@@ -33,6 +33,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -52,8 +54,8 @@ QD_HELM_CHART="qdrant/qdrant"
 QD_DEFAULT_REST_PORT=6333
 QD_DEFAULT_GRPC_PORT=6334
 QD_DEFAULT_IMAGE_TAG="latest"
-_QD_REST_PF_PID="/tmp/scomp-pf-qdrant-rest.pid"
-_QD_GRPC_PF_PID="/tmp/scomp-pf-qdrant-grpc.pid"
+_QD_REST_PF_PID="$(pf_file qdrant-rest)"
+_QD_GRPC_PF_PID="$(pf_file qdrant-grpc)"
 
 # Colours
 BLUE=39
@@ -65,8 +67,23 @@ QD_API_KEY=""
 QD_REST_PORT=$QD_DEFAULT_REST_PORT
 QD_GRPC_PORT=$QD_DEFAULT_GRPC_PORT
 
-# Builds the curl auth header arg if an API key is set.
-_curl_auth() { [[ -n "$QD_API_KEY" ]] && echo "-H api-key:${QD_API_KEY}" || echo ""; }
+# _qd_curl <url> - curl -sf <url>, with the API key (when one is set) as an
+# api-key header in a curl config read from stdin (-K -). It used to be
+# `-H api-key:<key>` echoed into an unquoted variable: on curl's command line,
+# where any local user can read it, and word-split and globbed there - a key
+# with a space or * reached Qdrant changed (Kamino 196). In the config's
+# double quotes only \ and " need escaping.
+_qd_curl() {
+    local url="$1" key
+    if [[ -z "$QD_API_KEY" ]]; then
+        curl -sf "$url"
+        return
+    fi
+    [[ "$QD_API_KEY" == *[[:cntrl:]]* ]] && { warn "The API key contains control characters; not sending it."; return 1; }
+    key="${QD_API_KEY//\\/\\\\}"
+    key="${key//\"/\\\"}"
+    printf 'header = "api-key: %s"\n' "$key" | curl -sf -K - "$url"
+}
 
 _ensure_curl() {
     if command -v curl &>/dev/null; then
@@ -107,28 +124,26 @@ _prompt_api_key() {
 # -----------------------------------------------------------------------------
 
 _rest_health_check() {
-    local port="$1"
-    local auth_header
-    auth_header=$(_curl_auth)
+    # host: where the port is published (svc_host for Docker; a port-forward
+    # listens on 127.0.0.1) - Kamino 196.
+    local port="$1" host="${2:-127.0.0.1}"
 
     if ! _ensure_curl; then
         return
     fi
 
-    info "Querying Qdrant REST API at http://127.0.0.1:${port} ..."
+    info "Querying Qdrant REST API at http://${host}:${port} ..."
     echo ""
 
     # Cluster info
     gum style --foreground "$CYAN" --bold "── Cluster info ──"
-    # shellcheck disable=SC2086
-    curl -sf $auth_header "http://127.0.0.1:${port}/" 2>/dev/null \
+    _qd_curl "http://${host}:${port}/" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat) \
-        || warn "Could not reach http://127.0.0.1:${port}/ — is Qdrant running?"
+        || warn "Could not reach http://${host}:${port}/ — is Qdrant running?"
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Collections ──"
-    # shellcheck disable=SC2086
-    curl -sf $auth_header "http://127.0.0.1:${port}/collections" 2>/dev/null \
+    _qd_curl "http://${host}:${port}/collections" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat) \
         || warn "Could not list collections."
 
@@ -193,13 +208,16 @@ qdrant_install_docker() {
 
     # Build env args — API key is optional
     local env_args=()
-    [[ -n "$QD_API_KEY" ]] && env_args+=(-e "QDRANT__SERVICE__API_KEY=${QD_API_KEY}")
+    [[ -n "$QD_API_KEY" ]] && env_args+=(-e QDRANT__SERVICE__API_KEY)
 
-    if ! docker run -d \
+    # The API key is passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! QDRANT__SERVICE__API_KEY="$QD_API_KEY" docker run -d \
         --name "$QD_CONTAINER_NAME" \
         "${env_args[@]}" \
-        -p "${QD_REST_PORT}:6333" \
-        -p "${QD_GRPC_PORT}:6334" \
+        -p "$(svc_publish "$QD_REST_PORT" 6333)" \
+        -p "$(svc_publish "$QD_GRPC_PORT" 6334)" \
         -v "${volume}:/qdrant/storage" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
@@ -208,7 +226,7 @@ qdrant_install_docker() {
 
     info "Waiting for Qdrant REST API to become ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${QD_REST_PORT}/healthz" &>/dev/null 2>&1; do
+    until curl -sf "http://$(svc_host):${QD_REST_PORT}/healthz" &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 30 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${QD_CONTAINER_NAME}"
@@ -224,10 +242,11 @@ qdrant_install_docker() {
         "" \
         "Container:   ${QD_CONTAINER_NAME}" \
         "Image:       ${image}" \
-        "REST API:    http://127.0.0.1:${QD_REST_PORT}" \
-        "gRPC:        127.0.0.1:${QD_GRPC_PORT}" \
+        "REST API:    http://$(svc_host):${QD_REST_PORT}" \
+        "gRPC:        $(svc_host):${QD_GRPC_PORT}" \
         "Volume:      ${volume}" \
         "Auth:        ${QD_API_KEY:+API key set}${QD_API_KEY:-none (open access)}"
+    svc_bind_notice
 }
 
 qdrant_status_docker() {
@@ -276,7 +295,7 @@ qdrant_health_check_docker() {
         "$QD_CONTAINER_NAME" 2>/dev/null)
     port="${port:-$QD_DEFAULT_REST_PORT}"
 
-    _rest_health_check "$port"
+    _rest_health_check "$port" "$(svc_host)"
 }
 
 qdrant_uninstall_docker() {
@@ -380,7 +399,15 @@ qdrant_install_k8s() {
         --set persistence.size="$storage_size"
         --wait --timeout 5m
     )
-    [[ -n "$QD_API_KEY" ]] && helm_args+=(--set "config.service.api_key=${QD_API_KEY}")
+    # The API key goes in a 0600 values file, not --set: on argv it is
+    # readable by every local user, and --set splits a value at commas and
+    # parses \ . { } in it (Kamino 196).
+    local secret_values=""
+    if [[ -n "$QD_API_KEY" ]]; then
+        _helm_secret_values secret_values config.service.api_key "$QD_API_KEY" \
+            || error_exit "The API key contains control characters; it cannot be passed to helm."
+        helm_args+=(-f "$secret_values")
+    fi
 
     if _k8s_detect_installed; then
         gum style \
@@ -396,7 +423,7 @@ qdrant_install_k8s() {
 
         case "$action" in
             "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
+            *) _secret_file_rm "$secret_values"; warn "Cancelled."; return ;;
         esac
 
         gum spin --spinner dot --title "Upgrading Qdrant via Helm..." -- \
@@ -407,6 +434,7 @@ qdrant_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${QD_NAMESPACE}"
     fi
+    _secret_file_rm "$secret_values"
 
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
@@ -487,10 +515,10 @@ qdrant_port_forward_k8s() {
     local grpc_port="${grpc_input:-$QD_DEFAULT_GRPC_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${grpc_port}:6334" >/dev/null 2>&1 &
-    echo "${!}:${grpc_port}" > "$_QD_GRPC_PF_PID"
+    pf_write "$_QD_GRPC_PF_PID" "${!}" "${grpc_port}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$QD_NAMESPACE" port-forward "svc/${QD_HELM_RELEASE}" "${rest_port}:6333" >/dev/null 2>&1 &
-    echo "${!}:${rest_port}" > "$_QD_REST_PF_PID"
+    pf_write "$_QD_REST_PF_PID" "${!}" "${rest_port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$rest_port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

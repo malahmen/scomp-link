@@ -33,9 +33,9 @@ printf '#!/bin/sh\necho "stub podman: not for running" >&2\nexit 1\n' > "$T/bin/
 chmod +x "$T/bin/podman"
 : > "$T/src/report.docx"
 
-# drive <answer to "Open ... when done?">
+# drive <answer to "Open ... when done?"> [file to pick]
 drive() {
-    printf '%s\n' "local - the tools installed on this host" "docx" "" "report.docx" "$1" "gfm" "no" > "$T/answers"
+    printf '%s\n' "local - the tools installed on this host" "docx" "" "${2:-report.docx}" "$1" "gfm" "no" > "$T/answers"
     rm -f "$T/args" "$T/state"
     (cd "$T/src" && PATH="$T/bin:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" \
         HOLO_CONVERT_DIR="$T/engine" "$BASH" "$FRONT" > "$T/out" 2>&1)
@@ -51,5 +51,18 @@ check "  and without --open (a v1.0.0 engine would reject it)" bash -c '! grep -
 drive no
 check "no: --no-open is passed" grep -qx -- "--no-open" "$T/args"
 check "  with the file still last" [ "$(tail -1 "$T/args")" = report.docx ]
+
+echo "# a file named like a flag (Kamino 196)"
+# The picker lists files without their ./, so one at the top of SOURCE_ROOT
+# named -x.docx reached the engine as "-x.docx" among the flags, and the engine
+# refused it as an unknown flag. `--` before the paths is the engine's own
+# end-of-flags marker (v2 and v1.0.0 alike).
+: > "$T/src/-x.docx"
+drive no "-x.docx"
+check "the engine runs with the dash-named file" [ -s "$T/args" ]
+check "  given last" [ "$(tail -1 "$T/args")" = "-x.docx" ]
+check "  right after a -- (it cannot be read as a flag)" [ "$(tail -2 "$T/args" | head -1)" = "--" ]
+check "  and one -- only, after every flag" [ "$(grep -cx -- "--" "$T/args")" = 1 ]
+check "the Running preview shows the -- too" grep -q -- "gfm -- -x.docx" "$T/out"
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi

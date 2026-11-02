@@ -6,5 +6,5 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - __STORAGE_PATH__:/data
     ports:
-      - "__SERVICE_PORT__:8080"
+      - "__BIND_ADDR__:__SERVICE_PORT__:8080"
 __AUTH_ENV_BLOCK__

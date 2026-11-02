@@ -187,7 +187,10 @@ build_master() {
         --placeholder "192.168.1.10") || return 1
 
     FLAGS=( -m "$name" -a "$arch" -v "$version" -c "$crds" -n "$cidr" )
-    [[ -n "$ip" ]] && FLAGS+=( -i "$ip" )
+    # An if: as the function's last command, `[[ -n "$ip" ]] && ...` returned
+    # 1 for the blank answer the prompt offers, and main read that as
+    # "Master setup cancelled." (Kamino 196).
+    if [[ -n "$ip" ]]; then FLAGS+=( -i "$ip" ); fi
 }
 
 build_worker() {
@@ -246,10 +249,18 @@ prompt_file() {
 run_or_print() {
     [[ "${#FLAGS[@]}" -eq 0 ]] && return 0
 
+    # The command shown (and printed to paste on the node) is built with %q,
+    # one shell word per value. It used to be "sh akinn.sh ${FLAGS[*]}": a
+    # node name or a path with a space came back as two arguments when pasted,
+    # and a * or ? in one was globbed against whatever directory it was pasted
+    # in (Kamino 196). The run itself always passed "${FLAGS[@]}".
+    local cmd dir
+    printf -v cmd ' %q' "${FLAGS[@]}"; cmd="sh akinn.sh${cmd}"
+    printf -v dir '%q' "$AKINN_DIR"
+
     echo
     gum style --foreground "${CYAN:-212}" --bold "Resulting akinn command:"
-    gum style --border rounded --padding "0 1" --foreground "${GREEN:-82}" \
-        "sh akinn.sh ${FLAGS[*]}"
+    gum style --border rounded --padding "0 1" --foreground "${GREEN:-82}" "$cmd"
     echo
 
     local choice
@@ -260,7 +271,8 @@ run_or_print() {
 
     case "$choice" in
         run*)
-            gum confirm "akinn will modify THIS system as root (swap, apt, kubeadm). Continue?" \
+            # Default no (the Kamino 178 rule): Enter must not provision a machine.
+            gum confirm --default=false "akinn will modify THIS system as root (swap, apt, kubeadm). Continue?" \
                 || { warn "Aborted — nothing changed."; return 0; }
             info "Handing off to akinn: ${AKINN_DIR}/akinn.sh"
             # akinn self-elevates with sudo and uses /bin/sh internally.
@@ -269,8 +281,8 @@ run_or_print() {
             ;;
         print*)
             info "Run this ON the target node, from the akinn directory:"
-            gum style --foreground "${CYAN:-212}" "  cd ${AKINN_DIR}"
-            gum style --foreground "${CYAN:-212}" "  sh akinn.sh ${FLAGS[*]}"
+            gum style --foreground "${CYAN:-212}" "  cd ${dir}"
+            gum style --foreground "${CYAN:-212}" "  ${cmd}"
             ;;
         *) return 0 ;;
     esac

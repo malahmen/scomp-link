@@ -63,8 +63,13 @@ to write the example one and stops there.
 than killing the TUI. `dry-run` and `run` offer verbose logging, then an
 optional "Advanced options" step for the engine's override flags:
 `--allow-deletions` (bypasses `MAX_DELETIONS` and the empty-side guard, the only
-way past those refusals from the menu) and `--no-api` (skips twin lookup and
-creation). Esc at any prompt returns to the menu without running anything.
+way past those refusals from the menu) and `--no-api`, which makes no API call
+at all: no twin lookup, no creation, and **no visibility check** - a repo the
+list declares private is pushed even if it has been made public, which is the
+gate `run` otherwise applies before every pair. Its question says so and
+defaults to no. When either override is on, the real-run question names it
+("with the deletion guards OFF", "with the visibility check OFF") and Enter
+is no. Esc at any prompt returns to the menu without running anything.
 
 **Dependency installation lives here, not in the engine.** An engine that layers
 OS packages behind your back is not something you put in a timer, so it only
@@ -108,3 +113,13 @@ Config and state belong to the engine, not to scomp-link:
 
 **Dependencies:** `gum` and `git` for the front-end; the engine additionally
 needs `curl`, `jq`, `flock`, `base64`, `sha1sum` and git ≥ 2.38.
+
+## Tests
+
+`tests/test-holonet-sync.sh` drives the menu through the gum stub against a
+fake engine that answers `config` and `repos` and records every other call:
+the `--no-api` question names the visibility check and defaults to no; a real
+run with either override on names it and runs nothing on Enter; a declined
+real run or state reset calls nothing; Esc at each question returns to the
+menu; each path (dry run, run, a single repo, verbose, the overrides, reset,
+status, check, edit) reaches the engine with its flags.

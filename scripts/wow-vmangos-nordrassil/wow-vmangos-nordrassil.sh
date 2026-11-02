@@ -402,8 +402,18 @@ action_create_account() {
     local name pass level
     name=$(gum input --placeholder "username" --header "New account username:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
-    pass=$(gum input --password --placeholder "password" --header "New account password:") || return 0
+    # The engine's create-account takes the password only as --pass, so it
+    # is on the engine's command line - readable by any local user (ps) for
+    # as long as the call runs, a few seconds with a GM level. Said in the
+    # prompt and the docs until the engine reads it from stdin (Kamino 196).
+    pass=$(gum input --password --placeholder "password" \
+        --header "New account password (1-16 characters, no spaces). Passed to the engine as an argument: other users of this machine can see it while it runs - set a new one in game if this host is shared:") || return 0
     [[ -n "$pass" ]] || { info "Cancelled."; return 0; }
+    # The engine's own rule for console arguments (lib/transport.sh
+    # _validate_console_arg), checked first: a password it would refuse is
+    # not put on a command line at all.
+    [[ "$name" =~ ^[[:graph:]]{1,16}$ ]] || { warn "The username must be 1-16 characters with no spaces."; return 0; }
+    [[ "$pass" =~ ^[[:graph:]]{1,16}$ ]] || { warn "The password must be 1-16 characters with no spaces; nothing was sent."; return 0; }
     level=$(_pick_gm_level "Account access level" "0")
     engine_foreground create-account --name "$name" --pass "$pass" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
@@ -422,7 +432,11 @@ action_delete_account() {
     local name
     name=$(gum input --placeholder "username" --header "Account to delete:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
-    gum confirm "Delete account '${name}'? This also removes its characters." || { info "Cancelled."; return 0; }
+    # Defaults to no, like every other destructive question here (Kamino
+    # 196): a deleted account takes its characters with it, and Enter on a
+    # default-yes deleted them.
+    gum confirm --default=false "Delete account '${name}' on ${PROFILE_LABEL}? This also removes its characters." \
+        || { info "Cancelled."; return 0; }
     engine_foreground delete-account --name "$name" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
 }
 

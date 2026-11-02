@@ -40,21 +40,21 @@ WORKFLOWS_NAMESPACE="argo"
 WORKFLOWS_GH_API="https://api.github.com/repos/argoproj/argo-workflows/releases"
 WORKFLOWS_INSTALL_BASE="https://github.com/argoproj/argo-workflows/releases/download"
 WORKFLOWS_PORT=2746
-_WORKFLOWS_PF_PID="/tmp/scomp-pf-argo-workflows.pid"
+_WORKFLOWS_PF_PID="$(pf_file argo-workflows)"
 
 # Argo CD
 ARGOCD_NAMESPACE="argocd"
 ARGOCD_GH_API="https://api.github.com/repos/argoproj/argo-cd/releases"
 ARGOCD_INSTALL_BASE="https://raw.githubusercontent.com/argoproj/argo-cd"
 ARGOCD_PORT=8080
-_ARGOCD_PF_PID="/tmp/scomp-pf-argocd.pid"
+_ARGOCD_PF_PID="$(pf_file argocd)"
 
 # Argo Events
 ARGOEVENTS_NAMESPACE="argo-events"
 ARGOEVENTS_GH_API="https://api.github.com/repos/argoproj/argo-events/releases"
 ARGOEVENTS_INSTALL_BASE="https://github.com/argoproj/argo-events/releases/download"
 ARGOEVENTS_DEFAULT_WEBHOOK_PORT=12000
-_ARGOEVENTS_PF_PID="/tmp/scomp-pf-argo-events.pid"
+_ARGOEVENTS_PF_PID="$(pf_file argo-events)"
 
 # Colours
 PURPLE=99
@@ -244,7 +244,7 @@ workflows_port_forward() {
     port="${port:-${WORKFLOWS_PORT}}"
 
     kubectl -n "${WORKFLOWS_NAMESPACE}" port-forward deployment/argo-server "${port}:2746" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_WORKFLOWS_PF_PID"
+    pf_write "$_WORKFLOWS_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
@@ -474,7 +474,7 @@ argocd_port_forward() {
     port="${port:-${ARGOCD_PORT}}"
 
     kubectl -n "${ARGOCD_NAMESPACE}" port-forward svc/argocd-server "${port}:443" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_ARGOCD_PF_PID"
+    pf_write "$_ARGOCD_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do
@@ -828,7 +828,7 @@ argoevents_list_sources() {
     local port="${port_input:-${ARGOEVENTS_DEFAULT_WEBHOOK_PORT}}"
 
     kubectl -n "${ARGOEVENTS_NAMESPACE}" port-forward "svc/${svc_name}" "${port}:${svc_port}" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_ARGOEVENTS_PF_PID"
+    pf_write "$_ARGOEVENTS_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

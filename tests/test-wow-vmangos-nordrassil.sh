@@ -8,7 +8,11 @@
 # real one does for an unreadable file, --db on a self-describing dump or no
 # reachable database.
 #
-# What it protects (Kamino item 178): the question is asked only after the
+# The main menu's other paths are driven too (Kamino 196): each action reaches
+# the engine with the flags its answers mean, and every destructive question
+# (delete-account, apply-sql, restart) runs nothing on a no or on Enter.
+#
+# What the restore part protects (Kamino item 178): the question is asked only after the
 # engine has said what it would overwrite, and its words are in the question;
 # declining, or pressing Enter, runs nothing with --yes; a restore the engine
 # refuses is never offered for confirmation.
@@ -94,5 +98,96 @@ STUB_REFUSE=1 drive Administration restore full-20261025-000000.sql back Quit
 check "no question is asked" bash -c '! grep -q "^<confirm> .*Restore " "$1"' _ "$T/out"
 check "no restore with --yes" not_called "--yes"
 check "the refusal is shown" grep -q "refusing --db on a self-describing dump" "$T/out"
+
+echo "# Server"
+drive Server choose-server "base config (no profile)" settings forget-password \
+    ownership "something else — Ansible, GitOps, CI (administration only)" back Quit
+check "settings: config" called "config"
+check "forget-password: forget" called "forget"
+check "ownership: MANAGED_EXTERNALLY set from the pick" called "set|MANAGED_EXTERNALLY|1"
+
+drive Server transports "this tool — configure, run-docker, run-k8s" \
+    "connect straight to a MariaDB port" "10.0.0.9" "3307" "wow" \
+    "Ask once per session (never written to disk)" \
+    "docker exec into a container" "" "/opt/mangos/fifo" "mangosd" back Quit
+check "transports: DB over tcp" called "set|DB_TRANSPORT|tcp"
+check "  host and port" bash -c 'grep -qxF "set|DB_HOST|10.0.0.9" "$1" && grep -qxF "set|DB_PORT|3307" "$1"' _ "$T/calls"
+check "  user" called "set|DB_USER|wow"
+check "  password: ask (never stored)" called "set|DB_PASS|ask"
+check "  server over docker, this machine" bash -c 'grep -qxF "set|SERVER_TRANSPORT|docker" "$1" && grep -qxF "set|SERVER_SSH_HOST|" "$1"' _ "$T/calls"
+check "  FIFO and container" bash -c 'grep -qxF "set|SERVER_FIFO|/opt/mangos/fifo" "$1" && grep -qxF "set|SERVER_CONTAINER_NAME|mangosd" "$1"' _ "$T/calls"
+
+echo "# Setup"
+drive Setup install-deps edit "realmd (login/security settings)" back Quit
+check "install-deps" called "install-deps"
+check "edit: --file realmd" called "edit|--file|realmd"
+# configure: every setting prompt, in order. Enter on an empty pre-fill
+# writes nothing; the picks are the values behind the labels.
+drive Setup configure /repack 10.0.0.5 "My Realm" "United States" PvP "" 1.12 'Hi "all"' 2 "" \
+    "" "" "Ban Account" "No" "Yes" "Disabled" "Basic Latin only" back Quit
+check "configure: SOURCE_DIR and REALM_ADDRESS" bash -c 'grep -qxF "set|SOURCE_DIR|/repack" "$1" && grep -qxF "set|REALM_ADDRESS|10.0.0.5" "$1"' _ "$T/calls"
+check "  realm name, zone 2, PvP 1, patch 10" bash -c 'grep -qxF "set|REALM_NAME|My Realm" "$1" && grep -qxF "set|REALM_ZONE|2" "$1" && grep -qxF "set|GAME_TYPE|1" "$1" && grep -qxF "set|WOW_PATCH|10" "$1"' _ "$T/calls"
+check "  Enter on an empty field sets nothing" bash -c '! grep -q "^set|PLAYER_LIMIT\|^set|DROP_RATE\|^set|WRONG_PASS_MAX_COUNT" "$1"' _ "$T/calls"
+check "  MOTD without its double quotes" called "set|MOTD|Hi all"
+check "  XP rate" called "set|XP_RATE|2"
+check "  ban type, warden off, strict names 1" bash -c 'grep -qxF "set|WRONG_PASS_BAN_TYPE|1" "$1" && grep -qxF "set|WARDEN_ENABLED|0" "$1" && grep -qxF "set|STRICT_PLAYER_NAMES|1" "$1"' _ "$T/calls"
+check "  then configure, with no custom SQL" bash -c 'tail -1 "$1" | grep -qxF configure' _ "$T/calls"
+
+echo "# Local and Deploy"
+drive Local start stop back Quit
+check "start and stop" bash -c 'grep -qxF start "$1" && grep -qxF stop "$1"' _ "$T/calls"
+drive Deploy build-image run-docker no run-docker enter stop-docker back Quit
+check "build-image" called "build-image"
+check "run-docker, declined recreate: no --force" called "run-docker"
+check "run-docker, Enter (default yes): --force" called "run-docker|--force"
+check "stop-docker" called "stop-docker"
+drive Deploy run-k8s "A named kube-context" lab wow 10.0.0.7 \
+    "hostPath (single-node / home-lab — path on the node)" /srv/data /srv/db \
+    stop-k8s "Current kube-context" back Quit
+check "run-k8s: settings saved against the chosen context" bash -c 'grep -qxF -- "--context|lab|set|K8S_NAMESPACE|wow" "$1" && grep -qxF -- "--context|lab|set|K8S_STORAGE_TYPE|hostpath" "$1" && grep -qxF -- "--context|lab|set|K8S_DB_HOSTPATH|/srv/db" "$1"' _ "$T/calls"
+check "  then run-k8s with namespace and address" called "--context|lab|run-k8s|--namespace|wow|--address|10.0.0.7"
+check "stop-k8s on the current context: no target flags" called "stop-k8s"
+
+echo "# Accounts"
+drive Accounts create-account "docker (run-docker)" bob 'hunter2!' Gamemaster back Quit
+check "create-account: name, password, level 3, --where docker" called "create-account|--name|bob|--pass|hunter2!|--level|3|--where|docker"
+drive Accounts create-account "Auto-detect (mangosd runs in one place)" bob 'two words' back Quit
+check "a password the console would refuse is never sent" not_called "create-account"
+check "  and the reason is given" grep -q "no spaces; nothing was sent" "$T/out"
+drive Accounts list-accounts "local (native start)" back Quit
+check "list-accounts --where local" called "list-accounts|--where|local"
+drive Accounts set-account-level "Auto-detect (mangosd runs in one place)" bob Moderator back Quit
+check "set-account-level: level 1, auto-detect (no --where)" called "set-account-level|--name|bob|--level|1"
+drive Accounts delete-account "Auto-detect (mangosd runs in one place)" bob no back Quit
+check "delete-account lists the accounts first" called "list-accounts"
+check "  declined: nothing deleted" not_called "delete-account"
+drive Accounts delete-account "Auto-detect (mangosd runs in one place)" bob enter back Quit
+check "  Enter (the default): nothing deleted" not_called "delete-account"
+drive Accounts delete-account "Auto-detect (mangosd runs in one place)" bob yes back Quit
+check "  confirmed: delete-account --name bob" called "delete-account|--name|bob"
+
+echo "# Characters, Search, Status"
+drive Characters rename-character Oldname Newname back Search NPCs Hogger Status Quit
+check "rename-character --from --to" called "rename-character|--from|Oldname|--to|Newname"
+check "search --kind npcs --term" called "search|--kind|npcs|--term|Hogger"
+check "status" called "status"
+
+echo "# Administration: apply-sql, restart, dump"
+for a in no enter; do
+    drive Administration apply-sql /tmp/change.sql characters "$a" back Quit
+    check "apply-sql, $a: nothing applied" not_called "apply-sql"
+done
+drive Administration apply-sql /tmp/change.sql characters yes back Quit
+check "apply-sql, yes: --file --db" called "apply-sql|--file|/tmp/change.sql|--db|characters"
+for a in no enter; do
+    drive Administration restart "Now (at the orchestrator)" "$a" restart "Graceful (warn players first)" 30 "$a" back Quit
+    check "restart now and graceful, $a: no restart" not_called "restart"
+done
+drive Administration restart "Now (at the orchestrator)" yes restart "Graceful (warn players first)" 30 yes back Quit
+check "restart now, yes" called "restart"
+check "restart graceful, yes: --graceful 30" called "restart|--graceful|30"
+drive Administration dump "accounts only (to move between servers)" dump "All four databases" back Quit
+check "dump accounts only: realmd's account tables" called "dump|--db|realmd|--tables|account account_access account_banned realmcharacters"
+check "dump all" called "dump|--all"
 
 echo; if (( FAILS == 0 )); then echo "all passed"; else echo "${FAILS} failed"; exit 1; fi

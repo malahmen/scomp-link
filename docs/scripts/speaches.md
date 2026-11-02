@@ -22,6 +22,7 @@ Installs and manages [Speaches](https://speaches.ai), a ready-made speech server
 - **The defaults are the deployment**: re-running `install` on a rebuilt host has to bring back the same service, so a lasting change belongs in the script's defaults, not only in the settings file.
 - Model cache: named volume `speaches-hf-cache` (a PVC on K8s); `uninstall` keeps it unless you confirm.
 - Config: `~/.config/speaches-tui/speaches.conf`
+- `config` checks what it is given before saving, and refuses with a warning otherwise: the port, idle time and thread count must be numbers, the version an image tag (letters, digits, `_ . -`, not starting with `.` or `-`), and the cache volume a volume name (letters, digits, `_ . -`, starting with a letter or digit; never a path, which would bind-mount host files).
 - Commands: `install`, `status` (health, LAN URL, installed and loaded models, missing defaults, firewall, lingering), `models` (list, download, remove, download the defaults), `test` (Kokoro speaks a sentence, Whisper transcribes it back), `bench` (how fast, below), `logs`, `config`, `uninstall`; K8s adds `port-forward`
 
 ## Bench

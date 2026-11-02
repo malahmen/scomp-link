@@ -56,7 +56,7 @@ IDB_HELM_REPO_NAME="influxdata"
 IDB_HELM_REPO_URL="https://helm.influxdata.com/"
 IDB_HELM_CHART="influxdata/influxdb2"
 IDB_DEFAULT_PORT=8086
-_IDB_PF_PID="/tmp/scomp-pf-influxdb.pid"
+_IDB_PF_PID="$(pf_file influxdb)"
 IDB_DEFAULT_IMAGE_TAG="2"
 IDB_DEFAULT_ADMIN_USER="admin"
 IDB_DEFAULT_ORG="myorg"
@@ -223,26 +223,32 @@ influxdb_install_docker() {
     local docker_args=(
         run -d
         --name "$IDB_CONTAINER_NAME"
-        -p "${IDB_PORT}:8086"
+        -p "$(svc_publish "$IDB_PORT" 8086)"
         -v "${volume}:/var/lib/influxdb2"
         --restart unless-stopped
     )
     [[ "$kept" == true ]] || docker_args+=(-e DOCKER_INFLUXDB_INIT_MODE=setup)
     local kv
-    for kv in "USERNAME=${IDB_ADMIN_USER}" "PASSWORD=${IDB_ADMIN_PASSWORD}" \
-              "ORG=${IDB_ORG}" "BUCKET=${IDB_BUCKET}" "ADMIN_TOKEN=${IDB_TOKEN}"; do
+    for kv in "USERNAME=${IDB_ADMIN_USER}" "ORG=${IDB_ORG}" "BUCKET=${IDB_BUCKET}"; do
         [[ -n "${kv#*=}" ]] && docker_args+=(-e "DOCKER_INFLUXDB_INIT_${kv}")
     done
+    # The password and token by name only: see the docker run below.
+    [[ -n "$IDB_ADMIN_PASSWORD" ]] && docker_args+=(-e DOCKER_INFLUXDB_INIT_PASSWORD)
+    [[ -n "$IDB_TOKEN" ]] && docker_args+=(-e DOCKER_INFLUXDB_INIT_ADMIN_TOKEN)
 
     docker_args+=("$image")
 
-    if ! docker "${docker_args[@]}" &>/dev/null; then
+    # Secrets are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! DOCKER_INFLUXDB_INIT_PASSWORD="$IDB_ADMIN_PASSWORD" DOCKER_INFLUXDB_INIT_ADMIN_TOKEN="$IDB_TOKEN" \
+        docker "${docker_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${IDB_CONTAINER_NAME}'."
     fi
 
     info "Waiting for InfluxDB to be ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${IDB_PORT}/ping" &>/dev/null; do
+    until curl -sf "http://$(svc_host):${IDB_PORT}/ping" &>/dev/null; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${IDB_CONTAINER_NAME}"
@@ -256,11 +262,12 @@ influxdb_install_docker() {
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "InfluxDB running" \
         "" \
-        "Web UI:   http://localhost:${IDB_PORT}" \
+        "Web UI:   http://$(svc_host):${IDB_PORT}" \
         "User:     ${IDB_ADMIN_USER:-(unchanged)}" \
         "Org:      ${IDB_ORG:-(unchanged)}" \
         "Bucket:   ${IDB_BUCKET:-(unchanged)}" \
         "Volume:   ${volume}"
+    svc_bind_notice
 }
 
 influxdb_status_docker() {
@@ -290,8 +297,8 @@ influxdb_status_docker() {
     port=$(_docker_get_port "$IDB_CONTAINER_NAME")
 
     echo ""
-    info "Health check (http://127.0.0.1:${port}/health):"
-    if curl -sf "http://127.0.0.1:${port}/health" 2>/dev/null \
+    info "Health check (http://$(svc_host):${port}/health):"
+    if curl -sf "http://$(svc_host):${port}/health" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat); then
         :
     else
@@ -325,7 +332,7 @@ influxdb_connect_docker() {
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
         --align left --width 60 --margin "1 2" --padding "1 4" \
-        "InfluxDB Web UI → http://localhost:${port}" \
+        "InfluxDB Web UI → http://$(svc_host):${port}" \
         "" \
         "Username: ${admin_user:-<see container env>}" \
         "Org:      ${org:-<see container env>}" \
@@ -491,16 +498,23 @@ influxdb_install_k8s() {
         --wait --timeout 5m
     )
 
+    local secret_values=""
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
     else
+        # The password and token go in a 0600 values file, not --set: on argv
+        # they are readable by every local user, and --set splits a value at
+        # commas and parses \ . { } in it (Kamino 196).
+        local -a secret_kv=(adminUser.password "$IDB_ADMIN_PASSWORD")
+        [[ -n "$IDB_TOKEN" ]] && secret_kv+=(adminUser.token "$IDB_TOKEN")
+        _helm_secret_values secret_values "${secret_kv[@]}" \
+            || error_exit "The admin password or token contains control characters; it cannot be passed to helm."
         helm_args+=(
+            -f "$secret_values"
             --set adminUser.user="$IDB_ADMIN_USER"
-            --set adminUser.password="$IDB_ADMIN_PASSWORD"
             --set adminUser.organization="$IDB_ORG"
             --set adminUser.bucket="$IDB_BUCKET"
         )
-        [[ -n "$IDB_TOKEN" ]] && helm_args+=(--set adminUser.token="$IDB_TOKEN")
     fi
 
     if [[ "$upgrade" == true ]]; then
@@ -514,10 +528,12 @@ influxdb_install_k8s() {
         if ! gum spin --spinner dot --title "Installing InfluxDB (this may take a few minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
             warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${IDB_HELM_RELEASE} -n ${IDB_NAMESPACE}' for details."
+            _secret_file_rm "$secret_values"
             return
         fi
         success "InfluxDB installed."
     fi
+    _secret_file_rm "$secret_values"
 
     echo ""
     gum style --foreground "$CYAN" \
@@ -576,7 +592,7 @@ influxdb_connect_k8s() {
 
     local pf_pid
     pf_pid=$(_k8s_start_port_forward "$port")
-    echo "${pf_pid}:${port}" > "$_IDB_PF_PID"
+    pf_write "$_IDB_PF_PID" "${pf_pid}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

@@ -52,7 +52,7 @@ MY_HELM_REPO_NAME="groundhog2k"
 MY_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 MY_HELM_CHART="groundhog2k/mysql"
 MY_DEFAULT_PORT=3306
-_MY_PF_PID="/tmp/scomp-pf-mysql.pid"
+_MY_PF_PID="$(pf_file mysql)"
 MY_DEFAULT_DB="app"
 MY_DEFAULT_USER="app"
 MY_DEFAULT_IMAGE_TAG="8.4"
@@ -205,13 +205,16 @@ mysql_install_docker() {
         docker pull "$image" \
         || error_exit "Failed to pull image ${image}."
 
-    if ! docker run -d \
+    # The passwords are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196). The same for every docker exec below.
+    if ! MYSQL_ROOT_PASSWORD="$MY_ROOT_PASSWORD" MYSQL_PASSWORD="$MY_PASSWORD" docker run -d \
         --name "$MY_CONTAINER_NAME" \
-        -e MYSQL_ROOT_PASSWORD="$MY_ROOT_PASSWORD" \
+        -e MYSQL_ROOT_PASSWORD \
         -e MYSQL_DATABASE="$MY_DB" \
         -e MYSQL_USER="$MY_USER" \
-        -e MYSQL_PASSWORD="$MY_PASSWORD" \
-        -p "${MY_PORT}:3306" \
+        -e MYSQL_PASSWORD \
+        -p "$(svc_publish "$MY_PORT" 3306)" \
         -v "${volume}:/var/lib/mysql" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
@@ -220,8 +223,8 @@ mysql_install_docker() {
 
     info "Waiting for MySQL to accept connections..."
     local attempts=0
-    until docker exec "$MY_CONTAINER_NAME" \
-        mysqladmin ping -uroot -p"${MY_ROOT_PASSWORD}" --silent &>/dev/null 2>&1; do
+    until MYSQL_PWD="$MY_ROOT_PASSWORD" docker exec -e MYSQL_PWD "$MY_CONTAINER_NAME" \
+        mysqladmin ping -uroot --silent &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${MY_CONTAINER_NAME}"
@@ -239,8 +242,9 @@ mysql_install_docker() {
         "Image:      ${image}" \
         "Database:   ${MY_DB}" \
         "User:       ${MY_USER}" \
-        "Port:       localhost:${MY_PORT}" \
+        "Port:       $(svc_host):${MY_PORT}" \
         "Volume:     ${volume}"
+    svc_bind_notice
 }
 
 mysql_status_docker() {
@@ -284,15 +288,20 @@ mysql_connect_docker() {
 
     local env_vars user db password
     env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$MY_CONTAINER_NAME" 2>/dev/null)
-    user=$(echo     "$env_vars" | grep '^MYSQL_USER='     | cut -d= -f2 || echo "root")
-    db=$(echo       "$env_vars" | grep '^MYSQL_DATABASE=' | cut -d= -f2 || echo "")
-    password=$(echo "$env_vars" | grep '^MYSQL_PASSWORD=' | cut -d= -f2 || echo "")
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
+    user=$(echo     "$env_vars" | grep '^MYSQL_USER='     | cut -d= -f2- || echo "root")
+    db=$(echo       "$env_vars" | grep '^MYSQL_DATABASE=' | cut -d= -f2- || echo "")
+    password=$(echo "$env_vars" | grep '^MYSQL_PASSWORD=' | cut -d= -f2- || echo "")
 
     info "Connecting as ${user}${db:+ → ${db}}. Type exit or \\q to quit."
     echo ""
 
-    docker exec -it "$MY_CONTAINER_NAME" \
-        mysql -u"$user" ${password:+-p"$password"} ${db:+"$db"}
+    # The password goes in MYSQL_PWD, passed by name: -p<password> put it on
+    # the client's command line, inside and outside the container (Kamino 196).
+    local -a pw_env=()
+    [[ -n "$password" ]] && pw_env=(-e MYSQL_PWD)
+    MYSQL_PWD="$password" docker exec -it "${pw_env[@]}" "$MY_CONTAINER_NAME" \
+        mysql -u"$user" ${db:+"$db"}
 }
 
 mysql_uninstall_docker() {
@@ -423,15 +432,23 @@ mysql_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MY_NAMESPACE}"
     else
+        # The passwords go in a 0600 values file, not --set: on argv they are
+        # readable by every local user, and --set splits a value at commas and
+        # parses \ . { } in it (Kamino 196).
+        local secret_values
+        _helm_secret_values secret_values \
+            settings.rootPassword "$MY_ROOT_PASSWORD" \
+            userDatabase.password "$MY_PASSWORD" \
+            || error_exit "A password contains control characters; it cannot be passed to helm."
         helm_args+=(
-            --set settings.rootPassword="$MY_ROOT_PASSWORD"
+            -f "$secret_values"
             --set userDatabase.name="$MY_DB"
             --set userDatabase.user="$MY_USER"
-            --set userDatabase.password="$MY_PASSWORD"
         )
         gum spin --spinner dot --title "Installing MySQL via Helm (may take a few minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MY_NAMESPACE}"
+        _secret_file_rm "$secret_values"
     fi
 
     local shown_db="$MY_DB" shown_user="$MY_USER"
@@ -500,7 +517,7 @@ mysql_port_forward_k8s() {
     local port="${port_input:-$MY_DEFAULT_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$MY_NAMESPACE" port-forward "svc/${MY_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_MY_PF_PID"
+    pf_write "$_MY_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

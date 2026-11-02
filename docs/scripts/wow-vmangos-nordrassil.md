@@ -75,8 +75,15 @@ engine itself never prompts.
   local|docker|k8s`, so the front-end asks first (auto-detect / local /
   docker / k8s — the last also asks for the kube target).
   `delete-account` also sweeps a leftover `account_access` row the server's own
-  delete misses; `set-account-level` promotes/demotes without recreating (which
+  delete misses (the front-end asks first, defaulting to *no*, naming the
+  server); `set-account-level` promotes/demotes without recreating (which
   would lose characters).
+- **The new account's password is on a command line.** The engine's
+  `create-account` takes it only as `--pass`, so while that call runs (a few
+  seconds when a GM level is set) any user of this machine can read it with
+  `ps`. The prompt says so; on a shared host, set a new password in game
+  afterwards. Usernames and passwords are 1-16 characters with no spaces (the
+  console's rule), checked before anything is sent.
 - **GM level scale**: the picker uses the server's real security levels
   (`src/shared/Common.h` `AccountTypes`): `0` Player … `6` Administrator (most
   in-game GM commands need `6`). Level `7` (Console) is reserved and not offered.

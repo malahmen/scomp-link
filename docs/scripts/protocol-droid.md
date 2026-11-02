@@ -78,6 +78,9 @@ The top level has three entries:
   | — | Install a plugin | `pipx inject` a `#markitdown-plugin` package |
   | Uninstall | Uninstall | Remove that backend's pipx env |
 
+  **Clear model cache**, **Uninstall** and the service's **Tear down** ask
+  first, and the question defaults to **no**: Enter removes nothing.
+
 - **marker in a container** — convert documents or run the benchmark with marker
   from the image (`container convert` / `container bench`), check its status, or
   build it. Needs podman or docker.
@@ -127,6 +130,11 @@ Convert first asks **how** to pick the source:
 - **Enter a path (file or folder)** — a leading `~` is expanded. A **file** →
   single-file conversion; a **folder** → the whole folder is batch-converted
   (every supported file under it, no picker — use *Scan a folder* to choose).
+
+A relative path that starts with `-` (`-notes/`) is passed as `./-notes/`, typed
+or picked from a scan: the engine reads anything starting with `-` as a flag
+and has no end-of-options `--` (its `--` forwards what follows to the
+converter), so the bare name was refused as an unknown flag.
 
 One file → marker's single CLI; several files (or a whole folder) → marker's
 batch CLI, which loads its models once (a selection is symlinked into a temp dir
@@ -357,3 +365,14 @@ flag reference.
 - (marker) Set `TORCH_DEVICE` (e.g. `cuda`, `mps`, `cpu`) to override the detected
   device. Model caches live under `~/.cache/datalab` (and `~/.cache/huggingface`);
   **Status** reports their sizes and **Clear model cache** clears the datalab cache.
+
+## Tests
+
+`tests/test-protocol-droid.sh` drives the menus through the gum stub against a
+fake engine that answers `local scan` and records every other call: a path
+starting with `-` reaches the engine as `./-path` whether typed, picked from a
+scan of `.`, or scanned as the folder, in the local and the container convert;
+an LLM API key reaches the engine in its environment and in no argument;
+clearing the model cache, uninstalling a backend and tearing a stack down are
+driven with Enter, no and yes, and only yes calls the engine; Esc at each
+convert question returns to the menu; each option's flags.

@@ -261,7 +261,8 @@ action_remove_instance() {
     header "dark-portal — Remove instance"
     local name; name=$(_pick_instance "Remove which instance?") || return 0
     [[ -n "$name" ]] || return 0
-    gum confirm "Remove instance '${name}'? This deletes its Bottles bottle and client files." || { info "Cancelled."; return 0; }
+    # Default no (the Kamino 178 rule, Kamino 196): Enter deletes nothing.
+    gum confirm --default=false "Remove instance '${name}'? This deletes its Bottles bottle and client files." || { info "Cancelled."; return 0; }
     engine_foreground remove-instance --name "$name"
 }
 

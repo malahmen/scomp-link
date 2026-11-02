@@ -33,7 +33,9 @@ cat > "$T/engine/teldrassil.sh" <<EOF
 if [[ "\${1:-}" == get ]]; then
     case "\$2" in
         DB_WORLD) echo classicmangos ;; DB_CHARACTERS) echo classiccharacters ;;
-        DB_REALMD) echo classicrealmd ;; DB_LOGS) echo classiclogs ;; DB_TIMEOUT) echo 120 ;; *) echo "" ;;
+        DB_REALMD) echo classicrealmd ;; DB_LOGS) echo classiclogs ;; DB_TIMEOUT) echo 120 ;;
+        # Values a prompt opens holding (gum --value): Enter returns them.
+        REALM_NAME) echo Teldrassil ;; DB_USER) echo root ;; BOTS) echo 2000 ;; *) echo "" ;;
     esac
     exit 0
 fi
@@ -52,6 +54,10 @@ exit 0
 EOF
 cp "${TEST_DIR}/stubs/gum" "$T/bin/gum"; chmod +x "$T/bin/gum"
 printf -- '-- a table-subset dump\nCREATE TABLE guild (a INT);\n' > "$T/config/teldrassil/dumps/classiccharacters-tables-20261025-000000.sql"
+# What the engine's "Accounts only" dump is: mariadb-dump --tables, so DROP
+# TABLE and CREATE TABLE for each, and no CREATE DATABASE.
+printf -- '-- accounts\nDROP TABLE IF EXISTS `account`;\nCREATE TABLE `account` (id INT);\n' > "$T/config/teldrassil/dumps/classicrealmd-tables-20261024-000000.sql"
+touch -t 202610240000 "$T/config/teldrassil/dumps/classicrealmd-tables-20261024-000000.sql"
 
 # drive <answer>... — one answer per prompt, in order; the session ends at Quit.
 drive() {
@@ -142,6 +148,16 @@ check "  a blank answer keeps the setting" not_called "set|WORK_DIR"
 check "  and declining installs nothing" not_called "install"
 drive Provision install "" "" "" "" "" yes back Quit
 check "confirmed: install --yes" called "install|--yes"
+# Enter on a prompt that opens holding the current value returns that value
+# (real gum, and the stub since Kamino 196): saving it anyway wrote every
+# visited key into the profile, pinning what the base config or the
+# engine's default supplied. Only a changed answer is saved.
+check "  Enter on each pre-filled prompt: nothing is set" not_called "set|"
+drive Provision install "" Darnassus "" "" "" no back Quit
+check "  a changed answer is set" called "set|REALM_NAME|Darnassus"
+check "  and only that one" bash -c '[ "$(grep -c "^set|" "$1")" = 1 ]' _ "$T/calls"
+drive Settings edit-setting DB_USER "Change it" "" back Quit
+check "edit a setting, Enter: unchanged, not set" not_called "set|DB_USER"
 drive Provision db-init no back Quit
 check "db-init declined: nothing" not_called "db-init"
 drive Provision db-init yes back Quit
@@ -162,7 +178,9 @@ drive Bots llm "Turn it off" back Quit
 check "off" called "llm|off"
 drive Bots llm "Turn it on (or change it)" http://127.0.0.1:1234/v1/chat/completions qwen 80 none 0 "" back Quit
 check "on, with the endpoint, model and extras" called "llm|on|--endpoint|http://127.0.0.1:1234/v1/chat/completions|--model|qwen|--max-tokens|80|--reasoning-effort|none|--bot-to-bot|0"
-drive Bots llm "Turn it on (or change it)" https://api.example/v1/chat/completions gpt "" "" "" /keys/llm.txt back Quit
+# The token and bot-to-bot prompts open holding 80 and 0 (gum --value), so
+# leaving them out takes clearing the field: <clear>, not Enter (Kamino 196).
+drive Bots llm "Turn it on (or change it)" https://api.example/v1/chat/completions gpt "<clear>" "" "<clear>" /keys/llm.txt back Quit
 check "a hosted endpoint: the key FILE is passed, blanks left out" called "llm|on|--endpoint|https://api.example/v1/chat/completions|--model|gpt|--api-key-file|/keys/llm.txt"
 drive Bots llm "Turn it on (or change it)" http://x/v1/chat/completions "" back Quit
 check "no model: cancelled" not_called "llm|on"
@@ -191,7 +209,9 @@ for bad in 0 -5 abc 1.5 "60s" "1 2" 007; do
     check "'${bad}' is refused, nothing set" not_called "DB_TIMEOUT"
 done
 drive Settings db-timeout "" back Quit
-check "blank keeps it" not_called "DB_TIMEOUT"
+check "Enter (the pre-filled 120) keeps it" not_called "DB_TIMEOUT"
+drive Settings db-timeout "<clear>" back Quit
+check "a cleared field keeps it" not_called "DB_TIMEOUT"
 
 echo "# every destructive prompt: declined, Enter (its default) and confirmed (Kamino 178)"
 # Enter answers the prompt's --default; each of these is --default=false, so
@@ -282,6 +302,35 @@ echo "# console: one command is one argument, however many words"
 drive Server console "account onlinelist" "server info" "" back Quit
 check "a two-word command arrives whole" called "console|account onlinelist"
 check "  and the next one as its own call" called "console|server info"
+echo "# console: a password never goes on the engine's command line (Kamino 196)"
+# The engine takes console commands only as arguments: one carrying a
+# password would be in the process list. They are refused here instead.
+drive Server console "account create Alice s3cretpw" ".ACCOUNT SET PASSWORD Alice n3wpw n3wpw" "  account   create Bob pw2" "server info" "" back Quit
+check "account create is not sent" not_called "s3cretpw"
+check "  nor account set password (any case, a leading dot)" not_called "n3wpw"
+check "  nor with extra spaces" not_called "pw2"
+check "  the operator is told where to create one" grep -q "create-account" "$T/out"
+check "  and the console goes on: the next command is sent" called "console|server info"
+drive Server console "account onlinelist" "account set gmlevel Bob 1" "" back Quit
+check "other account commands still go through" bash -c 'grep -qxF "console|account onlinelist" "$1" && grep -qxF "console|account set gmlevel Bob 1" "$1"' _ "$T/calls"
+
+echo "# restore: an accounts-only dump replaces every account (Kamino 196)"
+acc="classicrealmd-tables-20261024-000000.sql"
+drive Administration restore "$acc" classicrealmd no back Quit
+check "the account table: a separate question first; declined, no restore" not_called "restore"
+check "  it says the console's and the bots' accounts are replaced" grep -q "random bots' accounts" "$T/out"
+drive Administration restore "$acc" classicrealmd enter back Quit
+check "  Enter on it: no restore" not_called "restore"
+drive Administration restore "$acc" classicrealmd yes no back Quit
+check "  yes, then the restore itself declined: no restore" not_called "restore"
+drive Administration restore "$acc" classicrealmd yes yes no back Quit
+check "both yeses: restored into the realm database" called "restore|--file|$T/config/teldrassil/dumps/${acc}|--db|classicrealmd|--yes"
+check "  the console account renewal declined: not renewed" not_called "console-account"
+drive Administration restore "$acc" classicrealmd yes yes enter back Quit
+check "  Enter on the renewal: the console account is renewed" called "console-account"
+drive Administration restore "classiccharacters-tables-20261025-000000.sql" classiccharacters yes back Quit
+check "a dump without the account table: no extra question, no renewal" bash -c 'grep -q "^restore|" "$1" && ! grep -q console-account "$1"' _ "$T/calls"
+
 echo "# editing and removing profiles"
 drive Settings delete-profile far no back Quit
 check "delete declined: nothing" not_called "profile-delete"

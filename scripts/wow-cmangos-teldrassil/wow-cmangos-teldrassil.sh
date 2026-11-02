@@ -106,10 +106,15 @@ eget() { bash "$ENGINE" "${PROFILE_FLAGS[@]}" get "$1" 2>/dev/null || true; }
 _ask() { gum input --value "${2:-}" --header "$1" || true; }
 
 # _set_if <KEY> <header> — prompt pre-filled with the current value, saved
-# only when an answer was given (empty keeps the setting).
+# only when the answer changed it. gum returns the pre-filled value on Enter,
+# so saving every non-empty answer wrote each visited key into the active
+# profile (or teldrassil.conf): a value inherited from the base config or the
+# engine's default was pinned there, and stopped following them (Kamino 196).
+# Empty (the field cleared, or Esc) keeps the setting too.
 _set_if() {
-    local v; v="$(_ask "$2" "$(eget "$1")")"
-    [[ -n "$v" ]] && engine_foreground set "$1" "$v"
+    local cur v; cur="$(eget "$1")"
+    v="$(_ask "$2" "$cur")"
+    [[ -n "$v" && "$v" != "$cur" ]] && engine_foreground set "$1" "$v"
     return 0
 }
 
@@ -126,7 +131,7 @@ _pick_gm_level() {
 
 action_setup() {
     header "teldrassil — Where the server is (${PROFILE_LABEL})"
-    info "Each answer is saved with the engine's 'set'; leave one blank to keep it."
+    info "Each answer that changes a setting is saved with the engine's 'set'; Enter keeps one as it is."
     local where
     where=$(gum choose --header "Where does this server run?" \
         "Here, in containers" \
@@ -178,13 +183,13 @@ _pick_profile() {
 # it so the base config's value (or the default) shows through again.
 action_edit_setting() {
     header "teldrassil — Edit a setting (${PROFILE_LABEL})"
-    local key how v
+    local key how
     key=$(engine_foreground config 2>/dev/null | awk '{k = ($1 ~ /^[A-Z][A-Z0-9_]+$/) ? $1 : $2} k ~ /^[A-Z][A-Z0-9_]+$/ && k != "Config" {print k}' \
         | gum choose --header "Which setting?") || return 0
     [[ -n "$key" ]] || return 0
     how=$(gum choose --header "${key} is now: $(eget "$key")" "Change it" "Clear it (use the base config's or the default)") || return 0
     case "$how" in
-        Change*) v="$(_ask "${key}:" "$(eget "$key")")"; [[ -n "$v" ]] && engine_foreground set "$key" "$v" ;;
+        Change*) _set_if "$key" "${key}:" ;;
         Clear*)  engine_foreground unset "$key" ;;
     esac
     return 0
@@ -215,8 +220,9 @@ action_delete_profile() {
 action_db_timeout() {
     header "teldrassil — Database wait (${PROFILE_LABEL})"
     info "How long install and db-init wait for the database to answer; past it they stop, the databases untouched."
-    local v; v="$(_ask "Seconds (DB_TIMEOUT; blank keeps it):" "$(eget DB_TIMEOUT)")"
-    [[ -n "$v" ]] || { info "Kept."; return 0; }
+    local cur v; cur="$(eget DB_TIMEOUT)"
+    v="$(_ask "Seconds (DB_TIMEOUT; Enter keeps it):" "$cur")"
+    [[ -n "$v" && "$v" != "$cur" ]] || { info "Kept."; return 0; }
     [[ "$v" =~ ^[1-9][0-9]*$ ]] || { warn "'${v}' is not a whole number of seconds above 0; DB_TIMEOUT is unchanged."; return 0; }
     engine_foreground set DB_TIMEOUT "$v"
 }
@@ -256,7 +262,7 @@ action_install() {
     _set_if REALM_NAME    "Realm name (in the realm list):"
     _set_if REALM_ADDRESS "Address players connect to (this machine's LAN address for LAN play):"
     _set_if BOTS          "How many random bots:"
-    _set_if WORK_DIR      "Where teldrassil keeps its files (blank keeps the current place):"
+    _set_if WORK_DIR      "Where teldrassil keeps its files (Enter keeps the current place):"
     warn "The first install compiles for tens of minutes and extracts for about 20 (~7 GB in all)."
     gum confirm --default=false "Install now?" || { info "Cancelled."; return 0; }
     engine_foreground install --yes
@@ -377,8 +383,24 @@ action_console() {
     while true; do
         c="$(_ask "Console command:")"
         [[ -n "$c" ]] || return 0
+        if _console_has_password "$c"; then
+            # The engine takes console commands only as arguments, so a
+            # password in one would sit in the process list (here, and on
+            # SSH_HOST) for as long as the command runs (Kamino 196).
+            warn "Not sent: 'account create' and 'account set password' carry a password, and the console takes it as an argument."
+            info "Create accounts under Accounts -> create-account (the password goes on stdin)."
+            unset c
+            continue
+        fi
         engine_foreground console "$c"
     done
+}
+
+# _console_has_password <command> — a cmangos console command whose arguments
+# include a password.
+_console_has_password() {
+    local c; c="$(tr '[:upper:]' '[:lower:]' <<< "$1")"
+    [[ "$c" =~ ^[[:space:]]*\.?account[[:space:]]+(create|set[[:space:]]+password)([[:space:]]|$) ]]
 }
 
 # -----------------------------------------------------------------------------
@@ -576,13 +598,32 @@ action_restore() {
     local -a dbflag=() head=()
     if [[ "$file" == *.gz ]]; then mapfile -t head < <(gzip -dc -- "$file" 2>/dev/null | head -200 || true)
     else mapfile -t head < <(head -200 -- "$file" 2>/dev/null || true); fi
+    local accounts=0
     if ! printf '%s\n' "${head[@]}" | grep -qiE '^CREATE DATABASE'; then
         local into; into="$(_pick_db "This dump names no database (a table subset) - restore into which?")" || { info "Cancelled."; return 0; }
         dbflag=(--db "$into")
+        # An "Accounts only" dump: mariadb-dump writes DROP TABLE and CREATE
+        # TABLE for each table it names, so restoring it replaces this
+        # server's whole account table - its console account and its bots'
+        # accounts with the other server's (Kamino 196; see the docs).
+        printf '%s\n' "${head[@]}" | grep -qiE '^(DROP TABLE IF EXISTS|CREATE TABLE) `account`' && accounts=1
     fi
     warn "RESTORE REPLACES DATA and cannot be undone. The world server must be stopped first."
+    if (( accounts )); then
+        warn "This dump holds the account table: restored, it REPLACES every account on ${PROFILE_LABEL} - its console account"
+        warn "(TELDRASSIL) and its random bots' accounts too - with the ones of the server it was dumped from."
+        gum confirm --default=false "Replace every account on ${PROFILE_LABEL}, bots' and console's included?" || { info "Cancelled."; return 0; }
+    fi
     gum confirm --default=false "Restore $(basename "$file") onto ${PROFILE_LABEL}?" || { info "Cancelled."; return 0; }
     engine_foreground restore --file "$file" "${dbflag[@]}" --yes
+    if (( accounts && ENGINE_RC == 0 )); then
+        # The console account is now the dumped server's, with a password this
+        # profile's RA_PASS_FILE does not hold: renewing it is harmless if it
+        # survived, and is what makes the console work again if it did not.
+        info "The console account may now be the other server's: renewing it gives this profile a working one."
+        gum confirm "Renew the console account TELDRASSIL on ${PROFILE_LABEL}?" && engine_foreground console-account
+    fi
+    return 0
 }
 
 # -----------------------------------------------------------------------------

@@ -52,7 +52,7 @@ N8N_HELM_REPO_NAME="community-charts"
 N8N_HELM_REPO_URL="https://community-charts.github.io/helm-charts"
 N8N_HELM_CHART="community-charts/n8n"
 N8N_DEFAULT_PORT=5678
-_N8N_PF_PID="/tmp/scomp-pf-n8n.pid"
+_N8N_PF_PID="$(pf_file n8n)"
 N8N_DEFAULT_IMAGE_TAG="latest"
 N8N_DEFAULT_TIMEZONE="UTC"
 
@@ -239,12 +239,12 @@ n8n_install_docker() {
     local docker_args=(
         run -d
         --name "$N8N_CONTAINER_NAME"
-        -p "${N8N_PORT}:5678"
+        -p "$(svc_publish "$N8N_PORT" 5678)"
         -e GENERIC_TIMEZONE="$timezone"
         -v "${volume}:/home/node/.n8n"
         --restart unless-stopped
     )
-    [[ -n "$N8N_ENCRYPTION_KEY" ]] && docker_args+=(-e N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY")
+    [[ -n "$N8N_ENCRYPTION_KEY" ]] && docker_args+=(-e N8N_ENCRYPTION_KEY)
 
     if [[ "$N8N_DB_TYPE" == "postgresdb" ]]; then
         docker_args+=(
@@ -253,19 +253,23 @@ n8n_install_docker() {
             -e DB_POSTGRESDB_PORT="$N8N_PG_PORT"
             -e DB_POSTGRESDB_DATABASE="$N8N_PG_DATABASE"
             -e DB_POSTGRESDB_USER="$N8N_PG_USER"
-            -e DB_POSTGRESDB_PASSWORD="$N8N_PG_PASSWORD"
+            -e DB_POSTGRESDB_PASSWORD
         )
     fi
 
     docker_args+=("$image")
 
-    if ! docker "${docker_args[@]}" &>/dev/null; then
+    # Secrets are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY" DB_POSTGRESDB_PASSWORD="$N8N_PG_PASSWORD" \
+        docker "${docker_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${N8N_CONTAINER_NAME}'."
     fi
 
     info "Waiting for n8n to be ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${N8N_PORT}/healthz" &>/dev/null; do
+    until curl -sf "http://$(svc_host):${N8N_PORT}/healthz" &>/dev/null; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${N8N_CONTAINER_NAME}"
@@ -279,9 +283,10 @@ n8n_install_docker() {
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "n8n running" \
         "" \
-        "Web UI:   http://localhost:${N8N_PORT}" \
+        "Web UI:   http://$(svc_host):${N8N_PORT}" \
         "Database: ${N8N_DB_TYPE}" \
         "Volume:   ${volume}"
+    svc_bind_notice
 }
 
 n8n_status_docker() {
@@ -317,10 +322,10 @@ n8n_status_docker() {
 
     echo ""
     info "Health check:"
-    if curl -sf "http://127.0.0.1:${host_port}/healthz" &>/dev/null; then
+    if curl -sf "http://$(svc_host):${host_port}/healthz" &>/dev/null; then
         success "n8n is healthy."
     else
-        warn "n8n is not responding at http://127.0.0.1:${host_port}/healthz"
+        warn "n8n is not responding at http://$(svc_host):${host_port}/healthz"
     fi
 
     echo ""
@@ -351,7 +356,7 @@ n8n_connect_docker() {
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
         --align left --width 60 --margin "1 2" --padding "1 4" \
-        "n8n Web UI → http://localhost:${host_port}" \
+        "n8n Web UI → http://$(svc_host):${host_port}" \
         "" \
         "Database: ${db_type}" \
         "" \
@@ -502,8 +507,22 @@ n8n_install_k8s() {
             --set config.database.postgresdb.port="$N8N_PG_PORT"
             --set config.database.postgresdb.database="$N8N_PG_DATABASE"
             --set config.database.postgresdb.user="$N8N_PG_USER"
-            --set config.database.postgresdb.password="$N8N_PG_PASSWORD"
         )
+    fi
+
+    # The Postgres password and the encryption key go in a 0600 values file,
+    # not --set: on argv they are readable by every local user, and --set
+    # splits a value at commas and parses \ . { } in it (Kamino 196). Keys
+    # under config. stay next to each other (_helm_secret_values).
+    local -a secret_kv=()
+    [[ "$N8N_DB_TYPE" == "postgresdb" ]] \
+        && secret_kv+=(config.database.postgresdb.password "$N8N_PG_PASSWORD")
+    [[ "$upgrade" == true ]] || secret_kv+=(config.n8n.encryptionKey "$N8N_ENCRYPTION_KEY")
+    local secret_values=""
+    if (( ${#secret_kv[@]} )); then
+        _helm_secret_values secret_values "${secret_kv[@]}" \
+            || error_exit "The Postgres password or encryption key contains control characters; it cannot be passed to helm."
+        helm_args+=(-f "$secret_values")
     fi
 
     if [[ "$upgrade" == true ]]; then
@@ -511,18 +530,20 @@ n8n_install_k8s() {
         if ! gum spin --spinner dot --title "Upgrading n8n..." -- \
             helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}"; then
             warn "Upgrade failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            _secret_file_rm "$secret_values"
             return
         fi
         success "n8n upgraded."
     else
-        helm_args+=(--set config.n8n.encryptionKey="$N8N_ENCRYPTION_KEY")
         if ! gum spin --spinner dot --title "Installing n8n..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
             warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${N8N_HELM_RELEASE} -n ${N8N_NAMESPACE}'."
+            _secret_file_rm "$secret_values"
             return
         fi
         success "n8n installed."
     fi
+    _secret_file_rm "$secret_values"
 
     echo ""
     gum style --foreground "$CYAN" \
@@ -585,7 +606,7 @@ n8n_connect_k8s() {
     fi
 
     kubectl --context "$KUBE_CONTEXT" -n "$N8N_NAMESPACE" port-forward "svc/${svc}" "${port}:5678" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_N8N_PF_PID"
+    pf_write "$_N8N_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

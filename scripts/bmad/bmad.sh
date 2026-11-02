@@ -230,9 +230,9 @@ action_create() {
     require_bmad_deps || { warn "Missing prerequisites — resolve the above and retry."; return; }
 
     local name parent dir
-    name=$(gum input --header "Project name (folder to create):" --placeholder "my-bmad-project") || return
+    name=$(gum input --header "Project name (folder to create):" --placeholder "my-bmad-project") || return 0
     [[ -z "$name" ]] && { gum style --faint "Cancelled."; return; }
-    parent=$(gum input --value "." --header "Parent directory (created if missing):") || return
+    parent=$(gum input --value "." --header "Parent directory (created if missing):") || return 0
     dir="$(_abspath "${parent:-.}")/${name}"
 
     if [[ -e "$dir" ]]; then
@@ -240,7 +240,7 @@ action_create() {
             warn "${dir} already looks like a BMAD project. Use 'Update' instead."
             return
         fi
-        gum confirm "${dir} already exists. Install BMAD into it anyway?" || return
+        gum confirm "${dir} already exists. Install BMAD into it anyway?" || return 0
     fi
     mkdir -p "$dir" || { warn "Could not create ${dir}."; return; }
 
@@ -265,7 +265,7 @@ action_update() {
     [[ -d "$dir/$BMAD_MARKER_DIR" ]] || warn "No ${BMAD_MARKER_DIR}/ in ${dir} — the installer will treat this as a fresh install."
 
     local channel pkg
-    channel=$(gum choose "stable" "prerelease (@next)" --header "Which BMAD version?") || return
+    channel=$(gum choose "stable" "prerelease (@next)" --header "Which BMAD version?") || return 0
     [[ "$channel" == prerelease* ]] && pkg="${BMAD_PKG}@next" || pkg="$BMAD_PKG"
 
     header "Updating BMAD"
@@ -306,7 +306,7 @@ action_delete() {
 
     warn "This permanently deletes the ENTIRE folder ${dir} and everything under it."
     local typed
-    typed=$(gum input --header "Type the project name '${name}' to confirm deletion (blank to cancel):") || return
+    typed=$(gum input --header "Type the project name '${name}' to confirm deletion (blank to cancel):") || return 0
     if [[ "$typed" != "$name" ]]; then
         gum style --faint "Name did not match — nothing deleted."
         return
@@ -329,9 +329,11 @@ action_list() {
     done < <(_reg list)
     (( any )) || { info "No projects registered yet. Create one, or use Update/Delete to scan and register."; return; }
     if _reg list | grep -q $'\t0$'; then
-        gum confirm "Some registered folders no longer exist. Prune them from the registry?" \
-            && { _reg prune; success "Registry pruned."; }
+        if gum confirm "Some registered folders no longer exist. Prune them from the registry?"; then
+            _reg prune; success "Registry pruned."
+        fi
     fi
+    return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -349,11 +351,13 @@ main() {
             "List managed projects" \
             "Quit" \
             --header "What do you want to do?") || exit 0
+        # Guarded: under set -e an action that returned non-zero - a bare
+        # `|| return` after Esc carried gum's 130 - ended the TUI (Kamino 196).
         case "$action" in
-            "Create a new project")     action_create ;;
-            "Update BMAD in a project") action_update ;;
-            "Delete a project")         action_delete ;;
-            "List managed projects")    action_list ;;
+            "Create a new project")     action_create || true ;;
+            "Update BMAD in a project") action_update || true ;;
+            "Delete a project")         action_delete || true ;;
+            "List managed projects")    action_list || true ;;
             "Quit"|"")                  exit 0 ;;
         esac
     done

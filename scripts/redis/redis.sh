@@ -11,7 +11,7 @@
 # Hard dependencies: docker (Docker target) | kubectl + helm (K8s target).
 # Soft dependency:   redis-cli (connect + queue listing — prompted if missing).
 # Sources: scripts/_common/cluster.sh (deployment target selection), ui.sh,
-#          deps.sh, portforward.sh.
+#          deps.sh, portforward.sh, secret.sh.
 #
 # Queue listing scans up to RD_QUEUE_SCAN_LIMIT keys and reports type + size,
 # useful for inspecting job queues (BullMQ / Celery / Sidekiq / Resque / Streams).
@@ -33,6 +33,8 @@ if [[ ! -d "$COMMON_DIR" ]]; then
 fi
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/deps.sh
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/portforward.sh
@@ -55,7 +57,7 @@ RD_HELM_REPO_NAME="groundhog2k"
 RD_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 RD_HELM_CHART="groundhog2k/redis"
 RD_DEFAULT_PORT=6379
-_RD_PF_PID="/tmp/scomp-pf-redis.pid"
+_RD_PF_PID="$(pf_file redis)"
 RD_DEFAULT_IMAGE_TAG="7"
 RD_QUEUE_SCAN_LIMIT=500     # max keys to inspect during queue listing
 
@@ -149,12 +151,14 @@ _prompt_password() {
 # -----------------------------------------------------------------------------
 # redis-cli wrappers
 # Prefer REDISCLI_AUTH env var over -a flag to keep passwords out of ps output.
+# docker exec gets it as -e REDISCLI_AUTH, by name: -e NAME=value put it on
+# docker's own command line (Kamino 196).
 # -----------------------------------------------------------------------------
 
 # Run redis-cli inside the Docker container.
 _docker_cli() {
     REDISCLI_AUTH="$RD_PASSWORD" \
-        docker exec -e REDISCLI_AUTH="$RD_PASSWORD" \
+        docker exec -e REDISCLI_AUTH \
         "$RD_CONTAINER_NAME" redis-cli "$@"
 }
 
@@ -321,7 +325,7 @@ redis_install_docker() {
 
     if ! docker run -d \
         --name "$RD_CONTAINER_NAME" \
-        -p "${RD_PORT}:6379" \
+        -p "$(svc_publish "$RD_PORT" 6379)" \
         -v "${volume}:/data" \
         --restart unless-stopped \
         "$image" "${server_args[@]}" &>/dev/null; then
@@ -330,8 +334,8 @@ redis_install_docker() {
 
     info "Waiting for Redis to accept connections..."
     local attempts=0
-    until docker exec \
-        -e REDISCLI_AUTH="$RD_PASSWORD" \
+    until REDISCLI_AUTH="$RD_PASSWORD" docker exec \
+        -e REDISCLI_AUTH \
         "$RD_CONTAINER_NAME" redis-cli ping &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 30 ]]; then
@@ -348,10 +352,11 @@ redis_install_docker() {
         "" \
         "Container:  ${RD_CONTAINER_NAME}" \
         "Image:      ${image}" \
-        "Port:       localhost:${RD_PORT}" \
+        "Port:       $(svc_host):${RD_PORT}" \
         "Volume:     ${volume}" \
         "Auth:       ${RD_PASSWORD:+password set}${RD_PASSWORD:-none (open access)}" \
         "Persistence: AOF enabled"
+    svc_bind_notice
 }
 
 redis_status_docker() {
@@ -408,8 +413,8 @@ redis_connect_docker() {
     info "Opening redis-cli inside '${RD_CONTAINER_NAME}'. Type quit or Ctrl+C to exit."
     echo ""
 
-    docker exec -it \
-        -e REDISCLI_AUTH="$RD_PASSWORD" \
+    REDISCLI_AUTH="$RD_PASSWORD" docker exec -it \
+        -e REDISCLI_AUTH \
         "$RD_CONTAINER_NAME" redis-cli
 }
 
@@ -540,8 +545,17 @@ redis_install_k8s() {
         --wait --timeout 5m
     )
 
+    # The password goes in a 0600 values file, not --set-string: on argv it is
+    # readable by every local user, and --set splits a value at commas and
+    # parses \ . { } in it (Kamino 196). In redis.conf it is double-quoted, so
+    # a space, quote or backslash in it reaches requirepass as typed.
+    local secret_values=""
     if [[ -n "$RD_PASSWORD" ]]; then
-        helm_args+=(--set-string redisConfig="requirepass ${RD_PASSWORD}")
+        local conf_pw="${RD_PASSWORD//\\/\\\\}"
+        conf_pw="${conf_pw//\"/\\\"}"
+        _helm_secret_values secret_values redisConfig "requirepass \"${conf_pw}\"" \
+            || error_exit "The password contains control characters; it cannot be passed to helm."
+        helm_args+=(-f "$secret_values")
     fi
 
     if _k8s_detect_installed; then
@@ -558,7 +572,7 @@ redis_install_k8s() {
 
         case "$action" in
             "Upgrade"*) ;;
-            *) warn "Cancelled."; return ;;
+            *) _secret_file_rm "$secret_values"; warn "Cancelled."; return ;;
         esac
 
         gum spin --spinner dot --title "Upgrading Redis via Helm..." -- \
@@ -569,6 +583,7 @@ redis_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${RD_NAMESPACE}"
     fi
+    _secret_file_rm "$secret_values"
 
     gum style \
         --foreground "$GREEN" --border-foreground "$GREEN" --border rounded \
@@ -634,7 +649,7 @@ redis_port_forward_k8s() {
 
     local pf_pid
     pf_pid=$(_k8s_start_port_forward "$port")
-    echo "${pf_pid}:${port}" > "$_RD_PF_PID"
+    pf_write "$_RD_PF_PID" "${pf_pid}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

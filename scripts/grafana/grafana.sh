@@ -50,7 +50,7 @@ GRF_HELM_REPO_NAME="grafana"
 GRF_HELM_REPO_URL="https://grafana.github.io/helm-charts"
 GRF_HELM_CHART="grafana/grafana"
 GRF_DEFAULT_PORT=3000
-_GRF_PF_PID="/tmp/scomp-pf-grafana.pid"
+_GRF_PF_PID="$(pf_file grafana)"
 GRF_SVC_PORT=80        # Grafana chart service listens on 80 → pod :3000
 GRF_DEFAULT_IMAGE_TAG="latest"
 GRF_DEFAULT_ADMIN_USER="admin"
@@ -60,6 +60,7 @@ BLUE=39
 
 # Session state
 GRF_CONTAINER_NAME="grafana"
+GRF_INFLUX_TOKEN=""   # Docker: the InfluxDB datasource token, for the container env
 GRF_IMAGE_TAG="$GRF_DEFAULT_IMAGE_TAG"
 GRF_ADMIN_USER="$GRF_DEFAULT_ADMIN_USER"
 GRF_ADMIN_PASSWORD=""
@@ -181,7 +182,8 @@ _prompt_datasources() {
             echo "        organization: ${org}"
             echo "        defaultBucket: ${bucket}"
             echo "      secureJsonData:"
-            echo "        token: ${token}"
+            # Quoted: the token reaches Grafana as typed (Kamino 196).
+            echo "        token: $(_yaml_squote "$token" || echo "''")"
             [[ "$is_default" == true ]] && echo "      isDefault: true"
         } >> "$out_file"
         is_default=false
@@ -296,6 +298,7 @@ _docker_write_datasources() {
         bucket="${bucket:-default}"
 
         token=$(gum input --placeholder "" --password --header "InfluxDB API token:") || true
+        GRF_INFLUX_TOKEN="$token"
 
         {
             echo "- name: InfluxDB"
@@ -307,7 +310,12 @@ _docker_write_datasources() {
             echo "    organization: ${org}"
             echo "    defaultBucket: ${bucket}"
             echo "  secureJsonData:"
-            echo "    token: ${token}"
+            # Not the token itself: Grafana substitutes it from the container
+            # env (Kamino 196). This file is bind-mounted into the container,
+            # which must read it - on Linux as its own grafana user, not the
+            # host user owning the file - so it cannot be made 0600 instead.
+            # shellcheck disable=SC2016
+            echo '    token: ${SCOMP_INFLUXDB_TOKEN}'
             [[ "$is_default" == true ]] && echo "  isDefault: true"
         } >> "$ds_file"
         is_default=false
@@ -397,6 +405,7 @@ grafana_install_docker() {
             docker rm -f "$GRF_CONTAINER_NAME"
     fi
 
+    GRF_INFLUX_TOKEN=""
     _docker_write_datasources
 
     gum spin --spinner dot --title "Pulling ${image}..." -- \
@@ -406,14 +415,15 @@ grafana_install_docker() {
     local docker_args=(
         run -d
         --name "$GRF_CONTAINER_NAME"
-        -p "${GRF_PORT}:3000"
+        -p "$(svc_publish "$GRF_PORT" 3000)"
         -v "${volume}:/var/lib/grafana"
         --restart unless-stopped
     )
     [[ -n "$GRF_ADMIN_USER" ]]     && docker_args+=(-e "GF_SECURITY_ADMIN_USER=${GRF_ADMIN_USER}")
-    [[ -n "$GRF_ADMIN_PASSWORD" ]] && docker_args+=(-e "GF_SECURITY_ADMIN_PASSWORD=${GRF_ADMIN_PASSWORD}")
+    [[ -n "$GRF_ADMIN_PASSWORD" ]] && docker_args+=(-e GF_SECURITY_ADMIN_PASSWORD)
 
     [[ -n "$plugins_input" ]] && docker_args+=(-e "GF_INSTALL_PLUGINS=${plugins_input}")
+    [[ -n "$GRF_INFLUX_TOKEN" ]] && docker_args+=(-e SCOMP_INFLUXDB_TOKEN)
 
     # Mount provisioning dir only if datasources were configured
     if [[ -d "${prov_dir}/datasources" ]] && \
@@ -423,13 +433,17 @@ grafana_install_docker() {
 
     docker_args+=("$image")
 
-    if ! docker "${docker_args[@]}" &>/dev/null; then
+    # Secrets are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196).
+    if ! GF_SECURITY_ADMIN_PASSWORD="$GRF_ADMIN_PASSWORD" SCOMP_INFLUXDB_TOKEN="$GRF_INFLUX_TOKEN" \
+        docker "${docker_args[@]}" &>/dev/null; then
         error_exit "Failed to start container '${GRF_CONTAINER_NAME}'."
     fi
 
     info "Waiting for Grafana to be ready..."
     local attempts=0
-    until curl -sf "http://127.0.0.1:${GRF_PORT}/api/health" &>/dev/null; do
+    until curl -sf "http://$(svc_host):${GRF_PORT}/api/health" &>/dev/null; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${GRF_CONTAINER_NAME}"
@@ -443,9 +457,10 @@ grafana_install_docker() {
         --align center --width 60 --margin "1 2" --padding "1 4" \
         "Grafana running" \
         "" \
-        "Web UI:   http://localhost:${GRF_PORT}" \
+        "Web UI:   http://$(svc_host):${GRF_PORT}" \
         "Username: ${GRF_ADMIN_USER:-(unchanged)}" \
         "Volume:   ${volume}"
+    svc_bind_notice
 }
 
 grafana_status_docker() {
@@ -478,7 +493,7 @@ grafana_status_docker() {
 
     echo ""
     info "Health check:"
-    if curl -sf "http://127.0.0.1:${host_port}/api/health" 2>/dev/null \
+    if curl -sf "http://$(svc_host):${host_port}/api/health" 2>/dev/null \
             | python3 -m json.tool 2>/dev/null; then
         :
     else
@@ -507,14 +522,15 @@ grafana_connect_docker() {
         "$GRF_CONTAINER_NAME" 2>/dev/null || echo "$GRF_DEFAULT_PORT")
 
     local admin_user
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
     admin_user=$(docker inspect \
         --format='{{range .Config.Env}}{{println .}}{{end}}' "$GRF_CONTAINER_NAME" 2>/dev/null \
-        | grep '^GF_SECURITY_ADMIN_USER=' | cut -d= -f2 || echo "$GRF_DEFAULT_ADMIN_USER")
+        | grep '^GF_SECURITY_ADMIN_USER=' | cut -d= -f2- || echo "$GRF_DEFAULT_ADMIN_USER")
 
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \
         --align left --width 60 --margin "1 2" --padding "1 4" \
-        "Grafana Web UI → http://localhost:${host_port}" \
+        "Grafana Web UI → http://$(svc_host):${host_port}" \
         "" \
         "Username: ${admin_user}"
 
@@ -678,7 +694,15 @@ grafana_install_k8s() {
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
     else
-        helm_args+=(--set "adminUser=${GRF_ADMIN_USER}" --set "adminPassword=${GRF_ADMIN_PASSWORD}")
+        # The admin password goes in a 0600 values file, not --set: on argv it
+        # is readable by every local user, and --set splits a value at commas
+        # and parses \ . { } in it (Kamino 196). Removed with values_file.
+        local secret_values
+        _helm_secret_values secret_values adminPassword "$GRF_ADMIN_PASSWORD" \
+            || error_exit "The admin password contains control characters; it cannot be passed to helm."
+        # shellcheck disable=SC2064
+        trap "rm -f '${values_file}' '${secret_values}'" RETURN
+        helm_args+=(--set "adminUser=${GRF_ADMIN_USER}" -f "$secret_values")
     fi
 
     if [[ "$upgrade" == true ]]; then
@@ -767,7 +791,7 @@ grafana_connect_k8s() {
     fi
 
     kubectl --context "$KUBE_CONTEXT" -n "$GRF_NAMESPACE" port-forward "svc/${svc}" "${port}:${GRF_SVC_PORT}" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_GRF_PF_PID"
+    pf_write "$_GRF_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

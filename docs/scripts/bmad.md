@@ -72,3 +72,10 @@ isn't enough for an `rm -rf`.
   BMAD-from-project uninstall.
 - The installer is interactive here; for CI/headless use BMAD supports
   `npx bmad-method install --yes --modules <m> --tools <t>` directly.
+
+Esc or "no" at any prompt returns to the menu: a declined prompt used to hand
+gum's exit status back to a menu running under `set -e`, which ended the
+whole TUI - declining the registry prune included (Kamino 196).
+`tests/test-bmad.sh` drives delete, update and list through the gum stub:
+Esc and a wrong typed name delete nothing and the menu comes back, and a
+declined prune keeps the missing entry.

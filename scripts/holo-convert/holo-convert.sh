@@ -409,20 +409,24 @@ main() {
     # Shell-quote every argument so the preview is copy-paste safe: unquoted
     # ${FLAGS[*]} would render multi-word values (e.g. --author Platform
     # Infrastructure Team) as bare words that bleed across flags when reused.
-    local preview; printf -v preview ' %q' holo-convert.sh "${FLAGS[@]}" "${FILES[@]}"
+    # `--` ends the flags (Kamino 196): a picked file named like a flag
+    # (-x.md, found at the top of SOURCE_ROOT and listed without its ./) was
+    # read by the engine as an unknown option. Both the v2 engine and v1.0.0
+    # take every argument after `--` as a path.
+    local preview; printf -v preview ' %q' holo-convert.sh "${FLAGS[@]}" -- "${FILES[@]}"
     info "Running:${preview}"
     # Guardrails only: if a dependency is missing the engine errors; offer --setup.
     # "$BASH" (the interpreter running this script, already checked to be 4+)
     # rather than a PATH lookup of `bash`: on macOS that finds /bin/bash 3.2,
     # which the engine's array expansions abort under.
-    if ! "$BASH" "$ENGINE" "${FLAGS[@]}" "${FILES[@]}"; then
+    if ! "$BASH" "$ENGINE" "${FLAGS[@]}" -- "${FILES[@]}"; then
         warn "Conversion failed — a dependency may be missing."
         local setup_q="Run 'holo-convert --setup' to install dependencies, then retry?"
         [[ "$ENGINE_MODE" == container ]] && setup_q="Build the container image ('holo-convert --setup --engine container'), then retry?"
         if gum confirm "$setup_q"; then
             # Scope the setup to the chosen target (--from/--to are already in FLAGS).
             "$BASH" "$ENGINE" --setup "${FLAGS[@]}" || error_exit "Setup failed."
-            "$BASH" "$ENGINE" "${FLAGS[@]}" "${FILES[@]}" || error_exit "Conversion failed after setup."
+            "$BASH" "$ENGINE" "${FLAGS[@]}" -- "${FILES[@]}" || error_exit "Conversion failed after setup."
         else
             exit 1
         fi

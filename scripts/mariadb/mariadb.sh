@@ -52,7 +52,7 @@ MDB_HELM_REPO_NAME="groundhog2k"
 MDB_HELM_REPO_URL="https://groundhog2k.github.io/helm-charts/"
 MDB_HELM_CHART="groundhog2k/mariadb"
 MDB_DEFAULT_PORT=3306
-_MDB_PF_PID="/tmp/scomp-pf-mariadb.pid"
+_MDB_PF_PID="$(pf_file mariadb)"
 MDB_DEFAULT_DB="app"
 MDB_DEFAULT_USER="app"
 MDB_DEFAULT_IMAGE_TAG="11"
@@ -218,13 +218,16 @@ mariadb_install_docker() {
         docker pull "$image" \
         || error_exit "Failed to pull image ${image}."
 
-    if ! docker run -d \
+    # The passwords are passed as -e NAME, the value taken from docker's own
+    # environment: not on its command line, where any local user can read it
+    # (Kamino 196). The same for every docker exec below.
+    if ! MARIADB_ROOT_PASSWORD="$MDB_ROOT_PASSWORD" MARIADB_PASSWORD="$MDB_PASSWORD" docker run -d \
         --name "$MDB_CONTAINER_NAME" \
-        -e MARIADB_ROOT_PASSWORD="$MDB_ROOT_PASSWORD" \
+        -e MARIADB_ROOT_PASSWORD \
         -e MARIADB_DATABASE="$MDB_DB" \
         -e MARIADB_USER="$MDB_USER" \
-        -e MARIADB_PASSWORD="$MDB_PASSWORD" \
-        -p "${MDB_PORT}:3306" \
+        -e MARIADB_PASSWORD \
+        -p "$(svc_publish "$MDB_PORT" 3306)" \
         -v "${volume}:/var/lib/mysql" \
         --restart unless-stopped \
         "$image" &>/dev/null; then
@@ -233,8 +236,8 @@ mariadb_install_docker() {
 
     info "Waiting for MariaDB to accept connections..."
     local attempts=0
-    until docker exec "$MDB_CONTAINER_NAME" \
-        mariadb-admin ping -uroot -p"${MDB_ROOT_PASSWORD}" --silent &>/dev/null 2>&1; do
+    until MYSQL_PWD="$MDB_ROOT_PASSWORD" docker exec -e MYSQL_PWD "$MDB_CONTAINER_NAME" \
+        mariadb-admin ping -uroot --silent &>/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [[ $attempts -ge 40 ]]; then
             warn "Timed out waiting for readiness. Check: docker logs ${MDB_CONTAINER_NAME}"
@@ -252,8 +255,9 @@ mariadb_install_docker() {
         "Image:      ${image}" \
         "Database:   ${MDB_DB}" \
         "User:       ${MDB_USER}" \
-        "Port:       localhost:${MDB_PORT}" \
+        "Port:       $(svc_host):${MDB_PORT}" \
         "Volume:     ${volume}"
+    svc_bind_notice
 }
 
 mariadb_status_docker() {
@@ -298,9 +302,10 @@ mariadb_connect_docker() {
     # Read user/db/password from the running container's env.
     local env_vars user db password
     env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$MDB_CONTAINER_NAME" 2>/dev/null)
-    user=$(echo     "$env_vars" | grep '^MARIADB_USER='     | cut -d= -f2 || echo "root")
-    db=$(echo       "$env_vars" | grep '^MARIADB_DATABASE=' | cut -d= -f2 || echo "")
-    password=$(echo "$env_vars" | grep '^MARIADB_PASSWORD=' | cut -d= -f2 || echo "")
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
+    user=$(echo     "$env_vars" | grep '^MARIADB_USER='     | cut -d= -f2- || echo "root")
+    db=$(echo       "$env_vars" | grep '^MARIADB_DATABASE=' | cut -d= -f2- || echo "")
+    password=$(echo "$env_vars" | grep '^MARIADB_PASSWORD=' | cut -d= -f2- || echo "")
 
     info "Connecting as ${user}${db:+ → ${db}}. Type exit or \\q to quit."
     echo ""
@@ -313,8 +318,12 @@ mariadb_connect_docker() {
         cli="mysql"
     fi
 
-    docker exec -it "$MDB_CONTAINER_NAME" \
-        "$cli" -u"$user" ${password:+-p"$password"} ${db:+"$db"}
+    # The password goes in MYSQL_PWD, passed by name: -p<password> put it on
+    # the client's command line, inside and outside the container (Kamino 196).
+    local -a pw_env=()
+    [[ -n "$password" ]] && pw_env=(-e MYSQL_PWD)
+    MYSQL_PWD="$password" docker exec -it "${pw_env[@]}" "$MDB_CONTAINER_NAME" \
+        "$cli" -u"$user" ${db:+"$db"}
 }
 
 mariadb_uninstall_docker() {
@@ -448,15 +457,23 @@ mariadb_install_k8s() {
             helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" \
             || error_exit "Helm upgrade failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MDB_NAMESPACE}"
     else
+        # The passwords go in a 0600 values file, not --set: on argv they are
+        # readable by every local user, and --set splits a value at commas and
+        # parses \ . { } in it (Kamino 196).
+        local secret_values
+        _helm_secret_values secret_values \
+            settings.rootPassword "$MDB_ROOT_PASSWORD" \
+            userDatabase.password "$MDB_PASSWORD" \
+            || error_exit "A password contains control characters; it cannot be passed to helm."
         helm_args+=(
-            --set settings.rootPassword="$MDB_ROOT_PASSWORD"
+            -f "$secret_values"
             --set userDatabase.name="$MDB_DB"
             --set userDatabase.user="$MDB_USER"
-            --set userDatabase.password="$MDB_PASSWORD"
         )
         gum spin --spinner dot --title "Installing MariaDB via Helm (may take a few minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" \
             || error_exit "Helm install failed. Check: kubectl --context ${KUBE_CONTEXT} get pods -n ${MDB_NAMESPACE}"
+        _secret_file_rm "$secret_values"
     fi
 
     local shown_db="$MDB_DB" shown_user="$MDB_USER"
@@ -525,7 +542,7 @@ mariadb_port_forward_k8s() {
     local port="${port_input:-$MDB_DEFAULT_PORT}"
 
     kubectl --context "$KUBE_CONTEXT" -n "$MDB_NAMESPACE" port-forward "svc/${MDB_HELM_RELEASE}" "${port}:3306" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_MDB_PF_PID"
+    pf_write "$_MDB_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

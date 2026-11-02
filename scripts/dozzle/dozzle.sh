@@ -20,6 +20,8 @@
 #   gh_releases.sh — select_version
 #   portforward.sh — pf_is_running / pf_port / pf_stop (PID-file based)
 #   owned_dirs.sh  — owned_dir_create / owned_dir_plan / owned_dir_remove
+#   conf.sh        — conf_load / conf_write (the config is never sourced)
+#   secret.sh      — _write_private (users.yml, mode 0600)
 #
 # Config: ~/.config/dozzle/dozzle.conf (XDG-style, key=value, one per line)
 # -----------------------------------------------------------------------------
@@ -36,6 +38,8 @@ TEMPLATES_DIR="${SCRIPT_DIR}/templates"
 
 # shellcheck source=../_common/ui.sh
 source "${COMMON_DIR}/ui.sh"
+# shellcheck source=../_common/secret.sh
+source "${COMMON_DIR}/secret.sh"
 # shellcheck source=../_common/cluster.sh
 source "${COMMON_DIR}/cluster.sh"
 # shellcheck source=../_common/deps.sh
@@ -46,6 +50,8 @@ source "${COMMON_DIR}/gh_releases.sh"
 source "${COMMON_DIR}/portforward.sh"
 # shellcheck source=../_common/owned_dirs.sh
 source "${COMMON_DIR}/owned_dirs.sh"
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"
 
 trap 'echo ""; gum style --faint "Interrupted."; exit 0' INT TERM
 
@@ -90,27 +96,20 @@ cfg_load() {
     RBAC_SCOPE="cluster" # cluster | namespace
     RESTRICT_NAMESPACE=""
     INSTALL_METHOD=""    # "" (script-installed) | "external" (imported)
+    BIND_ADDR=""         # docker: the address the port is published on (Kamino 196)
 
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
+    # Parsed, not sourced: the values come from prompts and from what a
+    # cluster or docker reported (version, namespace), and a sourced file ran
+    # any $(...) or quote in them (Kamino 196).
+    conf_load "$CONFIG_FILE" "${DOZZLE_CFG_KEYS[@]}"
 }
 
+DOZZLE_CFG_KEYS=(TARGET_TYPE TARGET_CONTEXT DOZZLE_VERSION AUTH_ENABLED AUTH_USER
+    STORAGE_MODE STORAGE_PATH NFS_SERVER NFS_PATH RBAC_SCOPE RESTRICT_NAMESPACE
+    INSTALL_METHOD BIND_ADDR)
+
 cfg_save() {
-    cat > "$CONFIG_FILE" <<EOF
-TARGET_TYPE="${TARGET_TYPE}"
-TARGET_CONTEXT="${TARGET_CONTEXT}"
-DOZZLE_VERSION="${DOZZLE_VERSION}"
-AUTH_ENABLED="${AUTH_ENABLED}"
-AUTH_USER="${AUTH_USER}"
-STORAGE_MODE="${STORAGE_MODE}"
-STORAGE_PATH="${STORAGE_PATH}"
-NFS_SERVER="${NFS_SERVER:-}"
-NFS_PATH="${NFS_PATH:-}"
-RBAC_SCOPE="${RBAC_SCOPE:-}"
-RESTRICT_NAMESPACE="${RESTRICT_NAMESPACE:-}"
-INSTALL_METHOD="${INSTALL_METHOD:-}"
-EOF
+    conf_write "$CONFIG_FILE" "${DOZZLE_CFG_KEYS[@]}"
 }
 
 cfg_require() {
@@ -254,13 +253,24 @@ _prompt_auth() {
 
     info "Generating bcrypt hash via 'docker run amir20/dozzle generate'..."
 
-    local users_yml
-    if ! users_yml=$(gum spin --spinner dot --title "Generating users.yml..." -- \
-        docker run -i --rm "${DOZZLE_IMAGE}:${DOZZLE_VERSION:-latest}" generate "$user" \
-            --password "$pass" \
+    # The password goes to `dozzle generate` on stdin, which Dozzle (v11)
+    # reads when --password is not given: --password put it on docker's
+    # command line, where any local user can read it (Kamino 196). No gum
+    # spin here: it would not pass stdin on. Older Dozzle versions refuse to
+    # run without --password (they do not hash an empty one); for those it is
+    # passed that way, and said so.
+    local image="${DOZZLE_IMAGE}:${DOZZLE_VERSION:-latest}" users_yml
+    if ! users_yml=$(printf '%s\n' "$pass" | docker run -i --rm "$image" generate "$user" \
             ${email:+--email "$email"} \
-            --name "$name"); then
-        error_exit "Failed to generate users.yml. Is Docker reachable and is the image pullable?"
+            --name "$name" 2>/dev/null); then
+        warn "${image} does not read the password from stdin: passing it with --password, on docker's command line for this one call."
+        if ! users_yml=$(gum spin --spinner dot --title "Generating users.yml..." -- \
+            docker run -i --rm "$image" generate "$user" \
+                --password "$pass" \
+                ${email:+--email "$email"} \
+                --name "$name"); then
+            error_exit "Failed to generate users.yml. Is Docker reachable and is the image pullable?"
+        fi
     fi
 
     if [[ -z "$users_yml" ]]; then
@@ -268,6 +278,7 @@ _prompt_auth() {
     fi
 
     AUTH_ENABLED="true"
+    # shellcheck disable=SC2034  # saved by name (conf_write)
     AUTH_USER="$user"
     AUTH_USERS_YML="$users_yml"
     success "Auth configured for user '${user}'."
@@ -365,10 +376,15 @@ _write_compose_file() {
             -e "s|__DOZZLE_VERSION__|$(_sed_escape "${DOZZLE_VERSION:-latest}")|g" \
             -e "s|__STORAGE_PATH__|$(_sed_escape "$STORAGE_PATH")|g" \
             -e "s|__SERVICE_PORT__|$(_sed_escape "$SERVICE_PORT")|g" \
+            -e "s|__BIND_ADDR__|$(_sed_escape "$SVC_BIND_ADDR")|g" \
         > "$COMPOSE_FILE"
 
     if [[ "$AUTH_ENABLED" == "true" ]]; then
-        printf '%s\n' "$AUTH_USERS_YML" > "${STORAGE_PATH}/users.yml"
+        # users.yml holds the password hash: mode 0600, also when an older
+        # install left it 0644 (Kamino 196). Dozzle runs as root in its
+        # container, so it still reads it.
+        printf '%s\n' "$AUTH_USERS_YML" | _write_private "${STORAGE_PATH}/users.yml" \
+            || error_exit "Could not write ${STORAGE_PATH}/users.yml."
         info "Wrote ${STORAGE_PATH}/users.yml"
     fi
 
@@ -462,7 +478,8 @@ _write_k8s_manifests() {
     if [[ "$AUTH_ENABLED" == "true" ]]; then
         local ctx_flags
         ctx_flags="$(kubectl_context_flag)"
-        printf '%s\n' "$AUTH_USERS_YML" > "${WORKDIR}/users.yml"
+        printf '%s\n' "$AUTH_USERS_YML" | _write_private "${WORKDIR}/users.yml" \
+            || error_exit "Could not write ${WORKDIR}/users.yml."
         warn "Auth was requested, but a freshly created PVC mounts empty —"
         warn "users.yml cannot be pre-seeded before the pod exists."
         warn "Saved locally at ${WORKDIR}/users.yml. After 'install' finishes and the"
@@ -494,12 +511,21 @@ cmd_install() {
 
     case "$TARGET_TYPE" in
         docker)
+            # Dozzle mounts the Docker socket: without its auth, whoever reaches
+            # the port reads every container's logs. The port is on 127.0.0.1
+            # unless SCOMP_BIND_ADDR says otherwise, and then only with auth
+            # (Kamino 196).
+            if ! svc_bind_is_loopback && [[ "$AUTH_ENABLED" != "true" ]]; then
+                error_exit "Refusing to publish Dozzle on ${SVC_BIND_ADDR} (SCOMP_BIND_ADDR) with authentication off: it serves the Docker socket's logs to anyone who reaches it. Enable authentication, or leave SCOMP_BIND_ADDR unset (127.0.0.1)."
+            fi
+            BIND_ADDR="$SVC_BIND_ADDR"
             _prompt_storage_docker
             _write_compose_file
             info "Starting Dozzle via docker-compose..."
             docker-compose -f "$COMPOSE_FILE" up -d \
                 || error_exit "docker-compose up failed."
-            success "Dozzle is running. http://localhost:${SERVICE_PORT}"
+            success "Dozzle is running. http://$(svc_host "$BIND_ADDR"):${SERVICE_PORT}"
+            svc_bind_notice
             ;;
         kind|k8s)
             _prompt_storage_k8s
@@ -512,7 +538,7 @@ cmd_install() {
             kubectl $ctx_flags apply -f "$MANIFEST_FILE" \
                 || error_exit "kubectl apply failed."
             success "Dozzle deployed to namespace '${NAMESPACE}'."
-            info "Use 'dozzle.sh port-forward' to reach it on the LAN."
+            info "Use 'dozzle.sh port-forward' to reach it from this machine."
             ;;
     esac
 
@@ -584,6 +610,7 @@ cmd_import() {
     for i in "${!opt_labels[@]}"; do
         if [[ "${opt_labels[$i]}" == "$chosen" ]]; then
             TARGET_TYPE="${opt_types[$i]}"
+            # shellcheck disable=SC2034  # saved by name (conf_write)
             TARGET_CONTEXT="${opt_contexts[$i]}"
             if [[ "$TARGET_TYPE" != "docker" ]]; then
                 NAMESPACE="${opt_namespaces[$i]}"
@@ -751,7 +778,7 @@ cmd_status() {
             || warn "Could not retrieve resource usage (is the container running?)."
 
         gum style --foreground "${CYAN}" --bold "── Port Mapping"
-        info "http://localhost:${SERVICE_PORT}"
+        info "http://$(svc_host "${BIND_ADDR:-}"):${SERVICE_PORT}"
         return
     fi
 
@@ -793,7 +820,7 @@ cmd_port_forward() {
 
     if [[ "$TARGET_TYPE" == "docker" ]]; then
         warn "Docker mode publishes the port directly; port-forward is not applicable."
-        info "Reach Dozzle at http://localhost:${SERVICE_PORT}"
+        info "Reach Dozzle at http://$(svc_host "${BIND_ADDR:-}"):${SERVICE_PORT}"
         return
     fi
 
@@ -869,7 +896,7 @@ cmd_port_forward() {
         error_exit "Port-forward failed to start (port in use, or service not ready)."
     fi
 
-    echo "${pid}:${local_port}" > "$pf_file"
+    pf_write "$pf_file" "${pid}" "${local_port}"
     success "Port-forward active (auto-reconnect): http://localhost:${local_port}"
 }
 

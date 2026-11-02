@@ -53,7 +53,7 @@ HARBOR_HELM_REPO_NAME="harbor"
 HARBOR_HELM_REPO_URL="https://helm.goharbor.io"
 HARBOR_HELM_CHART="harbor/harbor"
 HARBOR_DEFAULT_PORT=8080
-_HARBOR_PF_PID="/tmp/scomp-pf-harbor.pid"
+_HARBOR_PF_PID="$(pf_file harbor)"
 HARBOR_ADMIN_PASSWORD=""
 
 # Component PVC sizes — registry is the only user-configurable one.
@@ -348,10 +348,16 @@ harbor_install_k8s() {
         --set persistence.enabled=true
         --wait --timeout 10m
     )
+    local secret_values=""
     if [[ "$upgrade" == true ]]; then
         helm_args+=(--reuse-values)
     else
-        helm_args+=(--set "harborAdminPassword=${HARBOR_ADMIN_PASSWORD}")
+        # The admin password goes in a 0600 values file, not --set: on argv it
+        # is readable by every local user, and --set splits a value at commas
+        # and parses \ . { } in it (Kamino 196).
+        _helm_secret_values secret_values harborAdminPassword "$HARBOR_ADMIN_PASSWORD" \
+            || error_exit "The admin password contains control characters; it cannot be passed to helm."
+        helm_args+=(-f "$secret_values")
     fi
 
     _prompt_storage helm_args
@@ -369,10 +375,12 @@ harbor_install_k8s() {
         if ! gum spin --spinner dot --title "Installing Harbor (this may take several minutes)..." -- \
             helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}"; then
             warn "Install failed. Check 'helm --kube-context ${KUBE_CONTEXT} status ${HARBOR_HELM_RELEASE} -n ${HARBOR_NAMESPACE}'."
+            _secret_file_rm "$secret_values"
             return
         fi
         success "Harbor installed."
     fi
+    _secret_file_rm "$secret_values"
 
     local shown_pw="$HARBOR_ADMIN_PASSWORD"
     [[ "$upgrade" == true ]] && shown_pw="(unchanged - the password it was installed with)"
@@ -448,7 +456,7 @@ harbor_connect_k8s() {
     fi
 
     kubectl --context "$KUBE_CONTEXT" -n "$HARBOR_NAMESPACE" port-forward "svc/${svc}" "${port}:80" >/dev/null 2>&1 &
-    echo "${!}:${port}" > "$_HARBOR_PF_PID"
+    pf_write "$_HARBOR_PF_PID" "${!}" "${port}"
 
     local attempts=0
     until nc -z 127.0.0.1 "$port" 2>/dev/null || [[ $attempts -ge 20 ]]; do

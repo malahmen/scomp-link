@@ -9,6 +9,6 @@ Kubernetes only.
 - **PV size** prompt for the server (default `8Gi`)
 - **Custom `prometheus.yml`**: uploaded as a ConfigMap and wired via `server.configMapOverrideName`, honoured on upgrades
 - Re-running `install` on an existing release upgrades it in place
-- **Connect**: background `kubectl port-forward` to `<release>-server:80`, default local port `9090`; PID file `/tmp/scomp-pf-prometheus.pid`. Toggled from the menu (`connect [● localhost:<port>]` stops it, `connect [○ stopped]` starts it). Readiness is polled with `nc`.
+- **Connect**: background `kubectl port-forward` to `<release>-server:80`, default local port `9090`; PID file `$XDG_RUNTIME_DIR/scomp-link/pf/prometheus.pid` (else `~/.cache/scomp-link/pf/`; a per-user 0700 folder, and a PID file that is a symlink or not yours is refused - Kamino 196). Toggled from the menu (`connect [● localhost:<port>]` stops it, `connect [○ stopped]` starts it). Readiness is polled with `nc`.
 - **Uninstall**: `helm uninstall`, then optionally deletes the namespace (removes remaining PVCs)
 - Menu: `install`, `status`, `connect`, `uninstall`

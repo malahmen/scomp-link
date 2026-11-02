@@ -137,6 +137,25 @@ cfg_save() {
 # is written, for a protocol.conf edited by hand (Kamino item 102).
 _pr_plain() { [[ -n "$1" && "$1" != *[[:space:]%\"\'\\]* ]]; }
 
+# pr_env_check - every unit setting is usable as it is, checked in the
+# caller's shell. pr_env's own check runs where it is read, inside
+# `< <(pr_env)`: its error_exit ended only that process substitution, so a
+# hand-edited bad setting printed the error and install went on writing every
+# unit (the bad line and those after it missing) and ran daemon-reload
+# (Kamino 196, item 102's regression). Callers stop on this first.
+pr_env_check() {
+    local line
+    local -a lines
+    mapfile -t lines < <(_pr_env_lines)
+    for line in "${lines[@]}"; do
+        if ! _pr_plain "${line#*=}"; then
+            gum style --foreground "${RED:-196}" "[error] Setting ${line%%=*} ('${line#*=}') would break the units: no spaces, %, quotes or backslashes. Fix it under 'config' or in ${CONFIG_FILE}." >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
 # The containers' settings that are not secret, one NAME=value per line.
 pr_env() {
     local line
@@ -300,15 +319,21 @@ pr_src_sync() {   # pr_src_sync <dir> <repo> -> prints the commit
     local dir="$1" repo="$2"
     if [[ ! -d "${dir}/.git" ]]; then
         mkdir -p "$(dirname "$dir")"
-        git clone --quiet "$repo" "$dir" >&2 || return 1
+        git clone --quiet -- "$repo" "$dir" >&2 || return 1
     fi
     # The configured repository, not whatever the cached clone was made from:
     # a changed URL was otherwise ignored and the old repository built.
     git -C "$dir" remote set-url origin "$repo" >&2 || return 1
-    git -C "$dir" fetch --quiet origin "$PR_REF" >&2 || return 1
+    # After --, so a ref (or a hand-edited PR_REF) that starts with - is a
+    # ref git cannot find, never an option (--upload-pack runs a command).
+    _pr_ref_ok "$PR_REF" || { warn "Not a branch or tag: '${PR_REF}' (set it under 'config')."; return 1; }
+    git -C "$dir" fetch --quiet -- origin "$PR_REF" >&2 || return 1
     git -C "$dir" checkout --quiet --detach FETCH_HEAD >&2 || return 1
     git -C "$dir" rev-parse --short HEAD
 }
+
+# _pr_ref_ok REF - a branch or tag name: plain, and not starting with -.
+_pr_ref_ok() { _pr_plain "$1" && [[ "$1" != -* ]]; }
 
 pr_image_revision() {
     podman image inspect "$1" --format "{{ index .Labels \"${PR_REVISION_LABEL}\" }}" 2>/dev/null || true
@@ -444,6 +469,9 @@ pr_install() {
     pr_show_settings
     gum confirm "Install with these settings? (change them under 'config')" || return 0
     pr_secrets_ensure || { warn "Every secret is needed - set the rest under 'secrets', then install again."; return 0; }
+    # Before the images, the check and the units: nothing is built, run or
+    # written with a setting that would break a unit.
+    pr_env_check || { warn "Nothing was built, written or started."; return 0; }
     if ! pr_images_present; then
         pr_build_images || return 0
     elif gum confirm "Rebuild the images from ${PR_REF} first?" --default=false; then
@@ -633,7 +661,8 @@ pr_config() {
             "models volume") value=$(gum input --value "$PR_MODELS_VOLUME" --header "Named volume for marker's models:") || continue
                   _pr_set PR_MODELS_VOLUME "$value" ;;
             "branch to build") value=$(gum input --value "$PR_REF" --header "Branch or tag of protocol and protocol-droid to build:") || continue
-                  _pr_set PR_REF "$value" ;;
+                  if [[ "$value" == -* ]]; then warn "Not changed: '${value}' - a branch or tag does not start with -."
+                  else _pr_set PR_REF "$value"; fi ;;
             repositories) value=$(gum input --value "$PR_PROTOCOL_REPO" --header "protocol's repository:") || continue
                   _pr_set PR_PROTOCOL_REPO "$value"
                   value=$(gum input --value "$PR_DROID_REPO" --header "protocol-droid's repository:") || continue

@@ -6,7 +6,7 @@
 # scripts/lgtm/lgtm.sh — LGTM stack manager (Loki · Grafana · Tempo · Mimir)
 # Supports Docker Compose and kind/k8s targets.
 # Sourced helpers: _common/ui.sh, _common/cluster.sh, _common/portforward.sh,
-#                  _common/deps.sh, _common/owned_dirs.sh
+#                  _common/deps.sh, _common/owned_dirs.sh, _common/conf.sh
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -33,6 +33,8 @@ source "${COMMON_DIR}/portforward.sh"
 source "${COMMON_DIR}/deps.sh"
 # shellcheck source=../_common/owned_dirs.sh
 source "${COMMON_DIR}/owned_dirs.sh"
+# shellcheck source=../_common/conf.sh
+source "${COMMON_DIR}/conf.sh"
 
 # pinned chart versions
 # Update these explicitly when you want to bump a component.
@@ -135,27 +137,16 @@ declare -A COMP_IMAGE=(
 
 # config helpers────
 
-cfg_get() {
-    grep -E "^${1}=" "$CONFIG_FILE" 2>/dev/null \
-        | cut -d= -f2- \
-        | sed 's/^"\(.*\)"$/\1/' \
-        || true
-}
-cfg_set() {
-    local key="$1" val="$2"
-    local quoted="\"${val}\""
-    if grep -qE "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
-        sed -i.bak "s|^${key}=.*|${key}=${quoted}|" "$CONFIG_FILE" && rm -f "${CONFIG_FILE}.bak"
-    else
-        echo "${key}=${quoted}" >> "$CONFIG_FILE"
-    fi
-}
+# The config is parsed, never sourced (conf.sh): values were written raw
+# inside quotes - typed paths, an NFS server, namespaces and components found
+# on a cluster - and sourcing ran any quote or $(...) in them (Kamino 196).
+# cfg_set also no longer goes through sed, where a | or & in a value broke it.
+LGTM_CFG_KEYS=(TARGET_TYPE TARGET_CONTEXT NAMESPACE ENABLED_COMPONENTS RESOURCE_PROFILE
+    INSTALL_METHOD HOSTPATH_BASE STORAGE_TYPE NFS_SERVER NFS_PATH COMPOSE_FILE BIND_ADDR)
 
-cfg_load() {
-    [[ -f "$CONFIG_FILE" ]] || return 0
-    # shellcheck disable=SC1090
-    source "$CONFIG_FILE"
-}
+cfg_get() { conf_get "$CONFIG_FILE" "$1"; }
+cfg_set() { conf_set "$CONFIG_FILE" "$1" "$2"; }
+cfg_load() { conf_load "$CONFIG_FILE" "${LGTM_CFG_KEYS[@]}"; }
 
 # cfg_require [error-message]
 # Loads config, validates TARGET_TYPE is set, echoes it for capture.
@@ -777,7 +768,7 @@ EOF
     image: ${image}
     container_name: lgtm_grafana
     ports:
-      - "${port}:3000"
+      - "$(svc_publish "$port" 3000)"
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
@@ -795,7 +786,7 @@ EOF
     image: ${image}
     container_name: lgtm_loki
     ports:
-      - "${port}:3100"
+      - "$(svc_publish "$port" 3100)"
     command: -config.file=/etc/loki/local-config.yaml
     volumes:
       - lgtm_loki:/loki
@@ -809,7 +800,7 @@ EOF
                 # Only bind 4317 to the host when otelcol is absent from the stack.
                 # When otelcol is enabled it owns 4317 and forwards to tempo internally.
                 local tempo_extra_port=""
-                [[ " $enabled " != *" otelcol "* ]] && tempo_extra_port="      - \"4317:4317\""
+                [[ " $enabled " != *" otelcol "* ]] && tempo_extra_port="      - \"$(svc_publish 4317 4317)\""
 
                 cat >> "$compose_file" <<EOF
 
@@ -817,7 +808,7 @@ EOF
     image: ${image}
     container_name: lgtm_tempo
     ports:
-      - "${port}:3200"
+      - "$(svc_publish "$port" 3200)"
 ${tempo_extra_port}
     command: -config.file=/etc/tempo/tempo.yaml
     volumes:
@@ -835,7 +826,7 @@ EOF
     image: ${image}
     container_name: lgtm_mimir
     ports:
-      - "${port}:9009"
+      - "$(svc_publish "$port" 9009)"
     command: -config.file=/etc/mimir/mimir.yaml
     volumes:
       - lgtm_mimir:/data
@@ -852,8 +843,8 @@ EOF
     image: ${image}
     container_name: lgtm_otelcol
     ports:
-      - "4317:4317"
-      - "4318:4318"
+      - "$(svc_publish 4317 4317)"
+      - "$(svc_publish 4318 4318)"
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ${data_path}/config:/etc/otelcol
@@ -1230,11 +1221,15 @@ _install_docker() {
     local compose_file
     compose_file=$(_generate_compose "$enabled")
     cfg_set "COMPOSE_FILE" "$compose_file"
+    # The address the ports are published on, for status (Kamino 196).
+    cfg_set "BIND_ADDR" "$SVC_BIND_ADDR"
 
     gum spin --spinner dot --title "Starting LGTM stack..." -- \
         docker-compose -f "$compose_file" up -d
 
     success "LGTM stack started. Compose file: ${compose_file}"
+    _print_compose_urls "$enabled"
+    svc_bind_notice
 }
 
 # cmd: install
@@ -1722,7 +1717,7 @@ _print_compose_urls() {
     local enabled="$1"
     for c in $enabled; do
         local port="${COMP_PORT[$c]}"
-        info "${COMP_LABEL[$c]} → http://localhost:${port}"
+        info "${COMP_LABEL[$c]} → http://$(svc_host "$(cfg_get BIND_ADDR)"):${port}"
     done
 }
 
@@ -1827,7 +1822,7 @@ cmd_port_forward() {
             ) &
             local pf_pid=$!
 
-            echo "${pf_pid}:${local_port}" > "$pf_file"
+            pf_write "$pf_file" "${pf_pid}" "${local_port}"
             sleep 2
 
             # Verify something is listening — if not, the wrapper is spinning on
