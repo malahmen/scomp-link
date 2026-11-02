@@ -364,6 +364,7 @@ scomp-link/
 │   ├── test-navicomputer.sh          # the navicomputer front-end (real engine, temp ~/.ssh): key deletion
 │   ├── test-protocol.sh              # the protocol front-end
 │   ├── test-service-credentials.sh   # the service scripts keep a kept volume's / release's credentials
+│   ├── test-service-dozzle.sh        # dozzle: auth only with v11+ (password on stdin); port-forward failure stays in the TUI
 │   ├── test-service-kube-context.sh  # the service scripts act only on the chosen kube-context
 │   ├── test-service-paths.sh         # dozzle uninstall / lgtm purge delete only folders they created
 │   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
