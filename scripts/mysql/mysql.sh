@@ -288,9 +288,10 @@ mysql_connect_docker() {
 
     local env_vars user db password
     env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$MY_CONTAINER_NAME" 2>/dev/null)
-    user=$(echo     "$env_vars" | grep '^MYSQL_USER='     | cut -d= -f2 || echo "root")
-    db=$(echo       "$env_vars" | grep '^MYSQL_DATABASE=' | cut -d= -f2 || echo "")
-    password=$(echo "$env_vars" | grep '^MYSQL_PASSWORD=' | cut -d= -f2 || echo "")
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
+    user=$(echo     "$env_vars" | grep '^MYSQL_USER='     | cut -d= -f2- || echo "root")
+    db=$(echo       "$env_vars" | grep '^MYSQL_DATABASE=' | cut -d= -f2- || echo "")
+    password=$(echo "$env_vars" | grep '^MYSQL_PASSWORD=' | cut -d= -f2- || echo "")
 
     info "Connecting as ${user}${db:+ → ${db}}. Type exit or \\q to quit."
     echo ""

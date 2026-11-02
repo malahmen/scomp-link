@@ -268,8 +268,9 @@ postgres_connect_docker() {
     # Read user/db from the running container's env so we don't need to re-prompt.
     local env_vars user db
     env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$PG_CONTAINER_NAME" 2>/dev/null)
-    user=$(echo "$env_vars" | grep '^POSTGRES_USER='     | cut -d= -f2 || echo "postgres")
-    db=$(echo   "$env_vars" | grep '^POSTGRES_DB='       | cut -d= -f2 || echo "$user")
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
+    user=$(echo "$env_vars" | grep '^POSTGRES_USER='     | cut -d= -f2- || echo "postgres")
+    db=$(echo   "$env_vars" | grep '^POSTGRES_DB='       | cut -d= -f2- || echo "$user")
 
     info "Connecting as ${user} → ${db}. Type \\q to exit."
     echo ""

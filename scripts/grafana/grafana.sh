@@ -511,9 +511,10 @@ grafana_connect_docker() {
         "$GRF_CONTAINER_NAME" 2>/dev/null || echo "$GRF_DEFAULT_PORT")
 
     local admin_user
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
     admin_user=$(docker inspect \
         --format='{{range .Config.Env}}{{println .}}{{end}}' "$GRF_CONTAINER_NAME" 2>/dev/null \
-        | grep '^GF_SECURITY_ADMIN_USER=' | cut -d= -f2 || echo "$GRF_DEFAULT_ADMIN_USER")
+        | grep '^GF_SECURITY_ADMIN_USER=' | cut -d= -f2- || echo "$GRF_DEFAULT_ADMIN_USER")
 
     gum style \
         --foreground "$CYAN" --border-foreground "$CYAN" --border rounded \

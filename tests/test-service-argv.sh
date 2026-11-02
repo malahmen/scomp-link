@@ -13,6 +13,8 @@
 #     environment), and reaches the container exactly; the clients run inside
 #     it get theirs from the environment (MYSQL_PWD, REDISCLI_AUTH, mongosh
 #     reading process.env) or stdin (the mongo readiness check), never -p/-a;
+#   - connect reads the container's env with cut -f2-: a value with '=' in it
+#     is not cut short;
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -216,6 +218,32 @@ svc_run redis "" "$PW" status "" "← back"
 check "the script finishes (exit 0)" rc_is 0
 check "redis-cli gets the password as REDISCLI_AUTH" exec_env_has REDISCLI_AUTH "$PW"
 check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
+
+# ------------------------------------------------------- values with '=' ---
+for svc in mariadb mysql; do
+    up="$(tr '[:lower:]' '[:upper:]' <<< "$svc")"
+    echo "${svc} docker: connect, the user, database and password contain '='"
+    svc_reset
+    old_container "$svc" "${up}_ROOT_PASSWORD=$PW" "${up}_USER=u=1" "${up}_PASSWORD=$PW2" "${up}_DATABASE=d=b"
+    svc_run "$svc" "" connect "← back"
+    check "the script finishes (exit 0)" rc_is 0
+    check "the password reaches the client whole" exec_env_has MYSQL_PWD "$PW2"
+    check "...and the user and database" bash -c "grep -E '^docker exec -it ' '$STUB_LOG' | grep -qE -- ' -uu=1 d=b\$'"
+done
+
+echo "postgres docker: connect, the user and database contain '='"
+svc_reset
+old_container postgres "POSTGRES_PASSWORD=$PW" "POSTGRES_USER=us=er" "POSTGRES_DB=d=b"
+svc_run postgres "" connect "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "psql gets them whole" bash -c "grep -qE -- '^docker exec -it postgres psql -U us=er -d d=b\$' '$STUB_LOG'"
+
+echo "grafana docker: connect, the admin user contains '='"
+svc_reset
+old_container grafana "GF_SECURITY_ADMIN_USER=ad=min" "GF_SECURITY_ADMIN_PASSWORD=$PW"
+svc_run grafana "" connect yes "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "the username shown is whole" grep -qE 'Username: ad=min( |$)' "$T/out"
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi

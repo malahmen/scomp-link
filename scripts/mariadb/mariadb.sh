@@ -302,9 +302,10 @@ mariadb_connect_docker() {
     # Read user/db/password from the running container's env.
     local env_vars user db password
     env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$MDB_CONTAINER_NAME" 2>/dev/null)
-    user=$(echo     "$env_vars" | grep '^MARIADB_USER='     | cut -d= -f2 || echo "root")
-    db=$(echo       "$env_vars" | grep '^MARIADB_DATABASE=' | cut -d= -f2 || echo "")
-    password=$(echo "$env_vars" | grep '^MARIADB_PASSWORD=' | cut -d= -f2 || echo "")
+    # cut -f2-, not -f2: a value may contain '=' itself (Kamino 196).
+    user=$(echo     "$env_vars" | grep '^MARIADB_USER='     | cut -d= -f2- || echo "root")
+    db=$(echo       "$env_vars" | grep '^MARIADB_DATABASE=' | cut -d= -f2- || echo "")
+    password=$(echo "$env_vars" | grep '^MARIADB_PASSWORD=' | cut -d= -f2- || echo "")
 
     info "Connecting as ${user}${db:+ → ${db}}. Type exit or \\q to quit."
     echo ""
