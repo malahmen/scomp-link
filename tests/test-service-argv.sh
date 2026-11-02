@@ -23,6 +23,8 @@
 #     container, which must read them, so they hold no secret at all - the
 #     container gets it in its env;
 #   - dozzle generate gets the password on stdin, not --password;
+#   - grafana's datasource fields are quoted YAML with $ doubled, and on
+#     kind/k8s a '{{' skips the datasource (Kamino 235);
 #   - lgtm's Grafana is no longer admin/admin: Docker gets a generated
 #     password from a 0600 env_file, kind/k8s the chart's generated Secret
 #     (Kamino 235);
@@ -395,6 +397,27 @@ check "the script finishes (exit 0)" rc_is 0
 q="'"; q="${q}${PW2//"$q"/"$q$q"}${q}"   # PW2 as a single-quoted YAML scalar
 check "the token reaches helm exactly (quoted YAML)" bash -c 'grep -qxF -- "        token: $1" "$2"/values/*.yaml' _ "$q" "$STUB_STATE"
 check "the values files were mode 600 and are removed" values_private
+
+# Every typed datasource field is a quoted YAML scalar, with $ doubled
+# (Grafana expands $VAR in provisioning files; $$ is a literal $): unquoted,
+# " #" started a comment, ": " a mapping, and yes a boolean (Kamino 235).
+DS_URL='http://h:1/a #frag' DS_ORG='acme: ops' DS_BUCKET='yes' DS_NAME="it's \$HOME" DS_TYPE='prom'
+echo "grafana docker: datasource fields YAML would misread"
+svc_reset
+svc_run grafana "" install "" "" "" "$PW" "" yes 'InfluxDB v2\nCustom' "$DS_URL" "$DS_ORG" "$DS_BUCKET" "$PW2" "$DS_NAME" "$DS_TYPE" "$DS_URL" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "the URL is single-quoted, whole" grep -qxF "  url: 'http://h:1/a #frag'" "$DS"
+check "the organisation" grep -qxF "    organization: 'acme: ops'" "$DS"
+check "the bucket stays a string" grep -qxF "    defaultBucket: 'yes'" "$DS"
+check "the name: quote doubled, \$ doubled for Grafana" grep -qxF -- "- name: 'it''s \$\$HOME'" "$DS"
+check "the type" grep -qxF "  type: 'prom'" "$DS"
+echo "grafana k8s: datasource fields YAML would misread, and a template"
+svc_reset; k8s_world
+svc_run grafana "" "" install "" "$PW" "" "" "" yes 'InfluxDB v2\nCustom' "$DS_URL" "$DS_ORG" "$DS_BUCKET" "$PW2" "{{ .Values }}" "$DS_TYPE" "$DS_URL" "← back"
+check "the script finishes (exit 0)" rc_is 0
+check "the URL is single-quoted, whole" bash -c 'grep -qxF -- "      url: '"'"'http://h:1/a #frag'"'"'" "$1"/values/*.yaml' _ "$STUB_STATE"
+check "the organisation" bash -c 'grep -qxF -- "        organization: '"'"'acme: ops'"'"'" "$1"/values/*.yaml' _ "$STUB_STATE"
+check "a name with {{ (the chart's tpl would run it) is skipped, said" bash -c '! grep -q "{{" "$1"/values/*.yaml && grep -q "skipped" "$2"' _ "$STUB_STATE" "$T/out"
 
 echo "lgtm docker: Grafana's admin password is generated, kept 0600, never admin (Kamino 235)"
 svc_reset; rm -rf "$HOME/.config/lgtm" "$T/lgtm-data"
