@@ -4,9 +4,11 @@
 # call, one per line, its arguments joined with '|', plus the API key it found
 # in its environment.
 #
-# What it protects: a relative path starting with "-" reaches the engine as
-# ./-path, never as something it reads as a flag (Kamino 196) - typed, picked
-# from a scan of ".", or as the folder scanned; an LLM API key reaches the
+# What it protects: every path reaches the engine after `--`, which ends its
+# options (Kamino 234), so a relative path starting with "-" is a path, never
+# a flag - typed, picked from a scan of ".", or as the folder scanned - and
+# arrives as typed (the ./-path rewrite of Kamino 196 is gone); converter
+# flags still follow the paths after a second `--`; an LLM API key reaches the
 # engine in its environment and never on argv; clearing the model cache,
 # uninstalling a backend and tearing a stack down do nothing on Enter or no
 # (--default=false); Esc returns to the menu; each path's flags.
@@ -31,6 +33,7 @@ cat > "$T/engine/protocol-droid.sh" <<EOF
 # As the engine's scan: the files under the folder, as "folder/name" - with
 # no leading ./ when the folder is ".".
 if [[ "\${1:-} \${2:-}" == "local scan" ]]; then
+    (IFS='|'; printf '%s\n' "\$*") >> "$T/scans"
     d="\${@: -1}"
     if [[ "\$d" == . ]]; then printf -- '-notes/a.pdf\ndoc.pdf\n'; else printf '%s/a.pdf\n' "\${d%/}"; fi
     exit 0
@@ -58,7 +61,7 @@ SERVICE="Deploy as a service  (Docker / K8s · marker)"
 # drive <answer>... - one answer per prompt, in order; the session ends at Quit.
 drive() {
     printf '%s\n' "$@" > "$T/answers"
-    rm -f "$T/calls" "$T/state" "$T/env-key"; : > "$T/calls"
+    rm -f "$T/calls" "$T/state" "$T/env-key" "$T/scans"; : > "$T/calls"
     (cd "$T/work" && env -u GOOGLE_API_KEY -u GEMINI_API_KEY PATH="$T/bin:$PATH" HOME="$T/home" \
         GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" PROTOCOL_DROID_DIR="$T/engine" \
         "$BASH" "$FRONT") > "$T/out" 2>&1
@@ -68,30 +71,36 @@ not_called() { ! grep -q -- "$1" "$T/calls"; }
 no_calls()   { [[ ! -s "$T/calls" ]]; }
 at_quit()    { grep -q '<choose> Quit' "$T/out"; }
 
-echo "# a path starting with - is a path, not a flag (Kamino 196)"
+echo "# a path starting with - is a path, after -- (Kamino 234)"
 drive "$CONVERT" "$MID" "$PATHIN" "-notes/" "" enter no no Quit
-check "typed -notes/: reaches the engine as ./-notes/" called "local|convert|--backend|markitdown|--output-dir|./converted|./-notes/"
+check "typed -notes/: after --, as typed" called "local|convert|--backend|markitdown|--output-dir|./converted|--|-notes/"
 drive "$CONVERT" "$MARKER" "$SCAN" "" "-notes/a.pdf" markdown "" no no "" Quit
-check "picked from a scan of '.': ./-notes/a.pdf" called "local|convert|--backend|marker|--output-format|markdown|--output-dir|./converted|./-notes/a.pdf"
-drive "$CONVERT" "$AUTO" "$SCAN" "-notes" "./-notes/a.pdf" "" Quit
-check "the folder scanned is ./-notes" bash -c 'grep -q "<option> ./-notes/a.pdf" "$1"' _ "$T/out"
-check "  and its file converts as ./-notes/a.pdf" called "local|convert|--backend|auto|--output-dir|./converted|./-notes/a.pdf"
+check "the scan of '.': its folder after --" grep -qxF "local|scan|--backend|marker|--|." "$T/scans"
+check "picked from it: -notes/a.pdf after --" called "local|convert|--backend|marker|--output-format|markdown|--output-dir|./converted|--|-notes/a.pdf"
+drive "$CONVERT" "$AUTO" "$SCAN" "-notes" "-notes/a.pdf" "" Quit
+check "the folder -notes is scanned, after --" grep -qxF "local|scan|--backend|markitdown|--|-notes" "$T/scans"
+check "  and its file converts (auto)" called "local|convert|--backend|auto|--output-dir|./converted|--|-notes/a.pdf"
 drive "$CONTAINER" "$CONVERT" "$PATHIN" "-notes/a.pdf" markdown "" no Back Quit
-check "the container convert too" called "container|convert|--output-format|markdown|--output-dir|./converted|./-notes/a.pdf"
+check "the container convert too" called "container|convert|--output-format|markdown|--output-dir|./converted|--|-notes/a.pdf"
+drive "$CONTAINER" "Benchmark (model load vs per document)" "$PATHIN" "-notes/a.pdf" 2 Back Quit
+check "and the container bench" called "container|bench|--runs|2|--|-notes/a.pdf"
+check "no path is rewritten to ./-path any more" not_called "./-notes"
 drive "$CONVERT" "$MID" "$PATHIN" "doc.pdf" "" enter no no Quit
-check "a path not starting with - is left alone" called "local|convert|--backend|markitdown|--output-dir|./converted|doc.pdf"
+check "a path not starting with - goes after -- too" called "local|convert|--backend|markitdown|--output-dir|./converted|--|doc.pdf"
+drive "$CONVERT" "$MARKER" "$PATHIN" "-notes/a.pdf" markdown "" yes no "" Quit
+check "a - path and converter flags: paths after the first --, flags after the second" called "local|convert|--backend|marker|--output-format|markdown|--output-dir|./converted|--|-notes/a.pdf|--|--force_ocr"
 
 echo "# an API key travels in the environment"
 drive "$CONVERT" "$MARKER" "$PATHIN" "doc.pdf" markdown "" no yes "Google Gemini (default)" "sekrit-key" "" Quit
-check "marker with an LLM: the service after --" called "local|convert|--backend|marker|--output-format|markdown|--output-dir|./converted|doc.pdf|--|--use_llm|--llm_service|marker.services.gemini.GoogleGeminiService"
+check "marker with an LLM: the service after the second --" called "local|convert|--backend|marker|--output-format|markdown|--output-dir|./converted|--|doc.pdf|--|--use_llm|--llm_service|marker.services.gemini.GoogleGeminiService"
 check "  the key is in no argument" not_called "sekrit"
 check "  the engine has it as GOOGLE_API_KEY" [ "$(cat "$T/env-key" 2>/dev/null)" = sekrit-key ]
 
 echo "# options"
 drive "$CONVERT" "$MID" "$PATHIN" "doc.pdf" "out dir" yes yes no Quit
-check "markitdown: --no-clobber and --use-plugins, the output dir one argument" called "local|convert|--backend|markitdown|--output-dir|out dir|--no-clobber|doc.pdf|--|--use-plugins"
+check "markitdown: --no-clobber and --use-plugins, the output dir one argument" called "local|convert|--backend|markitdown|--output-dir|out dir|--no-clobber|--|doc.pdf|--|--use-plugins"
 drive "$CONVERT" "$MARKER" "$PATHIN" "doc.pdf" json "" yes no "0,5-10" Quit
-check "marker: --force_ocr, a page range" called "local|convert|--backend|marker|--output-format|json|--output-dir|./converted|--page-range|0,5-10|doc.pdf|--|--force_ocr"
+check "marker: --force_ocr, a page range" called "local|convert|--backend|marker|--output-format|json|--output-dir|./converted|--page-range|0,5-10|--|doc.pdf|--|--force_ocr"
 
 echo "# Esc returns to the menu"
 drive "$CONVERT" esc Quit

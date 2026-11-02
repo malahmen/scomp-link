@@ -107,18 +107,10 @@ engine_convert() {
 # Source selection (shared by every backend). Fills PICKED_PATHS[].
 # Scans with markitdown's (superset) extension list so 'auto' sees everything.
 # -----------------------------------------------------------------------------
-# _not_a_flag <path> - the path, with ./ in front when it starts with "-".
-#
-# The engine reads any argument starting with "-" as a flag and has no "--"
-# end of options ("--" forwards what follows to marker/markitdown), so a
-# relative path like -notes/ was refused as an unknown flag - and the scan
-# lists files without a leading ./, so scanning "." and picking a file under
-# -notes/ hit the same wall. ./-notes is the same path and cannot be read as
-# a flag (Kamino 196).
-_not_a_flag() {
-    case "$1" in -*) printf './%s' "$1" ;; *) printf '%s' "$1" ;; esac
-}
-
+# Paths reach the engine after `--` (Kamino 234): a `--` before the first
+# path ends its options, so a relative path like -notes/ is a path, not an
+# unknown flag. A `--` after the paths still starts marker's/markitdown's
+# own flags. This replaces the ./-path rewrite of Kamino 196.
 PICKED_PATHS=()
 pick_source() {
     PICKED_PATHS=()
@@ -131,7 +123,7 @@ pick_source() {
             local dir; dir=$(gum input --value "." --header "Folder to scan (subfolders included):") || return 1
             dir="${dir/#\~/$HOME}"; dir="${dir:-.}"
             [[ -d "$dir" ]] || { warn "Not a folder: ${dir}"; return 1; }
-            local found; found=$(engine local scan --backend "$scan_backend" "$(_not_a_flag "$dir")" 2>/dev/null) \
+            local found; found=$(engine local scan --backend "$scan_backend" -- "$dir" 2>/dev/null) \
                 || { warn "No supported files under ${dir}."; return 1; }
             local count height picked
             count=$(printf '%s\n' "$found" | wc -l | tr -d ' ')
@@ -148,8 +140,6 @@ pick_source() {
             PICKED_PATHS=("$src") ;;
         *) return 1 ;;
     esac
-    local i
-    for i in "${!PICKED_PATHS[@]}"; do PICKED_PATHS[i]="$(_not_a_flag "${PICKED_PATHS[i]}")"; done
     return 0
 }
 
@@ -285,18 +275,18 @@ action_convert() {
             fi
             header "Converting"
             engine_convert local convert --backend marker --output-format "$OUTPUT_FORMAT" --output-dir "$OUTPUT_DIR" \
-                "${pos[@]}" "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
+                "${pos[@]}" -- "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
         markitdown)
             select_markitdown_options || { info "Cancelled."; return 0; }
             header "Converting"
             engine_convert local convert --backend markitdown --output-dir "$OUTPUT_DIR" \
                 "${CLOBBER_ARGS[@]+${CLOBBER_ARGS[@]}}" \
-                "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
+                -- "${PICKED_PATHS[@]}" ${EXTRA_ARGS:+--} "${EXTRA_ARGS[@]}" ;;
         auto)
             OUTPUT_DIR=$(gum input --value "$DEFAULT_OUTPUT_DIR" --header "Output directory:") || return 0
             OUTPUT_DIR="${OUTPUT_DIR:-$DEFAULT_OUTPUT_DIR}"
             header "Converting"
-            engine_convert local convert --backend auto --output-dir "$OUTPUT_DIR" "${PICKED_PATHS[@]}" ;;
+            engine_convert local convert --backend auto --output-dir "$OUTPUT_DIR" -- "${PICKED_PATHS[@]}" ;;
     esac
 }
 
@@ -447,13 +437,13 @@ menu_container() {
                 out=$(gum input --value "$DEFAULT_OUTPUT_DIR" --header "Output directory:") || continue
                 local -a args=(container convert --output-format "$fmt" --output-dir "${out:-$DEFAULT_OUTPUT_DIR}")
                 gum confirm "Force OCR on the whole document? (slower, fixes bad embedded text)" && args+=(--force-ocr)
-                engine_convert "${args[@]}" "${PICKED_PATHS[@]}" ;;
+                engine_convert "${args[@]}" -- "${PICKED_PATHS[@]}" ;;
             "Benchmark"*)
                 info "Times marker's model load apart from each document - the saving a resident worker gives."
                 pick_source marker || continue
                 local runs; runs=$(gum input --value "2" --header "Runs over the set (the first also downloads the models):") || continue
                 [[ "$runs" =~ ^[1-9][0-9]*$ ]] || { warn "Not a positive number: '${runs}'."; continue; }
-                engine_foreground container bench --runs "$runs" "${PICKED_PATHS[@]}" ;;
+                engine_foreground container bench --runs "$runs" -- "${PICKED_PATHS[@]}" ;;
             "Status")      engine_foreground container status ;;
             "Build image") engine_foreground container build ;;
             "Back"|"")     return 0 ;;
