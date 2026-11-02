@@ -107,6 +107,18 @@ engine_convert() {
 # Source selection (shared by every backend). Fills PICKED_PATHS[].
 # Scans with markitdown's (superset) extension list so 'auto' sees everything.
 # -----------------------------------------------------------------------------
+# _not_a_flag <path> - the path, with ./ in front when it starts with "-".
+#
+# The engine reads any argument starting with "-" as a flag and has no "--"
+# end of options ("--" forwards what follows to marker/markitdown), so a
+# relative path like -notes/ was refused as an unknown flag - and the scan
+# lists files without a leading ./, so scanning "." and picking a file under
+# -notes/ hit the same wall. ./-notes is the same path and cannot be read as
+# a flag (Kamino 196).
+_not_a_flag() {
+    case "$1" in -*) printf './%s' "$1" ;; *) printf '%s' "$1" ;; esac
+}
+
 PICKED_PATHS=()
 pick_source() {
     PICKED_PATHS=()
@@ -119,7 +131,7 @@ pick_source() {
             local dir; dir=$(gum input --value "." --header "Folder to scan (subfolders included):") || return 1
             dir="${dir/#\~/$HOME}"; dir="${dir:-.}"
             [[ -d "$dir" ]] || { warn "Not a folder: ${dir}"; return 1; }
-            local found; found=$(engine local scan --backend "$scan_backend" "$dir" 2>/dev/null) \
+            local found; found=$(engine local scan --backend "$scan_backend" "$(_not_a_flag "$dir")" 2>/dev/null) \
                 || { warn "No supported files under ${dir}."; return 1; }
             local count height picked
             count=$(printf '%s\n' "$found" | wc -l | tr -d ' ')
@@ -136,6 +148,8 @@ pick_source() {
             PICKED_PATHS=("$src") ;;
         *) return 1 ;;
     esac
+    local i
+    for i in "${!PICKED_PATHS[@]}"; do PICKED_PATHS[i]="$(_not_a_flag "${PICKED_PATHS[i]}")"; done
     return 0
 }
 
@@ -289,6 +303,8 @@ action_convert() {
 # -----------------------------------------------------------------------------
 # Local tool — per-backend pipx management
 # -----------------------------------------------------------------------------
+# The deleting entries (clear the cache, uninstall, tear down) ask with
+# --default=false: Enter removes nothing (the Kamino 178 rule, Kamino 196).
 menu_local_marker() {
     while true; do
         local c
@@ -301,8 +317,8 @@ menu_local_marker() {
             "Status")                 engine_foreground local status --backend marker ;;
             "Launch GUI (Streamlit)") engine_foreground local gui --backend marker ;;
             "Launch API server")      engine_foreground local server --backend marker ;;
-            "Clear model cache")      gum confirm "Delete ~/.cache/datalab? Models re-download next run." && engine_foreground local clear-cache --backend marker --yes ;;
-            "Uninstall")              gum confirm "Uninstall marker's pipx env? (model caches kept)" && engine_foreground local uninstall --backend marker --yes ;;
+            "Clear model cache")      gum confirm --default=false "Delete ~/.cache/datalab? Models re-download next run." && engine_foreground local clear-cache --backend marker --yes ;;
+            "Uninstall")              gum confirm --default=false "Uninstall marker's pipx env? (model caches kept)" && engine_foreground local uninstall --backend marker --yes ;;
             "Back"|"")                return 0 ;;
         esac
         echo ""
@@ -343,7 +359,7 @@ menu_local_markitdown() {
                 # `engine` exit tripped set -e).
                 if [[ -n "$pkg" ]]; then engine_foreground local install-plugin --backend markitdown "$pkg"
                 else gum style --faint "Cancelled."; fi ;;
-            "Uninstall") gum confirm "Uninstall markitdown's pipx env?" && engine_foreground local uninstall --backend markitdown --yes ;;
+            "Uninstall") gum confirm --default=false "Uninstall markitdown's pipx env?" && engine_foreground local uninstall --backend markitdown --yes ;;
             "Back"|"")   return 0 ;;
         esac
         echo ""
@@ -404,7 +420,7 @@ menu_service() {
                     warn "First ensure your documents are on the 'marker-input' PVC (e.g. via 'kubectl cp')."
                     gum confirm "Start the batch enqueue job now?" && engine_foreground service enqueue --target k8s
                 fi ;;
-            "Tear down")      gum confirm "Tear down the ${flag} stack? (data/volumes kept)" && engine_foreground service teardown --target "$flag" --yes ;;
+            "Tear down")      gum confirm --default=false "Tear down the ${flag} stack? (data/volumes kept)" && engine_foreground service teardown --target "$flag" --yes ;;
             "Back"|"")        return 0 ;;
         esac
         echo ""
