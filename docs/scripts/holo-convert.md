@@ -35,6 +35,7 @@ HTTPS, repo overridable with `$HOLO_CONVERT_REPO`) and drives it with flags.
 - The picker searches under `SOURCE_ROOT` (env var; default `.`) — set it to point the front-end at a docs tree elsewhere
 - Search depth is prompted (default 3); `.fcc/`, `output/`, `node_modules/` and `.git/` are excluded
 - Multi-select: SPACE to select, ENTER to confirm
+- The picked files are passed after `--`, so a file whose name starts with `-` (e.g. `-x.md`) is a path to the engine, not a flag
 
 **Broken-link check (Markdown sources):**
 
