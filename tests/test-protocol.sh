@@ -143,7 +143,8 @@ run install yes db-pw-111 redis-pw-222 GKaccess333 s3-secret-444 qdrant-key-555 
 check "every secret is stored" test -f "$T/state/secret-protocol-qdrant-api-key"
 check "...from stdin: the value is what was typed" grep -qx "redis-pw-222" "$T/state/secret-protocol-redis-password"
 check "...and on no command line" lacks "redis-pw-222" "$T/calls"
-check "both repositories are cloned" has "git clone --quiet https://github.com/malahmen/protocol-droid.git $T/src/protocol-droid" "$T/calls"
+# -- before the URL (Kamino 196): a repository setting is never an option.
+check "both repositories are cloned" has "git clone --quiet -- https://github.com/malahmen/protocol-droid.git $T/src/protocol-droid" "$T/calls"
 check "...and built at a fetched commit, not a working copy" has "checkout --quiet --detach FETCH_HEAD" "$T/calls"
 check "the marker engine is built from protocol-droid" has "-t localhost/marker-service:latest $T/src/protocol-droid" "$T/calls"
 check "the worker image goes on the engine's" has "--build-arg BASE=localhost/marker-service:latest -t localhost/protocol-marker:latest" "$T/calls"
@@ -220,11 +221,32 @@ run config "MariaDB port" "3307" "done" no "← back"
 check "the MariaDB port can be changed" grep -q "^PR_MARIADB_PORT=3307" "$T/config/protocol.conf"
 run config "repositories" "https://example.test/protocol.git" "https://example.test/protocol-droid.git" "done" yes yes yes "← back"
 check "a changed repository is the one fetched from" has "remote set-url origin https://example.test/protocol.git" "$T/calls"
-check "...set before its clone fetches (protocol-droid is fetched first)" before "remote set-url origin https://example.test/protocol-droid.git" "fetch --quiet origin" "$T/calls"
+check "...set before its clone fetches (protocol-droid is fetched first)" before "remote set-url origin https://example.test/protocol-droid.git" "fetch --quiet -- origin" "$T/calls"
 printf 'PR_S3_OUTPUTS_BUCKET=%q\n' "out puts" >> "$T/config/protocol.conf"
 run install yes no "← back"
 check "a hand-edited value that would break a unit stops install" has "would break the units" "$T/out"
 check "...before any unit is written" lacks "out puts" <(cat "$Q"/*.container)
+# The check ran inside `< <(pr_env)`, where its error_exit ended only the
+# process substitution: every unit was rewritten and daemon-reload ran anyway
+# (Kamino 196). Nothing at all happens now.
+rm -f "$Q"/*.container
+run install yes no "← back"
+check "...and no unit is written at all" test "$(find "$Q" -name 'protocol-*.container' 2>/dev/null | wc -l)" -eq 0
+check "...nor systemd reloaded" lacks "daemon-reload" "$T/calls"
+check "...nor a container run" lacks "podman run" "$T/calls"
+check "...and the TUI is still there to fix it" has "Bye." "$T/out"
+sed -i.bak '/^PR_S3_OUTPUTS_BUCKET=/d' "$T/config/protocol.conf"
+
+echo "PR_REF reaches git as a ref, never an option (Kamino 196)"
+run config "branch to build" "--upload-pack=touch" "done" "← back"
+check "a branch starting with - is refused under config" lacks "upload-pack" "$T/config/protocol.conf"
+printf 'PR_REF=%q\n' "--upload-pack=x" >> "$T/config/protocol.conf"
+run build "← back"
+check "a hand-edited one: git is never handed it" lacks "upload-pack" "$T/calls"
+check "...and says why" has "Not a branch or tag" "$T/out"
+sed -i.bak '/^PR_REF=/d' "$T/config/protocol.conf"
+run build "← back"
+check "the fetch puts -- before the remote and ref" has "fetch --quiet -- origin main" "$T/calls"
 
 # ---- uninstall ---------------------------------------------------------------------
 echo "uninstall"
