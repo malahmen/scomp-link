@@ -19,7 +19,11 @@
 #   - uninstall keeps the model cache and the secrets unless asked;
 #   - the API is published on every interface by default - a LAN service,
 #     deliberately, and install says so - or where SCOMP_BIND_ADDR says, with
-#     the URLs, the firewall and status following it (Kamino 235).
+#     the URLs, the firewall and status following it (Kamino 235);
+#   - the settings file is parsed, never sourced: shell code in it runs
+#     nothing, and every key is checked like a typed value - a bad one is
+#     ignored with a warning and the default kept; files the earlier versions
+#     wrote still load (Kamino 236).
 # shellcheck disable=SC2016
 # Single-quoted heredoc stubs expand their own $1/$@ at run time, on purpose.
 set -uo pipefail
@@ -235,28 +239,27 @@ check "...and the repositories" has "<option> repositories" "$T/out"
 run config "MariaDB host" "meksha lan" "S3 endpoint" "http://nas:3900/50%" "done" "← back"
 check "a value with a space is refused (the file holds it %q-escaped)" lacks "meksha" "$T/config/protocol.conf"
 check "...and one with a %" lacks "50%" "$T/config/protocol.conf"
-check "...saying why" has "no spaces, %, quotes or backslashes" "$T/out"
+check "...saying why" has "not a host name or IPv4 address" "$T/out"
 run config "MariaDB port" "3307" "done" no "← back"
 check "the MariaDB port can be changed" grep -q "^PR_MARIADB_PORT=3307" "$T/config/protocol.conf"
 run config "repositories" "https://example.test/protocol.git" "https://example.test/protocol-droid.git" "done" yes yes yes "← back"
 check "a changed repository is the one fetched from" has "remote set-url origin https://example.test/protocol.git" "$T/calls"
 check "...set before its clone fetches (protocol-droid is fetched first)" before "remote set-url origin https://example.test/protocol-droid.git" "fetch --quiet -- origin" "$T/calls"
 printf 'PR_S3_OUTPUTS_BUCKET=%q\n' "out puts" >> "$T/config/protocol.conf"
-# Install now stops before the "Rebuild the images?" question, so there is no
-# "no" to answer it with any more (Kamino 196).
-run install yes "← back"
-check "a hand-edited value that would break a unit stops install" has "would break the units" "$T/out"
-check "...before any unit is written" lacks "out puts" <(cat "$Q"/*.container)
-# The check ran inside `< <(pr_env)`, where its error_exit ended only the
-# process substitution: every unit was rewritten and daemon-reload ran anyway
-# (Kamino 196). Nothing at all happens now.
-mkdir -p "$T/units-kept"; mv "$Q"/*.container "$T/units-kept/"
-run install yes "← back"
-check "...and no unit is written at all" test "$(find "$Q" -name 'protocol-*.container' 2>/dev/null | wc -l)" -eq 0
-check "...nor systemd reloaded" lacks "daemon-reload" "$T/calls"
-check "...nor a container run" lacks "podman run" "$T/calls"
-check "...and the TUI is still there to fix it" has "Bye." "$T/out"
-mv "$T/units-kept/"*.container "$Q/"   # uninstall, below, needs them
+# Since Kamino 236 a hand-edited value is checked as the file is read: one
+# that would break a unit is ignored with a warning, and install goes on with
+# the default.
+run install yes no "← back"
+check "a hand-edited value that would break a unit is ignored, by name" has "Ignoring PR_S3_OUTPUTS_BUCKET='out puts'" "$T/out"
+check "...never reaching a unit" lacks "out puts" <(cat "$Q"/*.container)
+check "...which carry the default" has "Environment=S3_OUTPUTS_BUCKET=protocol-outputs" "$Q/protocol-api.container"
+# pr_env_check stays as the backstop before anything is built or written.
+# It ran inside `< <(pr_env)`, where its error_exit ended only the process
+# substitution: every unit was rewritten and daemon-reload ran anyway
+# (Kamino 196). A setting the checks miss still stops install in the caller.
+check "a setting that would break a unit still fails pr_env_check" bash -c '
+    source "$1" >/dev/null 2>&1; set +e; cfg_defaults; PR_S3_OUTPUTS_BUCKET="out puts"
+    ! pr_env_check 2>/dev/null' _ "$FRONT"
 sed -i.bak '/^PR_S3_OUTPUTS_BUCKET=/d' "$T/config/protocol.conf"
 
 echo "PR_REF reaches git as a ref, never an option (Kamino 196)"
@@ -265,10 +268,134 @@ check "a branch starting with - is refused under config" lacks "upload-pack" "$T
 printf 'PR_REF=%q\n' "--upload-pack=x" >> "$T/config/protocol.conf"
 run build "← back"
 check "a hand-edited one: git is never handed it" lacks "upload-pack" "$T/calls"
-check "...and says why" has "Not a branch or tag" "$T/out"
+check "...it is ignored as the file is read, saying why (Kamino 236)" has "Ignoring PR_REF='--upload-pack=x'" "$T/out"
+check "...and the default branch built" has "fetch --quiet -- origin main" "$T/calls"
 sed -i.bak '/^PR_REF=/d' "$T/config/protocol.conf"
 run build "← back"
 check "the fetch puts -- before the remote and ref" has "fetch --quiet -- origin main" "$T/calls"
+
+# ---- the settings file: parsed and checked, never sourced (Kamino 236) ---------------
+echo "the settings file is parsed and checked, never sourced (Kamino 236)"
+cp "$T/config/protocol.conf" "$T/conf.kept"
+# Every key the file holds, named here rather than read from the script, so
+# the same checks run against any version of it.
+KEYS="PR_PORT PR_MARIADB_HOST PR_MARIADB_PORT PR_REDIS_URL PR_S3_ENDPOINT PR_S3_SOURCES_BUCKET
+      PR_S3_OUTPUTS_BUCKET PR_QDRANT_URL PR_QDRANT_COLLECTIONS PR_SPEACHES_URL PR_MODELS_VOLUME
+      PR_PROTOCOL_REPO PR_DROID_REPO PR_REF PR_BIND_ADDR"
+# settings_of - every key as cfg_load leaves it, KEY=value per line.
+settings_of() {
+    bash -c 'source "$1" >/dev/null 2>&1; set +e; cfg_load 2>/dev/null
+             for k in $2; do printf "%s=%s\n" "$k" "${!k}"; done' _ "$FRONT" "$KEYS"
+}
+defaults_of() {
+    bash -c 'source "$1" >/dev/null 2>&1; set +e; cfg_defaults; PR_BIND_ADDR=""
+             for k in $2; do printf "%s=%s\n" "$k" "${!k}"; done' _ "$FRONT" "$KEYS"
+}
+
+# Shell code in the file: a $(...), a backtick, a command after a ;, and a
+# line that is only a command. Sourced, every one of them ran.
+{ printf '%s\n' "PR_PORT=\$(touch $T/pwned-subst)" "PR_REF=\`touch $T/pwned-backtick\`" \
+      "PR_MARIADB_HOST=meksha; touch $T/pwned-semicolon" "touch $T/pwned-line" \
+      "PR_MODELS_VOLUME=x && touch $T/pwned-and"; } > "$T/config/protocol.conf"
+run "← back"
+for f in subst backtick semicolon line and; do
+    check "shell code in the settings file runs nothing: ${f}" test ! -e "$T/pwned-${f}"
+done
+check "...a \$(...) value is ignored, naming its key" has "Ignoring PR_PORT" "$T/out"
+check "...a value with a command after it too" has "Ignoring PR_MARIADB_HOST" "$T/out"
+check "...and the TUI still starts" has "Bye." "$T/out"
+check "...with the defaults in their place" cmp -s <(settings_of) <(defaults_of)
+
+# One bad value per key: each is ignored with a warning naming it, and the
+# default kept. %q-written, as cfg_save writes, so only the check stops them.
+bad=(
+    "PR_PORT=99999" "PR_MARIADB_HOST=999.1.1.1" "PR_MARIADB_PORT=0"
+    "PR_REDIS_URL=redis://user:pw@192.168.3.52:6380/0" "PR_S3_ENDPOINT=ftp://192.168.3.5:3900"
+    "PR_S3_SOURCES_BUCKET=Protocol_Sources" "PR_S3_OUTPUTS_BUCKET=192.168.3.5"
+    "PR_QDRANT_URL=http://192.168.3.52:6333/?api-key=x" "PR_QDRANT_COLLECTIONS=documents,,chunks"
+    "PR_SPEACHES_URL=http://host.containers.internal:70000" "PR_MODELS_VOLUME=/etc"
+    "PR_PROTOCOL_REPO=ext::sh -c touch\ /tmp/x" "PR_DROID_REPO=https://token@github.com/malahmen/protocol-droid.git"
+    "PR_REF=main..evil" "PR_BIND_ADDR=lan"
+)
+{ for kv in "${bad[@]}"; do printf '%s=%q\n' "${kv%%=*}" "${kv#*=}"; done; } > "$T/config/protocol.conf"
+run "← back"
+for kv in "${bad[@]}"; do
+    check "a bad ${kv%%=*} in the file is ignored, with a warning naming it" has "Ignoring ${kv%%=*}=" "$T/out"
+done
+check "...saying which default is kept" has "Ignoring PR_PORT='99999' in $T/config/protocol.conf: not a port (1-65535). Using '8090'" "$T/out"
+settings_of > "$T/settings.bad"
+for kv in "${bad[@]}"; do
+    check "...and ${kv%%=*} keeps its default" grep -qxF -- "$(defaults_of | grep "^${kv%%=*}=")" "$T/settings.bad"
+done
+
+# Files the earlier versions wrote: every cfg_save since the first (6ba376a)
+# wrote KEY=%q lines under a comment - 13 keys at first, PR_SPEACHES_URL
+# since item 89, PR_BIND_ADDR since 235 - and a hand edit under `source`
+# could use "..." or '...'. All of them still load.
+cat > "$T/config/protocol.conf" <<'CONF'
+# protocol.sh settings - see the defaults in protocol.sh
+PR_PORT=8091
+PR_MARIADB_HOST=meksha.lan
+PR_MARIADB_PORT=3307
+PR_REDIS_URL=redis://192.168.3.52:6380/1
+PR_S3_ENDPOINT=http://192.168.3.5:3901
+PR_S3_SOURCES_BUCKET=protocol-sources-2
+PR_S3_OUTPUTS_BUCKET=protocol.outputs
+PR_QDRANT_URL=https://qdrant.lan
+PR_QDRANT_COLLECTIONS=documents,chunks
+PR_MODELS_VOLUME=protocol-models-2
+PR_PROTOCOL_REPO=git@github.com:malahmen/protocol.git
+PR_DROID_REPO=/srv/git/protocol-droid.git
+PR_REF=release/1.2
+CONF
+run "← back"
+check "a file the first version wrote loads without a warning" lacks "Ignoring" "$T/out"
+settings_of > "$T/settings.old"
+for kv in PR_PORT=8091 PR_MARIADB_HOST=meksha.lan PR_MARIADB_PORT=3307 PR_REDIS_URL=redis://192.168.3.52:6380/1 \
+          PR_S3_ENDPOINT=http://192.168.3.5:3901 PR_S3_SOURCES_BUCKET=protocol-sources-2 PR_S3_OUTPUTS_BUCKET=protocol.outputs \
+          PR_QDRANT_URL=https://qdrant.lan PR_QDRANT_COLLECTIONS=documents,chunks PR_MODELS_VOLUME=protocol-models-2 \
+          PR_PROTOCOL_REPO=git@github.com:malahmen/protocol.git PR_DROID_REPO=/srv/git/protocol-droid.git PR_REF=release/1.2 \
+          PR_SPEACHES_URL=http://host.containers.internal:8000 PR_BIND_ADDR=; do
+    check "...${kv%%=*} as written (or its default, for a key it did not have)" grep -qxF -- "$kv" "$T/settings.old"
+done
+cat > "$T/config/protocol.conf" <<'CONF'
+# protocol.sh settings - see the defaults in protocol.sh
+PR_PORT=8090
+PR_QDRANT_COLLECTIONS=''
+PR_SPEACHES_URL=''
+
+PR_REF="feature/x"
+PR_MODELS_VOLUME='protocol-models'
+PR_BIND_ADDR=0.0.0.0
+CONF
+run "← back"
+check "the 235 format, '' and hand-quoted values load without a warning" lacks "Ignoring" "$T/out"
+settings_of > "$T/settings.old"
+for kv in PR_QDRANT_COLLECTIONS= PR_SPEACHES_URL= PR_REF=feature/x PR_MODELS_VOLUME=protocol-models PR_BIND_ADDR=0.0.0.0; do
+    check "...${kv%%=*} as written" grep -qxF -- "$kv" "$T/settings.old"
+done
+# Read and write are symmetric: what cfg_save writes, cfg_load reads back.
+# conf.kept is what install and 'config' above wrote (collections, repositories, ...).
+cp "$T/conf.kept" "$T/config/protocol.conf"
+check "a file this version wrote loads without a warning" bash -c '! { source "$1"; cfg_load; } 2>&1 >/dev/null | grep -q Ignoring' _ "$FRONT"
+check "...and what cfg_save writes, cfg_load reads back the same" bash -c '
+    source "$1" >/dev/null 2>&1; set +e; cfg_load 2>/dev/null; a="$(declare -p $2)"
+    cfg_save; cfg_load 2>/dev/null; [[ "$a" == "$(declare -p $2)" ]]' _ "$FRONT" "$KEYS"
+
+# Typed under 'config': the same checks. Each refused value leaves the file as it was.
+cp "$T/config/protocol.conf" "$T/conf.before"
+run config port "0" "MariaDB host" "999.1.1.1" "MariaDB port" "65536" "Redis URL" "redis://192.168.3.52:6380/abc" \
+    "S3 endpoint" "ftp://192.168.3.5:3900" buckets "Protocol_Sources" "192.168.3.5" \
+    "Qdrant URL" "http://192.168.3.52:6333/?api-key=x" "Qdrant collections" "documents,,chunks" \
+    "Speaches URL" "http://host.containers.internal:70000" "models volume" "/etc" "branch to build" "main..evil" \
+    repositories "ext::sh" "https://token@github.com/malahmen/protocol-droid.git" "done" "← back"
+for v in "0" "999.1.1.1" "65536" "redis://192.168.3.52:6380/abc" "ftp://192.168.3.5:3900" "Protocol_Sources" "192.168.3.5" \
+         "http://192.168.3.52:6333/?api-key=x" "documents,,chunks" "http://host.containers.internal:70000" "/etc" "main..evil" \
+         "ext::sh" "https://token@github.com/malahmen/protocol-droid.git"; do
+    check "a typed '${v}' is refused" has "Not changed: '${v}'" "$T/out"
+done
+check "...and nothing refused was saved" cmp -s "$T/config/protocol.conf" "$T/conf.before"
+cp "$T/conf.kept" "$T/config/protocol.conf"
 
 # ---- uninstall ---------------------------------------------------------------------
 echo "uninstall"
