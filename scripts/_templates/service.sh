@@ -98,7 +98,9 @@ foo_connect_docker() {
 foo_uninstall_docker() {
     header "Uninstall Foo — Docker"
     _docker_container_exists "$FOO_CONTAINER_NAME" || { warn "Not found."; return; }
-    gum confirm "Remove container '${FOO_CONTAINER_NAME}'?" || return
+    # Declining returns 0: the menus call these bare under set -e, so a bare
+    # `|| return` (status 1) ended the whole script (Kamino 196).
+    gum confirm "Remove container '${FOO_CONTAINER_NAME}'?" || return 0
     docker rm -f "$FOO_CONTAINER_NAME" >/dev/null && success "Removed."   # TODO: offer to drop the data volume
 }
 
@@ -132,7 +134,7 @@ foo_install_k8s() {
         --wait --timeout 5m
     )
     if _k8s_detect_installed; then
-        gum confirm "Release exists — upgrade?" || return
+        gum confirm "Release exists — upgrade?" || return 0
         gum spin --spinner dot --title "Upgrading..." -- helm --kube-context "$KUBE_CONTEXT" upgrade "${helm_args[@]}" || error_exit "upgrade failed."
     else
         gum spin --spinner dot --title "Installing..." -- helm --kube-context "$KUBE_CONTEXT" install "${helm_args[@]}" || error_exit "install failed."
@@ -150,9 +152,10 @@ foo_port_forward_k8s() {
     header "Foo — Port Forward"; _k8s_check_cluster || return 0
     _k8s_detect_installed || { warn "Not installed."; return; }
     if pf_is_running "$_FOO_PF_PID"; then
-        gum confirm "Stop port-forward on :$(pf_port "$_FOO_PF_PID")?" && pf_stop "$_FOO_PF_PID"; return
+        gum confirm "Stop port-forward on :$(pf_port "$_FOO_PF_PID")?" && pf_stop "$_FOO_PF_PID"
+        return 0
     fi
-    local port; port=$(gum input --value "$FOO_DEFAULT_PORT" --header "Local port:") || return
+    local port; port=$(gum input --value "$FOO_DEFAULT_PORT" --header "Local port:") || return 0
     port="${port:-$FOO_DEFAULT_PORT}"
     kubectl --context "$KUBE_CONTEXT" -n "$FOO_NAMESPACE" port-forward "svc/${FOO_HELM_RELEASE}" "${port}:${FOO_DEFAULT_PORT}" >/dev/null 2>&1 &
     echo "${!}:${port}" > "$_FOO_PF_PID"
@@ -162,7 +165,7 @@ foo_port_forward_k8s() {
 foo_uninstall_k8s() {
     header "Uninstall Foo — Kubernetes"; _k8s_check_cluster || return 0
     _k8s_detect_installed || { warn "Not installed."; return; }
-    gum confirm "Uninstall release '${FOO_HELM_RELEASE}'? (PVCs are NOT auto-removed)" || return
+    gum confirm "Uninstall release '${FOO_HELM_RELEASE}'? (PVCs are NOT auto-removed)" || return 0
     helm --kube-context "$KUBE_CONTEXT" uninstall "$FOO_HELM_RELEASE" -n "$FOO_NAMESPACE" || true
     success "Uninstalled."
 }

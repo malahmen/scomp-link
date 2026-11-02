@@ -13,6 +13,9 @@
 #     KEY="<raw value>" and `source`d the file back, so a value with a quote,
 #     $(...) or a backtick ran as code. They are written with %q and parsed;
 #     such a value round-trips and runs nothing, and an old file still reads.
+#   - Declining: `gum confirm ... || return` returns 1, and a menu calling
+#     the function bare under set -e then ended the whole TUI. Declining (or
+#     cancelling kind's create) goes back to the menu now.
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -200,6 +203,32 @@ check "the prefix was saved" test -f "$BZ_CONF"
 svc_cmd bazzite-utils ea-fix no "$T/elsewhere"
 check "the next run offers it back exactly" has "Use saved EA prefix: ${ODD} ?" "$T/out"
 check "nothing ran" nothing_ran
+
+# ----------------------------------------------------------------- declining
+echo "_templates/service.sh: declining the uninstall confirm returns to the menu"
+svc_reset
+mkdir -p "$STUB_STATE/c/foo"; : > "$STUB_STATE/c/foo/env"
+printf '%s\n' "" uninstall no status "← back" > "$GUM_ANSWERS"; : > "$GUM_STATE"; : > "$STUB_LOG"
+(cd "$T/work" && bash "${SVC_DIR}/_templates/service.sh" > "$T/out" 2>&1 < /dev/null); echo $? > "$T/rc"
+check "the script finishes (exit 0)" rc_is 0
+check "nothing was removed" bash -c "! grep -q '^docker rm' '$STUB_LOG'"
+check "the next pick (status) ran" grep -q '^docker ps -a --filter name=^/foo\$' "$STUB_LOG"
+check "the TUI said Bye" has "Bye." "$T/out"
+
+echo "kind: a cancelled create returns to the menu"
+svc_reset
+printf '#!/usr/bin/env bash\necho "mise 2099.1.1-stub"\n' > "$T/bin/mise"; chmod +x "$T/bin/mise"
+svc_run kind "Create new cluster" "Bad_Name" "Refresh" "Quit"
+check "the script finishes (exit 0)" rc_is 0
+check "the bad name is refused" has "Invalid cluster name 'Bad_Name'" "$T/out"
+check "the menu came back (Refresh and Quit were read)" bash -c "[[ \$(cat '$GUM_STATE') -ge 4 ]]"
+check "the TUI said Bye" has "Bye!" "$T/out"
+echo kind-1 > "$STUB_STATE/kind-clusters"
+svc_run kind "── create new cluster ──" "kind-1" "Cancel" "── quit ──"
+check "declining to recreate an existing cluster: exit 0" rc_is 0
+check "...nothing was deleted" bash -c "! grep -q '^kind delete' '$STUB_LOG'"
+check "...and the TUI said Bye" has "Bye!" "$T/out"
+rm -f "$T/bin/mise"
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi

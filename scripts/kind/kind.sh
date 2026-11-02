@@ -495,13 +495,16 @@ create_cluster_flow() {
     PORT_MAPPINGS=()
     CONFIG_FILE=""
 
-    create_select_name      || return
-    create_check_existing   || return
-    create_select_version   || return
+    # `|| return 0`: a cancel (or a bad name) goes back to the menu. A bare
+    # `|| return` passed the 1 on, and the menu's bare call ended kind.sh
+    # under set -e (Kamino 196).
+    create_select_name      || return 0
+    create_check_existing   || return 0
+    create_select_version   || return 0
     create_select_ports
     create_generate_config
-    create_run              || return
-    create_verify
+    create_run              || return 0
+    create_verify           || true   # a failed check is reported there; back to the menu
 }
 
 # =============================================================================
