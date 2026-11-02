@@ -413,20 +413,19 @@ action_create_account() {
     local name pass level
     name=$(gum input --placeholder "username" --header "New account username:") || return 0
     [[ -n "$name" ]] || { info "Cancelled."; return 0; }
-    # The engine's create-account takes the password only as --pass, so it
-    # is on the engine's command line - readable by any local user (ps) for
-    # as long as the call runs, a few seconds with a GM level. Said in the
-    # prompt and the docs until the engine reads it from stdin (Kamino 196).
     pass=$(gum input --password --placeholder "password" \
-        --header "New account password (1-16 characters, no spaces). Passed to the engine as an argument: other users of this machine can see it while it runs - set a new one in game if this host is shared:") || return 0
+        --header "New account password (1-16 characters, no spaces):") || return 0
     [[ -n "$pass" ]] || { info "Cancelled."; return 0; }
     # The engine's own rule for console arguments (lib/transport.sh
     # _validate_console_arg), checked first: a password it would refuse is
-    # not put on a command line at all.
+    # not sent at all.
     [[ "$name" =~ ^[[:graph:]]{1,16}$ ]] || { warn "The username must be 1-16 characters with no spaces."; return 0; }
     [[ "$pass" =~ ^[[:graph:]]{1,16}$ ]] || { warn "The password must be 1-16 characters with no spaces; nothing was sent."; return 0; }
     level=$(_pick_gm_level "Account access level" "0")
-    engine_foreground create-account --name "$name" --pass "$pass" --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    # On stdin (--pass-stdin, Kamino 233): as --pass it sat on the engine's
+    # command line, readable by any local user (ps) while the call ran.
+    printf '%s\n' "$pass" | engine_foreground create-account --name "$name" --pass-stdin --level "$level" ${WHERE_FLAGS[@]+"${WHERE_FLAGS[@]}"}
+    unset pass
 }
 
 action_list_accounts() {

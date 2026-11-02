@@ -41,6 +41,7 @@ if [[ "\${1:-}" == get ]]; then
 fi
 [[ "\${1:-}" == profiles ]] && exit 0
 (IFS='|'; printf '%s\n' "\$*") >> "$T/calls"
+[[ "\${1:-}" == create-account ]] && cat > "$T/stdin"
 if [[ "\${1:-}" == restore ]]; then
     yes=0; db=""
     while [[ \$# -gt 0 ]]; do case "\$1" in --yes) yes=1; shift ;; --db) db="\$2"; shift 2 ;; *) shift ;; esac; done
@@ -65,7 +66,7 @@ touch -t 202610250000 "$D/full-20261025-000000.sql"; touch -t 202610240000 "$D/t
 # drive <answer>... — one answer per prompt, in order; the session ends at Quit.
 drive() {
     printf '%s\n' "$@" > "$T/answers"
-    rm -f "$T/calls" "$T/state"; : > "$T/calls"
+    rm -f "$T/calls" "$T/state" "$T/stdin"; : > "$T/calls"
     PATH="$T/bin:$PATH" GUM_ANSWERS="$T/answers" GUM_STATE="$T/state" NORDRASSIL_DIR="$T/engine" \
         XDG_CONFIG_HOME="$T/config" "$BASH" "$FRONT" > "$T/out" 2>&1
 }
@@ -209,7 +210,10 @@ check "stop-k8s on the current context: no target flags" called "stop-k8s"
 
 echo "# Accounts"
 drive Accounts create-account "docker (run-docker)" bob 'hunter2!' Gamemaster back Quit
-check "create-account: name, password, level 3, --where docker" called "create-account|--name|bob|--pass|hunter2!|--level|3|--where|docker"
+check "create-account: --pass-stdin, level 3, --where docker (Kamino 233)" called "create-account|--name|bob|--pass-stdin|--level|3|--where|docker"
+check "  the password is on no argv" not_called "hunter2"
+check "  it arrives on stdin" [ "$(cat "$T/stdin" 2>/dev/null)" = 'hunter2!' ]
+check "  the prompt no longer says it goes on argv" bash -c '! grep -q "Passed to the engine as an argument" "$1"' _ "$T/out"
 drive Accounts create-account "Auto-detect (mangosd runs in one place)" bob 'two words' back Quit
 check "a password the console would refuse is never sent" not_called "create-account"
 check "  and the reason is given" grep -q "no spaces; nothing was sent" "$T/out"
