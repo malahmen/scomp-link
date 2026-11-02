@@ -223,18 +223,21 @@ run config "repositories" "https://example.test/protocol.git" "https://example.t
 check "a changed repository is the one fetched from" has "remote set-url origin https://example.test/protocol.git" "$T/calls"
 check "...set before its clone fetches (protocol-droid is fetched first)" before "remote set-url origin https://example.test/protocol-droid.git" "fetch --quiet -- origin" "$T/calls"
 printf 'PR_S3_OUTPUTS_BUCKET=%q\n' "out puts" >> "$T/config/protocol.conf"
-run install yes no "← back"
+# Install now stops before the "Rebuild the images?" question, so there is no
+# "no" to answer it with any more (Kamino 196).
+run install yes "← back"
 check "a hand-edited value that would break a unit stops install" has "would break the units" "$T/out"
 check "...before any unit is written" lacks "out puts" <(cat "$Q"/*.container)
 # The check ran inside `< <(pr_env)`, where its error_exit ended only the
 # process substitution: every unit was rewritten and daemon-reload ran anyway
 # (Kamino 196). Nothing at all happens now.
-rm -f "$Q"/*.container
-run install yes no "← back"
+mkdir -p "$T/units-kept"; mv "$Q"/*.container "$T/units-kept/"
+run install yes "← back"
 check "...and no unit is written at all" test "$(find "$Q" -name 'protocol-*.container' 2>/dev/null | wc -l)" -eq 0
 check "...nor systemd reloaded" lacks "daemon-reload" "$T/calls"
 check "...nor a container run" lacks "podman run" "$T/calls"
 check "...and the TUI is still there to fix it" has "Bye." "$T/out"
+mv "$T/units-kept/"*.container "$Q/"   # uninstall, below, needs them
 sed -i.bak '/^PR_S3_OUTPUTS_BUCKET=/d' "$T/config/protocol.conf"
 
 echo "PR_REF reaches git as a ref, never an option (Kamino 196)"
