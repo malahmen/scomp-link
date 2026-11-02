@@ -758,8 +758,14 @@ sp_config() {
         field=$(gum choose version variant port "idle time" "cpu threads" "compute type" models "cache volume" "k8s storage" "k8s storage class" "reset to defaults" "done" \
             --header "Change:") || break
         case "$field" in
+            # Version and volume are checked like the numbers below (Kamino
+            # 196): both reach the Quadlet unit, docker run's argv and the k8s
+            # manifest as typed. The version is an image tag (it gets -cpu or
+            # -cuda appended, so 120 characters leave room); the volume a
+            # podman/docker volume name - a path there is a bind mount of
+            # this host's files, and a newline a line of its own in the unit.
             version)  value=$(gum input --value "$SP_VERSION" --header "Speaches version (image tag without -cpu/-cuda):") || continue
-                      [[ -n "$value" ]] && SP_VERSION="$value" ;;
+                      [[ "$value" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,119}$ ]] && SP_VERSION="$value" || warn "Not an image tag: ${value}" ;;
             variant)  value=$(gum choose auto cpu cuda --header "Image variant (auto: cuda when an NVIDIA GPU is visible):") || continue
                       SP_VARIANT="$value" ;;
             port)     value=$(gum input --value "$SP_PORT" --header "Port on this host:") || continue
@@ -773,7 +779,7 @@ sp_config() {
             models)   value=$(gum input --value "$SP_MODELS" --width 120 --header "Default models (space-separated):") || continue
                       [[ -n "$value" ]] && SP_MODELS="$value" ;;
             "cache volume") value=$(gum input --value "$SP_VOLUME" --header "Named volume for the model cache:") || continue
-                      [[ -n "$value" ]] && SP_VOLUME="$value" ;;
+                      [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] && SP_VOLUME="$value" || warn "Not a volume name: ${value}" ;;
             "k8s storage") value=$(gum input --value "$SP_K8S_STORAGE" --header "PVC size:") || continue
                       [[ -n "$value" ]] && SP_K8S_STORAGE="$value" ;;
             "k8s storage class") value=$(gum input --value "$SP_K8S_STORAGE_CLASS" --header "StorageClass (empty = the cluster's default):") || continue
