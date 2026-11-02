@@ -165,10 +165,10 @@ enable() {   # enable <display answer> - service-enable, declining linger
 enable 12
 check "a number: Xvfb runs on it" has "ExecStart=/usr/bin/Xvfb :12 -screen" "$UNITS/lmstudio-xvfb.service"
 check "  the wrapper uses it" has "export DISPLAY=:12" "$XDG_CONFIG_HOME/lmstudio-tui/lmstudio-headless.sh"
-check "  and it is saved" has 'XVFB_DISPLAY="12"' "$CONF"
+check "  and it is saved" grep -qx 'XVFB_DISPLAY=12' "$CONF"
 enable ":13"
 check ":13 is taken as 13" has "ExecStart=/usr/bin/Xvfb :13 -screen" "$UNITS/lmstudio-xvfb.service"
-check "  saved as 13" has 'XVFB_DISPLAY="13"' "$CONF"
+check "  saved as 13" grep -qx 'XVFB_DISPLAY=13' "$CONF"
 cp "$UNITS/lmstudio-xvfb.service" "$T/unit.before"; cp "$CONF" "$T/conf.before"
 enable '13 -listen tcp'
 check "extra Xvfb arguments are refused" has "Not a display number: '13 -listen tcp'" "$T/out"
