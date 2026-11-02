@@ -67,8 +67,23 @@ QD_API_KEY=""
 QD_REST_PORT=$QD_DEFAULT_REST_PORT
 QD_GRPC_PORT=$QD_DEFAULT_GRPC_PORT
 
-# Builds the curl auth header arg if an API key is set.
-_curl_auth() { [[ -n "$QD_API_KEY" ]] && echo "-H api-key:${QD_API_KEY}" || echo ""; }
+# _qd_curl <url> - curl -sf <url>, with the API key (when one is set) as an
+# api-key header in a curl config read from stdin (-K -). It used to be
+# `-H api-key:<key>` echoed into an unquoted variable: on curl's command line,
+# where any local user can read it, and word-split and globbed there - a key
+# with a space or * reached Qdrant changed (Kamino 196). In the config's
+# double quotes only \ and " need escaping.
+_qd_curl() {
+    local url="$1" key
+    if [[ -z "$QD_API_KEY" ]]; then
+        curl -sf "$url"
+        return
+    fi
+    [[ "$QD_API_KEY" == *[[:cntrl:]]* ]] && { warn "The API key contains control characters; not sending it."; return 1; }
+    key="${QD_API_KEY//\\/\\\\}"
+    key="${key//\"/\\\"}"
+    printf 'header = "api-key: %s"\n' "$key" | curl -sf -K - "$url"
+}
 
 _ensure_curl() {
     if command -v curl &>/dev/null; then
@@ -110,8 +125,6 @@ _prompt_api_key() {
 
 _rest_health_check() {
     local port="$1"
-    local auth_header
-    auth_header=$(_curl_auth)
 
     if ! _ensure_curl; then
         return
@@ -122,15 +135,13 @@ _rest_health_check() {
 
     # Cluster info
     gum style --foreground "$CYAN" --bold "── Cluster info ──"
-    # shellcheck disable=SC2086
-    curl -sf $auth_header "http://127.0.0.1:${port}/" 2>/dev/null \
+    _qd_curl "http://127.0.0.1:${port}/" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat) \
         || warn "Could not reach http://127.0.0.1:${port}/ — is Qdrant running?"
 
     echo ""
     gum style --foreground "$CYAN" --bold "── Collections ──"
-    # shellcheck disable=SC2086
-    curl -sf $auth_header "http://127.0.0.1:${port}/collections" 2>/dev/null \
+    _qd_curl "http://127.0.0.1:${port}/collections" 2>/dev/null \
         | (command -v python3 &>/dev/null && python3 -m json.tool || cat) \
         || warn "Could not list collections."
 

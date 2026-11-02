@@ -15,6 +15,8 @@
 #     reading process.env) or stdin (the mongo readiness check), never -p/-a;
 #   - connect reads the container's env with cut -f2-: a value with '=' in it
 #     is not cut short;
+#   - qdrant's health-check sends the API key as a header in a curl config
+#     on stdin (-K -), not as an unquoted, word-split -H on curl's argv;
 set -uo pipefail
 
 # shellcheck source=lib/service-stubs.sh
@@ -244,6 +246,25 @@ old_container grafana "GF_SECURITY_ADMIN_USER=ad=min" "GF_SECURITY_ADMIN_PASSWOR
 svc_run grafana "" connect yes "← back"
 check "the script finishes (exit 0)" rc_is 0
 check "the username shown is whole" grep -qE 'Username: ad=min( |$)' "$T/out"
+
+# ---------------------------------------------------------- qdrant curl ---
+echo "qdrant docker: health-check with an API key"
+# This file's curl stub also keeps what curl reads as its config from stdin.
+cat > "$T/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl %s\n' "$*" >> "$STUB_LOG"
+prev=""; for a in "$@"; do [[ "$prev" == -K && "$a" == - ]] && cat >> "$STUB_STATE/curl-config"; prev="$a"; done
+exit 0
+EOF
+svc_reset
+svc_run qdrant "" install "" "" "" "$PW" health-check yes "← back"
+check "the script finishes (exit 0)" rc_is 0
+# (the docker stub answers every port lookup with the same string)
+check "both REST calls read a config from stdin" \
+    bash -c "[[ \$(grep -cE '^curl -sf -K - http://127\.0\.0\.1:.*/(collections)?\$' '$STUB_LOG') == 2 ]]"
+check "the config holds the api-key header, the key escaped for its double quotes" \
+    grep -qxF 'header = "api-key: P,w=1\\x.{y}'"'"'\"z q"' "$STUB_STATE/curl-config"
+check "no secret is on any argv" bash -c "$(declare -f argv_clean); argv_clean \"\$1\"" _ "$PW"
 
 echo
 if (( FAILS )); then echo "${FAILS} check(s) failed"; exit 1; fi
