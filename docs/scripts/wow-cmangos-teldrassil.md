@@ -93,9 +93,12 @@ it for such a profile.
   the roster can first delete every random bot, and every guild a bot leads,
   and create a new population at the roster's counts; declining the second
   question applies the roster alone.
-- **The console refuses bot chat commands** (`rndbot c`, `rndbot do`): they get
-  no answer from the console and have crashed the world server. Send them in
-  game, as the bot's master.
+- **The console refuses playerbots' test tools** (`rndbot grid load|unload|cycle`,
+  `rndbot taxtest`, `rndbot zoneupd`): they act outside the game's normal flow.
+  Bot chat commands (`rndbot c`, `rndbot do`) go through but get no answer from
+  the console - send them in game, as the bot's master. (They once crashed the
+  world server; the cause, the console answering a closed connection, is fixed
+  in the core - Kamino 260, 262.)
 - **Accounts-only dumps** leave out `realmlist`, which holds this realm's
   address: restored elsewhere, a whole realm database would send that server's
   clients here.

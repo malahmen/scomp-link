@@ -381,7 +381,7 @@ action_restart() {
 action_console() {
     header "teldrassil — Console"
     info "Remote-console commands, one at a time; blank to go back."
-    info "Bot chat commands ('rndbot c', 'rndbot do') are refused: send those in game."
+    info "playerbots' test tools (rndbot grid load/unload/cycle, taxtest, zoneupd) are refused; bot chat commands get no answer here - send those in game."
     local c
     while true; do
         c="$(_ask "Console command:")"
