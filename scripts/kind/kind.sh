@@ -386,7 +386,11 @@ create_check_port_conflicts() {
 }
 
 create_generate_config() {
-    CONFIG_FILE=$(mktemp /tmp/kind-config-XXXXXX.yaml)
+    # The X's end the template: BSD mktemp (macOS) replaces them only there,
+    # and "kind-config-XXXXXX.yaml" was that literal name (Kamino 237). kind
+    # reads --config whatever its extension.
+    CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/kind-config.XXXXXX") \
+        || _fatal "Could not create a temporary cluster config."
 
     cat > "${CONFIG_FILE}" <<EOF
 kind: Cluster

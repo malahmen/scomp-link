@@ -706,7 +706,12 @@ grafana_install_k8s() {
 
     # Build a temp values file for datasources (and anything else needing YAML structure)
     local values_file
-    values_file=$(mktemp /tmp/grafana-values-XXXXXX.yaml)
+    # The X's end the template: BSD mktemp (macOS) replaces them only there,
+    # and "grafana-values-XXXXXX.yaml" was that literal name - fixed, so a
+    # second run failed and whoever made the path first owned the InfluxDB
+    # token written into it (Kamino 237). helm needs no .yaml extension.
+    values_file=$(umask 077 && mktemp "${TMPDIR:-/tmp}/grafana-values.XXXXXX") \
+        || error_exit "Could not create a temporary values file."
     # shellcheck disable=SC2064
     trap "rm -f '${values_file}'" RETURN
 
