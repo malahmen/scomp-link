@@ -163,6 +163,31 @@ check "a folder without user.reg/drive_c is refused"       has "is not a Wine pr
 tui "$KDE" "$ENTER" "$P" esc
 check "EA_PREFIX is kept when this command saves"          grep -qF "EA_PREFIX=$(printf '%q' "$T/ea pfx")" "$XDG_CONFIG_HOME/bazzite-utils/bazzite-utils.conf"
 
+echo "## 9. the real layout: a Proton base folder, a symlinked alias, Wine's own processes"
+# Lutris/umu give the base folder as WINEPREFIX and Proton keeps the prefix
+# in its pfx/; on Bazzite /home is a symlink to /var/home. Found running the
+# command on the real machine (2026-11-16): three entries for one prefix.
+noproc; rm -rf "$T/real" "$T/alias"
+mkprefix "$T/real/bnet/pfx"; ln -s "$T/real" "$T/alias"
+REALP="$(realpath "$T/real/bnet/pfx")"
+proc 300 lutris-wrapper: "" "WINEPREFIX=$T/alias/bnet"
+proc 301 umu.exe "" "WINEPREFIX=$T/real/bnet" "DISPLAY=:0"
+proc 302 services.exe "" "WINEPREFIX=$T/real/bnet/pfx/" "DISPLAY=:0"
+proc 303 Wow.exe "" "WINEPREFIX=$T/real/bnet/pfx/" "DISPLAY=:0" "PROTONPATH=$PROTON"
+proc 304 Wow.exe "" "WINEPREFIX=$T/real/bnet/pfx/" "DISPLAY=:0"
+proc 305 wineserver "$PROTON/files/bin/wineserver" "WINEPREFIX=$T/real/bnet/pfx"
+# Another user's process: its environ cannot be read (root reads everything,
+# so the check below is only meaningful as a normal user, as CI runs).
+proc 306 systemd "" "WINEPREFIX=/nope"; chmod 000 "$BZU_PROC/306/environ"
+rm -f "$T/live-value"
+tui "$KDE" "running: $REALP  (Wow.exe)" yes
+check "an unreadable process prints nothing"              bash -c '! grep -q "Permission denied" <<<"$OUT"' 
+check "one entry: the real pfx/, with the game only"       has "<option> running: $REALP  (Wow.exe)" "$OUT"
+check "no entry for the base folder or the alias"          bash -c '! grep -E "<option> running: .*/(alias|real)/bnet( |\$)" <<<"$OUT"'
+check "the wrapper with no DISPLAY did not mislead it"     has "through XWayland" "$OUT"
+check "reg add ran on the real prefix"                     grep -qF "$REALP|reg add" "$T/wine-calls"
+check "the real prefix is what is saved"                   grep -qF "WINE_FOCUS_PREFIX=$(printf '%q' "$REALP")" "$XDG_CONFIG_HOME/bazzite-utils/bazzite-utils.conf"
+
 echo
 if (( FAILS )); then echo "FAIL - ${FAILS} check(s) failed"; exit 1; fi
 echo "PASS"

@@ -424,9 +424,24 @@ BZU_PROC="${BZU_PROC:-/proc}"
 
 _wf_norm() { local p="${1%/}"; printf '%s' "${p:-/}"; }
 
+# _wf_resolve <path> - the prefix a WINEPREFIX value really means. Proton and
+# umu (Lutris, Heroic) are given the base folder and keep the prefix in its
+# pfx/, so the base is followed there; then the real path, since on Bazzite
+# /home is a symlink to /var/home and one prefix showed up twice.
+_wf_resolve() {
+    local p; p="$(_wf_norm "$1")"
+    [[ ! -f "$p/user.reg" && -f "$p/pfx/user.reg" ]] && p="$p/pfx"
+    _wf_norm "$(realpath -m -- "$p" 2>/dev/null || printf '%s' "$p")"
+}
+
+# Wine's own processes, left out of the names shown beside a prefix.
+_WF_WINE_SYSTEM=" services.exe winedevice.exe svchost.exe plugplay.exe lsass.exe explorer.exe rpcss.exe tabtip.exe xalia.exe conhost.exe start.exe wineboot.exe rundll32.exe umu.exe steam.exe "
+
 # _wf_env <pid> <VAR> - one variable from a process's environment.
 _wf_env() {
-    tr '\0' '\n' < "${BZU_PROC}/$1/environ" 2>/dev/null | sed -n "s/^$2=//p" | head -1
+    # The braces matter: in `tr < file 2>/dev/null` the < fails before the
+    # 2> applies, and every other user's process printed "Permission denied".
+    { tr '\0' '\n' < "${BZU_PROC}/$1/environ"; } 2>/dev/null | sed -n "s/^$2=//p" | head -1
 }
 
 # Prints "pid<TAB>prefix<TAB>name" for every readable process with a WINEPREFIX.
@@ -436,7 +451,7 @@ _wf_scan() {
         pid="${d##*/}"
         pfx="$(_wf_env "$pid" WINEPREFIX)"
         [[ -n "$pfx" ]] || continue
-        printf '%s\t%s\t%s\n' "$pid" "$(_wf_norm "$pfx")" "$(cat "$d/comm" 2>/dev/null)"
+        printf '%s\t%s\t%s\n' "$pid" "$(_wf_resolve "$pfx")" "$(cat "$d/comm" 2>/dev/null)"
     done
 }
 
@@ -535,8 +550,11 @@ _wf_pick_prefix() {
     local -A seen=() names=()
     local pid pfx name opts=() choice
     while IFS=$'\t' read -r pid pfx name; do
-        [[ "$name" == *.exe ]] && names[$pfx]+="${names[$pfx]:+, }${name}"
         seen[$pfx]=1
+        # The game's own .exe names, once each; Wine's processes left out.
+        [[ "$name" == *.exe && "$_WF_WINE_SYSTEM" != *" ${name} "* ]] || continue
+        [[ ", ${names[$pfx]:-}, " == *", ${name}, "* ]] && continue
+        names[$pfx]+="${names[$pfx]:+, }${name}"
     done < <(_wf_scan)
     for pfx in "${!seen[@]}"; do
         opts+=("running: ${pfx}${names[$pfx]:+  (${names[$pfx]})}")
@@ -554,7 +572,7 @@ _wf_pick_prefix() {
     esac
     [[ -n "$pfx" ]] || return 1
     pfx="${pfx/#\~/$HOME}"
-    _wf_norm "$pfx"
+    _wf_resolve "$pfx"
 }
 
 cmd_wine_focus_fix() {
