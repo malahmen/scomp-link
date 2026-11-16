@@ -39,10 +39,15 @@ dir=""; args=("$@")
 [[ "${1:-}" == "-d" ]] && { dir=1; shift; }
 if (( $# != 1 )) || [[ "$1" == -* ]]; then exec "$REAL_MKTEMP" "${args[@]}"; fi
 tpl="$1"; x="${tpl##*[!X]}"; base="${tpl%"$x"}"
+# Characters picked in bash, with no pipe: `tr < /dev/urandom | head -c 1`
+# relied on SIGPIPE ending tr, and GitHub Actions runs jobs with SIGPIPE
+# ignored - tr then printed "write error: Broken pipe" beside the name, and
+# the kind checks (which capture stderr) failed on every run since #161.
+chars=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
 for _ in 1 2 3 4 5 6 7 8; do
     path="$base"
     for (( i = 0; i < ${#x}; i++ )); do
-        path+="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 1)"
+        path+="${chars:RANDOM % ${#chars}:1}"
     done
     if [[ -n "$dir" ]]; then mkdir -m 700 "$path" 2>/dev/null && { echo "$path"; exit 0; }
     else (umask 077; set -C; : > "$path") 2>/dev/null && { echo "$path"; exit 0; }
