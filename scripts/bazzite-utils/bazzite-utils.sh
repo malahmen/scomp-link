@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# description: EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix + Lofree Edge keyd keyboard remap
+# description: EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix + Lofree Edge keyd keyboard remap + Wine keyboard-focus fix
 # Standalone export (export.sh): no extra setup deps — OS packages are installed at runtime (Linux-only utility).
 # -----------------------------------------------------------------------------
 # bazzite-utils.sh
@@ -27,6 +27,10 @@
 #                    bypass the active layout, this specific board has its
 #                    grave/apostrophe keys hardware-swapped, and keyd v2.6.0
 #                    segfaults on macro(102nd)/macro(S-102nd).
+#   wine-focus-fix  — a Wine/Proton game on KDE Wayland that keeps the mouse
+#                    but never gets the keyboard back after a click on
+#                    another window: checks the prefix needs it, then sets
+#                    UseTakeFocus=N (Wine's X11 driver) in it.
 #
 # Sourced helpers (scripts/_common/):
 #   ui.sh   — header/info/success/warn/error_exit
@@ -65,13 +69,14 @@ mkdir -p "$CONFIG_DIR"
 
 cfg_load() {
     EA_PREFIX=""
+    WINE_FOCUS_PREFIX=""
     # Parsed, not sourced: a typed path holding a quote or $(...) ran as
     # code on the next start (Kamino 196).
-    conf_load "$CONFIG_FILE" EA_PREFIX
+    conf_load "$CONFIG_FILE" EA_PREFIX WINE_FOCUS_PREFIX
 }
 
 cfg_save() {
-    conf_write "$CONFIG_FILE" EA_PREFIX
+    conf_write "$CONFIG_FILE" EA_PREFIX WINE_FOCUS_PREFIX
 }
 
 # -----------------------------------------------------------------------------
@@ -396,6 +401,235 @@ cmd_lofree_edge_fix() {
 }
 
 # -----------------------------------------------------------------------------
+# wine-focus-fix — a Wine/Proton game that never gets the keyboard back
+# -----------------------------------------------------------------------------
+# On KDE Plasma (Wayland), a Wine/Proton game running through XWayland keeps
+# the mouse but loses the keyboard after a click on another window (a
+# terminal on the second monitor): clicking back into the game does not give
+# it the keys again, only alt-tab does. Wine's X11 driver defaults to
+# UseTakeFocus=Y - it asks the window manager for focus with the
+# WM_TAKE_FOCUS handshake instead of taking it - and KWin drops that request.
+# UseTakeFocus=N (HKCU\Software\Wine\X11 Driver) makes focus follow the click.
+# Found 2026-11-16 on retail WoW (Battle.net prefix, GE-Proton 11-12).
+#
+# Per prefix, and only where it applies: a game on Wine's own Wayland driver
+# (PROTON_ENABLE_WAYLAND=1, Graphics="wayland", no DISPLAY) never reads the
+# X11 driver's settings. Never runs a Wine of its own choosing on a prefix:
+# a different Wine than the prefix's "updates" it. So a live prefix is
+# changed through its running session's own wine, and a stopped one by
+# editing user.reg, after a backup.
+
+# Overridable so the tests can stage processes and a session.
+BZU_PROC="${BZU_PROC:-/proc}"
+
+_wf_norm() { local p="${1%/}"; printf '%s' "${p:-/}"; }
+
+# _wf_env <pid> <VAR> - one variable from a process's environment.
+_wf_env() {
+    tr '\0' '\n' < "${BZU_PROC}/$1/environ" 2>/dev/null | sed -n "s/^$2=//p" | head -1
+}
+
+# Prints "pid<TAB>prefix<TAB>name" for every readable process with a WINEPREFIX.
+_wf_scan() {
+    local d pid pfx
+    for d in "${BZU_PROC}"/[0-9]*; do
+        pid="${d##*/}"
+        pfx="$(_wf_env "$pid" WINEPREFIX)"
+        [[ -n "$pfx" ]] || continue
+        printf '%s\t%s\t%s\n' "$pid" "$(_wf_norm "$pfx")" "$(cat "$d/comm" 2>/dev/null)"
+    done
+}
+
+# _wf_pids <prefix> - the processes running in that prefix.
+_wf_pids() { _wf_scan | awk -F'\t' -v p="$1" '$2 == p { print $1 }'; }
+
+# _wf_reg_value <prefix> - UseTakeFocus as user.reg holds it, or nothing.
+_wf_reg_value() {
+    awk '
+        /^\[/ { insec = ($0 ~ /^\[Software\\\\Wine\\\\X11 Driver\]/); next }
+        insec && /^"UseTakeFocus"=/ { v = $0; sub(/^"UseTakeFocus"="/, "", v); sub(/".*$/, "", v); print v; exit }
+    ' "$1/user.reg"
+}
+
+# _wf_graphics_driver <prefix> - Graphics under HKCU\Software\Wine\Drivers.
+_wf_graphics_driver() {
+    awk '
+        /^\[/ { insec = ($0 ~ /^\[Software\\\\Wine\\\\Drivers\]/); next }
+        insec && /^"Graphics"=/ { v = $0; sub(/^"Graphics"="/, "", v); sub(/".*$/, "", v); print v; exit }
+    ' "$1/user.reg"
+}
+
+# _wf_wine_for <prefix> - the wine binary of the session running in it: the
+# one beside its wineserver, else $PROTONPATH's.
+_wf_wine_for() {
+    local pid exe pp
+    for pid in $(_wf_pids "$1"); do
+        exe="$(readlink "${BZU_PROC}/${pid}/exe" 2>/dev/null)" || continue
+        if [[ "${exe##*/}" == wineserver* && -x "${exe%/*}/wine" ]]; then
+            printf '%s' "${exe%/*}/wine"; return 0
+        fi
+    done
+    for pid in $(_wf_pids "$1"); do
+        pp="$(_wf_env "$pid" PROTONPATH)"
+        if [[ -n "$pp" && -x "${pp%/}/files/bin/wine" ]]; then
+            printf '%s' "${pp%/}/files/bin/wine"; return 0
+        fi
+    done
+    return 1
+}
+
+# _wf_write_offline <prefix> <Y|N> - sets the value in user.reg, which must
+# not be in use (the wineserver rewrites it on exit). Backed up first.
+_wf_write_offline() {
+    local reg="$1/user.reg" val="$2" tmp backup
+    backup="${reg}.scomp-bak-$(date +%Y%m%d-%H%M%S)"
+    cp -p "$reg" "$backup" || error_exit "Could not back up ${reg}."
+    tmp="$(mktemp "${reg}.XXXXXX")" || error_exit "Could not create a temporary file next to ${reg}."
+    # The value goes right after the section's header (and its #time line),
+    # any old UseTakeFocus line in the section is dropped, and a prefix that
+    # has no such section yet gets one at the end.
+    awk -v val="$val" -v now="$(date +%s)" '
+        function emit() { print "\"UseTakeFocus\"=\"" val "\"" }
+        pending { if ($0 ~ /^#time=/) { print; emit(); pending = 0; next } emit(); pending = 0 }
+        /^\[/ {
+            insec = ($0 ~ /^\[Software\\\\Wine\\\\X11 Driver\]/)
+            if (insec) { found = 1; print; pending = 1; next }
+        }
+        insec && /^"UseTakeFocus"=/ { next }
+        { print }
+        END {
+            if (pending) emit()
+            if (!found) { print ""; print "[Software\\\\Wine\\\\X11 Driver] " now; emit() }
+        }
+    ' "$reg" > "$tmp" || { rm -f "$tmp"; error_exit "Could not rewrite ${reg}."; }
+    chmod --reference="$reg" "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$reg" || error_exit "Could not replace ${reg} (backup: ${backup})."
+    info "Backup of the previous registry: ${backup}"
+}
+
+# _wf_set <prefix> <Y|N> - live through the running session, else offline.
+_wf_set() {
+    local prefix="$1" val="$2" wine
+    if [[ -n "$(_wf_pids "$prefix")" ]]; then
+        wine="$(_wf_wine_for "$prefix")" \
+            || error_exit "Wine is running in ${prefix}, but its wine binary could not be found. Close the game and its launcher, then run this again: the change is then written straight into user.reg."
+        info "The prefix is running: setting it through its own session (${wine})."
+        WINEPREFIX="$prefix" "$wine" reg add 'HKCU\Software\Wine\X11 Driver' \
+            /v UseTakeFocus /t REG_SZ /d "$val" /f >/dev/null 2>&1 \
+            || error_exit "wine reg add failed in ${prefix}."
+        local now
+        now="$(WINEPREFIX="$prefix" "$wine" reg query 'HKCU\Software\Wine\X11 Driver' /v UseTakeFocus 2>/dev/null \
+            | awk '/UseTakeFocus/ { print $NF }')"
+        [[ "$now" == "$val" ]] || error_exit "The running session reports UseTakeFocus=${now:-unset} after setting ${val}."
+        success "UseTakeFocus=${val} is set in the running session."
+        warn "Wine writes it to user.reg only when the session ends: close the game AND its launcher normally (not killed), then start the game again. Running this command afterwards confirms it is on disk."
+    else
+        _wf_write_offline "$prefix" "$val"
+        [[ "$(_wf_reg_value "$prefix")" == "$val" ]] \
+            || error_exit "user.reg does not read back UseTakeFocus=${val}."
+        success "UseTakeFocus=${val} written to ${prefix}/user.reg. Start the game to use it."
+    fi
+}
+
+_wf_pick_prefix() {
+    local -A seen=() names=()
+    local pid pfx name opts=() choice
+    while IFS=$'\t' read -r pid pfx name; do
+        [[ "$name" == *.exe ]] && names[$pfx]+="${names[$pfx]:+, }${name}"
+        seen[$pfx]=1
+    done < <(_wf_scan)
+    for pfx in "${!seen[@]}"; do
+        opts+=("running: ${pfx}${names[$pfx]:+  (${names[$pfx]})}")
+    done
+    [[ -n "$WINE_FOCUS_PREFIX" && -z "${seen[$WINE_FOCUS_PREFIX]:-}" ]] && opts+=("saved: ${WINE_FOCUS_PREFIX}")
+    opts+=("Enter a prefix path…")
+    choice=$(gum choose "${opts[@]}" --header "Which Wine/Proton prefix does the game run in?") || true
+    case "$choice" in
+        running:*) pfx="${choice#running: }"; pfx="${pfx%%  (*}" ;;
+        saved:*)   pfx="${choice#saved: }" ;;
+        Enter*)
+            pfx=$(gum input --value "${WINE_FOCUS_PREFIX:-}" \
+                --header "Path to the prefix (the folder holding drive_c and user.reg):") || true ;;
+        *) return 1 ;;
+    esac
+    [[ -n "$pfx" ]] || return 1
+    pfx="${pfx/#\~/$HOME}"
+    _wf_norm "$pfx"
+}
+
+cmd_wine_focus_fix() {
+    header "Bazzite Utils — Wine Keyboard-Focus Fix"
+    cfg_load
+
+    local prefix
+    prefix="$(_wf_pick_prefix)" || { info "Cancelled."; return; }
+    [[ -f "${prefix}/user.reg" && -d "${prefix}/drive_c" ]] \
+        || error_exit "${prefix} is not a Wine prefix (no user.reg and drive_c there)."
+    WINE_FOCUS_PREFIX="$prefix"
+    cfg_save
+
+    info "Checking whether ${prefix} needs it…"
+    local current; current="$(_wf_reg_value "$prefix")"
+    if [[ "$current" == "N" ]]; then
+        success "Already applied: user.reg has UseTakeFocus=N. Nothing to do."
+        if gum confirm --default=false "Undo it (back to Wine's default, Y)?"; then
+            _wf_set "$prefix" Y
+        fi
+        return
+    fi
+    # Not "${current:-...Wine's...}": inside a ${...:-word}, bash reads the
+    # apostrophe as an opening quote, even within double quotes.
+    if [[ -n "$current" ]]; then
+        info "UseTakeFocus: ${current}"
+    else
+        info "UseTakeFocus: not set (Wine's default, Y)"
+    fi
+
+    # 1. The setup the fix is for: KWin on Wayland.
+    local desktop="${XDG_CURRENT_DESKTOP:-}" session="${XDG_SESSION_TYPE:-}"
+    if [[ "$desktop" == *KDE* && "$session" == wayland ]]; then
+        success "Session: KDE Plasma on Wayland - the setup that drops Wine's focus requests."
+    else
+        warn "Session: ${desktop:-unknown desktop} on ${session:-unknown}. This fix is for KDE Plasma on Wayland; elsewhere the cause is likely something else."
+        gum confirm --default=false "Apply anyway?" || { info "Cancelled."; return; }
+    fi
+
+    # 2. The game must be on the X11 driver: Wine's Wayland driver never reads it.
+    local graphics; graphics="$(_wf_graphics_driver "$prefix")"
+    if [[ "$graphics" == wayland* ]]; then
+        warn "The prefix's Graphics driver is \"${graphics}\": the game uses Wine's Wayland driver, which ignores UseTakeFocus. Not needed."
+        return
+    fi
+    # DISPLAY is judged on the game's own .exe processes only: a launcher's
+    # wrapper can carry the prefix without a DISPLAY (lutris-wrapper does).
+    local pid running=0 wl="" nodisp=""
+    for pid in $(_wf_pids "$prefix"); do
+        running=1
+        if [[ "$(_wf_env "$pid" PROTON_ENABLE_WAYLAND)" == 1 ]]; then wl=1; fi
+        if [[ "$(cat "${BZU_PROC}/${pid}/comm" 2>/dev/null)" == *.exe && -z "$(_wf_env "$pid" DISPLAY)" ]]; then
+            nodisp=1
+        fi
+    done
+    if [[ -n "$wl" ]]; then
+        warn "The game runs with PROTON_ENABLE_WAYLAND=1 (Wine's Wayland driver), which ignores UseTakeFocus. Not needed."
+        return
+    fi
+    if (( running )); then
+        if [[ -n "$nodisp" ]]; then
+            warn "A process in this prefix has no DISPLAY, so it may be on Wine's Wayland driver, where this setting does nothing."
+        else
+            success "The game is running through XWayland (Wine's X11 driver): the setting applies."
+        fi
+    else
+        info "Nothing is running in this prefix: it will use the X11 driver unless launched with PROTON_ENABLE_WAYLAND=1."
+    fi
+
+    gum confirm "Set UseTakeFocus=N in ${prefix}?" || { info "Cancelled."; return; }
+    _wf_set "$prefix" N
+    info "Test: click a window on another monitor, then click once back into the game and press a key."
+}
+
+# -----------------------------------------------------------------------------
 # Main dispatch
 # -----------------------------------------------------------------------------
 
@@ -406,7 +640,8 @@ main() {
             ubisoft-rws)      cmd_ubisoft_rws ;;
             kwin-greeter-fix) cmd_kwin_greeter_fix ;;
             lofree-edge-fix)  cmd_lofree_edge_fix ;;
-            *) error_exit "Unknown command: $1 (expected: ea-fix|ubisoft-rws|kwin-greeter-fix|lofree-edge-fix)" ;;
+            wine-focus-fix)   cmd_wine_focus_fix ;;
+            *) error_exit "Unknown command: $1 (expected: ea-fix|ubisoft-rws|kwin-greeter-fix|lofree-edge-fix|wine-focus-fix)" ;;
         esac
         exit 0
     fi
@@ -419,6 +654,7 @@ main() {
             "ubisoft-rws      — fix invisible/offscreen Ubisoft Connect windows" \
             "kwin-greeter-fix — sync monitor refresh rate/layout to the KDE login screen" \
             "lofree-edge-fix  — fix punctuation on a Lofree Edge Bluetooth keyboard" \
+            "wine-focus-fix   — give a Wine/Proton game the keyboard back after clicking away" \
             "quit" \
             --header "Choose a utility:") || true
 
@@ -429,6 +665,7 @@ main() {
             ubisoft-rws*)      cmd_ubisoft_rws ;;
             kwin-greeter-fix*) cmd_kwin_greeter_fix ;;
             lofree-edge-fix*)  cmd_lofree_edge_fix ;;
+            wine-focus-fix*)   cmd_wine_focus_fix ;;
         esac
 
         echo ""
