@@ -85,7 +85,7 @@ Credentials are asked for (or generated, if left empty) only for **new** data. R
 
 | Script                                                               | Targets      | Description                                                              |
 | -------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------ |
-| [`bazzite-utils/bazzite-utils.sh`](docs/scripts/bazzite-utils.md)    | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix + per-device keyd keyboard remap |
+| [`bazzite-utils/bazzite-utils.sh`](docs/scripts/bazzite-utils.md)    | -            | EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix + per-device keyd keyboard remap + Wine keyboard-focus fix |
 | [`comfyengine/comfyengine.sh`](docs/scripts/comfyengine.md)          | -            | Build & install the ComfyEngine memory scanner from source               |
 | [`gameconqueror/gameconqueror.sh`](docs/scripts/gameconqueror.md)    | -            | Build & install GameConqueror/scanmem (GUI memory scanner) from source   |
 | [`wow-vmangos-nordrassil/wow-vmangos-nordrassil.sh`](docs/scripts/wow-vmangos-nordrassil.md) | Docker · K8s | Build, containerize, and deploy a VMaNGOS vanilla WoW server — front-end for the standalone [nordrassil](https://github.com/malahmen/nordrassil) engine |
@@ -355,6 +355,7 @@ scomp-link/
 │   ├── stubs/gum                     # scripted answers instead of a terminal
 │   ├── lib/service-stubs.sh          # recording docker/podman/kubectl/helm/kind for the service tests
 │   ├── test-astromech.sh             # the astromech front-end
+│   ├── test-bazzite-utils.sh         # bazzite-utils wine-focus-fix (staged prefixes and /proc, fake wine)
 │   ├── test-carbonite.sh             # the carbonite front-end (real engine, fake CoolerControl)
 │   ├── test-edcmea.sh                # the EDCMEA front-end (fake engine, recording crontab/systemctl)
 │   ├── test-git-optional.sh          # the front-ends without git: a local engine still runs
@@ -456,7 +457,7 @@ scomp-link/
     │
     ├── # Gaming
     ├── bazzite-utils/
-    │   ├── bazzite-utils.sh          # EA App / Ubisoft Connect / KDE greeter / Lofree Edge keyd fixes
+    │   ├── bazzite-utils.sh          # EA App / Ubisoft Connect / KDE greeter / Lofree Edge keyd / Wine focus fixes
     │   └── templates/
     │       └── lofree-edge.conf      # keyd remap for lofree-edge-fix
     ├── comfyengine/
