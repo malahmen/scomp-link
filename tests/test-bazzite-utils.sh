@@ -52,6 +52,7 @@ DRV_WL='[Software\\Wine\\Drivers] 1792432429
 "Graphics"="wayland,x11"'
 
 # The fake wine records its argv and keeps the value "the session" holds.
+# Its reg query ends lines with CRLF, as the real wine's console does.
 PROTON="$T/proton"; mkdir -p "$PROTON/files/bin"
 cat > "$PROTON/files/bin/wine" <<EOF
 #!/usr/bin/env bash
@@ -59,7 +60,7 @@ printf '%s|%s\n' "\$WINEPREFIX" "\$*" >> "$T/wine-calls"
 case "\$1" in
     # reg add <key> /v <name> /t <type> /d <value> /f: the value is the 9th.
     reg) [[ "\$2" == add ]] && printf '%s' "\${9}" > "$T/live-value"
-         [[ "\$2" == query ]] && printf '    UseTakeFocus    REG_SZ    %s\n' "\$(cat "$T/live-value" 2>/dev/null)" ;;
+         [[ "\$2" == query ]] && printf '    UseTakeFocus    REG_SZ    %s\r\n' "\$(cat "$T/live-value" 2>/dev/null)" ;;
 esac
 exit 0
 EOF
