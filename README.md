@@ -108,6 +108,7 @@ Credentials are asked for (or generated, if left empty) only for **new** data. R
 | [`thermal-exhaust-port/thermal-exhaust-port.sh`](docs/scripts/thermal-exhaust-port.md) | Stepped fan curve for machines whose fans the embedded controller owns rather than hwmon PWM (a Framework Desktop exposes no `pwm*` nodes at all, so fan-control and `fancontrol` have nothing to drive) — temperature → duty steps with one-sided hysteresis, driving the EC through `ectool`; front-end for the standalone [thermal-exhaust-port](https://github.com/malahmen/thermal-exhaust-port) engine, which runs as a systemd service |
 | [`edcmea/edcmea.sh`](docs/scripts/edcmea.md) | Elite Dangerous commodity market alerts - watch rules (commodity, price, pad, distance, data age; fleet carriers left out) over Ardent Insight's market data, emailed through Charm's pop when a station pays enough, and the schedule (systemd user timer or crontab); front-end for the standalone [EDCMEA](https://github.com/malahmen/EDCMEA) engine, made for cron |
 | [`carbonite/carbonite.sh`](docs/scripts/carbonite.md) | Fan curve for desktop boards whose headers *are* hwmon PWM (an MSI board's NCT6687) but sit on a BIOS curve — writes a temperature → duty curve into CoolerControl over its API (Graph profile per sensor, Mix of the hottest, one-sided hysteresis) and reads it back, the AIO pump pinned at 100% by name (header labels lie), and per-fan floors for fans that stall; front-end for the standalone [carbonite](https://github.com/malahmen/carbonite) engine |
+| [`kessel-run/kessel-run.sh`](docs/scripts/kessel-run.md) | Connection speed test - internet latency, jitter, download and upload against Cloudflare's speed endpoints (curl, nothing to install), and LAN throughput both ways with iperf3 to another machine, started there over ssh as a one-shot server - to tell a slow line from a slow home network |
 
 ---
 
@@ -158,8 +159,8 @@ The setup script will:
 | TeX Live (xelatex/lualatex) | holo-convert PDF output                               |
 | openssl                     | younglings-key certificate generation                 |
 | redis-cli                   | Redis connect and queue listing (prompted at runtime) |
-| jq                          | navicomputer (SSH profile manager), holonet-sync engine |
-| curl                        | Akinn, Argo                                           |
+| jq                          | navicomputer (SSH profile manager), holonet-sync engine, kessel-run LAN test |
+| curl                        | Akinn, Argo, kessel-run                               |
 | flock, git (>= 2.38)        | holonet-sync engine (offered via dnf/apt/rpm-ostree from its menu) |
 | nc (netcat)                 | K8s port-forward/connect readiness checks (DB, observability, platform scripts; not auto-checked) |
 | docker-compose (v1 binary)  | lgtm and dozzle Docker targets (not auto-checked)     |
@@ -168,6 +169,7 @@ The setup script will:
 | lsof or ss                  | kind port-conflict check, lgtm/dozzle port checks     |
 | xdotool, wmctrl             | bazzite-utils (auto-installed via dnf/apt/rpm-ostree)  |
 | keyd                        | bazzite-utils `lofree-edge-fix` only (COPR-layered on Fedora Atomic, `dnf`/`apt` elsewhere; requires a reboot on rpm-ostree hosts) |
+| iperf3                      | kessel-run `lan` only, on both machines (offered here via Homebrew or dnf/apt/rpm-ostree; never installed on the other machine) |
 | ectool                      | thermal-exhaust-port engine (ships with the host's EC/firmware tooling; already in the Bazzite image — not installable from a package manager) |
 | curl, jq, coolercontrold    | carbonite engine (CoolerControl is a host package with its own GUI; the engine needs a write-access token from it, not root) |
 | python3 (>= 3.9), pop       | EDCMEA engine (pop sends the alerts: `brew install pop`, or https://github.com/charmbracelet/pop) |
