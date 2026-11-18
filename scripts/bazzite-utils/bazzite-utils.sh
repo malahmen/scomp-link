@@ -532,9 +532,11 @@ _wf_set() {
         WINEPREFIX="$prefix" "$wine" reg add 'HKCU\Software\Wine\X11 Driver' \
             /v UseTakeFocus /t REG_SZ /d "$val" /f >/dev/null 2>&1 \
             || error_exit "wine reg add failed in ${prefix}."
+        # wine's console output ends lines with CRLF: without stripping the
+        # CR the value reads "N\r", never equal, and the CR garbles the error.
         local now
         now="$(WINEPREFIX="$prefix" "$wine" reg query 'HKCU\Software\Wine\X11 Driver' /v UseTakeFocus 2>/dev/null \
-            | awk '/UseTakeFocus/ { print $NF }')"
+            | awk '/UseTakeFocus/ { sub(/\r$/, ""); print $NF }')"
         [[ "$now" == "$val" ]] || error_exit "The running session reports UseTakeFocus=${now:-unset} after setting ${val}."
         success "UseTakeFocus=${val} is set in the running session."
         warn "Wine writes it to user.reg only when the session ends: close the game AND its launcher normally (not killed), then start the game again. Running this command afterwards confirms it is on disk."
