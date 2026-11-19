@@ -12,7 +12,7 @@
 #              a one-shot iperf3 server there (`iperf3 -s -1`, bounded by
 #              `timeout`), so nothing is left listening; --no-ssh tests
 #              against a server that is already running.
-#   path     — every hop to a target (mtr, or tracepath) with its loss and
+#   path     — every hop to a target (mtr, tracepath or traceroute) with its loss and
 #              latency, then the TCP handshake times of each router in your
 #              own network and of the target, and a verdict naming the hop
 #              where things go wrong. Handshakes, because a router can answer
@@ -51,14 +51,17 @@
 #     which routers answer in their fast lane - or deprioritise, so loss at
 #     one hop that later hops do not show is not real loss. A handshake is
 #     timed with bash's /dev/tcp between two EPOCHREALTIME reads in one
-#     process, bounded by timeout: no tool to install, nothing sent but the
+#     process, bounded by timeout (gtimeout from Homebrew's coreutils on
+#     macOS, offered when missing), nothing sent but the
 #     connection itself. Only routers with private addresses get handshakes
 #     (on the first of ports 80, 443, 53, 22 that answers): routers on the
 #     internet refuse them.
 #
 # Sourced helpers (scripts/_common/):
 #   ui.sh   — header/info/success/warn/error_exit
-#   deps.sh — _ensure_pkg (dnf/apt/rpm-ostree aware), for a local iperf3
+#   deps.sh — _ensure_pkg (dnf/apt/rpm-ostree aware): what this machine
+#             lacks (iperf3, jq, timeout, traceroute) is offered, through
+#             Homebrew where it is installed (macOS), never on other machines
 #   conf.sh — the remembered LAN host
 #
 # Config: ~/.config/kessel-run/kessel-run.conf (XDG-style, key=value)
@@ -276,16 +279,47 @@ cmd_internet() {
 # LAN: iperf3
 # -----------------------------------------------------------------------------
 
-_need_iperf3() {
-    command -v iperf3 &>/dev/null && return 0
-    if command -v brew &>/dev/null && gum confirm "iperf3 is not installed here. Install it with Homebrew (no reboot)?"; then
-        brew install iperf3 || error_exit "brew install iperf3 failed."
+# _need_tool <binary> <brew formula> <dnf package> <apt package> <why> - make
+# sure this machine has <binary>, offering to install it when it does not:
+# with Homebrew where it is installed (macOS, and Linuxbrew), else the
+# system's package manager. Exits with <why> when declined or impossible.
+_need_tool() {
+    local bin="$1" formula="$2" pkg_dnf="$3" pkg_apt="$4" why="$5"
+    command -v "$bin" &>/dev/null && return 0
+    if command -v brew &>/dev/null; then
+        gum confirm "${bin} is not installed here. Install it with Homebrew (${formula})?" \
+            || error_exit "${why}"
+        brew install "$formula" || error_exit "brew install ${formula} failed."
     else
-        gum confirm "iperf3 is not installed here. Install it with the system package manager?" \
-            || error_exit "The LAN test needs iperf3 on this machine."
-        _ensure_pkg iperf3 iperf3 || error_exit "iperf3 is not available yet (a layered package needs the reboot first)."
+        gum confirm "${bin} is not installed here. Install it with the system package manager?" \
+            || error_exit "${why}"
+        _ensure_pkg "$bin" "$pkg_dnf" "$pkg_apt" || error_exit "${bin} is not available yet (a layered package needs the reboot first)."
     fi
-    command -v iperf3 &>/dev/null || error_exit "iperf3 is still not on the PATH."
+    command -v "$bin" &>/dev/null || error_exit "${bin} is still not on the PATH."
+}
+
+_need_iperf3() { _need_tool iperf3 iperf3 iperf3 iperf3 "The LAN test needs iperf3 on this machine."; }
+
+# _need_timeout - sets TIMEOUT_CMD: GNU timeout, or gtimeout (the name
+# Homebrew's coreutils gives it on macOS, which ships neither). Offers
+# coreutils when both are missing.
+TIMEOUT_CMD=""
+_need_timeout() {
+    if command -v timeout &>/dev/null; then TIMEOUT_CMD=timeout; return 0; fi
+    if command -v gtimeout &>/dev/null; then TIMEOUT_CMD=gtimeout; return 0; fi
+    local why="path needs timeout (coreutils) to bound each handshake."
+    if command -v brew &>/dev/null; then
+        gum confirm "timeout is not installed here. Install coreutils with Homebrew (it adds gtimeout)?" \
+            || error_exit "$why"
+        brew install coreutils || error_exit "brew install coreutils failed."
+    else
+        gum confirm "timeout is not installed here. Install coreutils with the system package manager?" \
+            || error_exit "$why"
+        _ensure_pkg timeout coreutils coreutils || error_exit "timeout is not available yet (a layered package needs the reboot first)."
+    fi
+    if command -v timeout &>/dev/null; then TIMEOUT_CMD=timeout
+    elif command -v gtimeout &>/dev/null; then TIMEOUT_CMD=gtimeout
+    else error_exit "timeout is still not on the PATH."; fi
 }
 
 # _ssh_hostname <host> - the address an ssh alias stands for (its HostName),
@@ -360,7 +394,7 @@ cmd_lan() {
     [[ -n "$host" ]] || error_exit "lan: which machine? kessel-run.sh lan <host>"
     _posint "--port" "$port"; _posint "--seconds" "$secs"; _posint "--streams" "$streams"
     (( port <= 65535 )) || error_exit "--port must be at most 65535."
-    command -v jq &>/dev/null || error_exit "jq is required for the LAN test: install it with your package manager."
+    _need_tool jq jq jq jq "The LAN test needs jq to read iperf3's results."
     _need_iperf3
 
     local addr="$host"
@@ -407,10 +441,12 @@ _is_private() {
 # _tcp_us <host> <port> - one TCP handshake, in microseconds. Exit 1 when the
 # port refuses, 124 when nothing answered within CONNECT_TIMEOUT. Timed inside
 # the child bash, between two EPOCHREALTIME reads around the connect alone,
-# so starting the child is not in the number.
+# so starting the child is not in the number. The child is the bash running
+# this script ($BASH): on macOS the first `bash` on the PATH can be
+# /bin/bash 3.2, which has no EPOCHREALTIME, and every time would be wrong.
 _tcp_us() {
     # shellcheck disable=SC2016
-    timeout "$CONNECT_TIMEOUT" bash -c 't0=$EPOCHREALTIME; exec 3<>"/dev/tcp/$1/$2" || exit 1; t1=$EPOCHREALTIME; exec 3>&-; echo $(( 10#${t1/[.,]/} - 10#${t0/[.,]/} ))' _ "$1" "$2" 2>/dev/null
+    "$TIMEOUT_CMD" "$CONNECT_TIMEOUT" "$BASH" -c 't0=$EPOCHREALTIME; exec 3<>"/dev/tcp/$1/$2" || exit 1; t1=$EPOCHREALTIME; exec 3>&-; echo $(( 10#${t1/[.,]/} - 10#${t0/[.,]/} ))' _ "$1" "$2" 2>/dev/null
 }
 
 # _pick_port <host> - the first of PROBE_PORTS that accepts a connection.
@@ -483,7 +519,25 @@ _trace() {
                     else print h, a, "-", lat[h], lat[h], lat[h] } }' > "$WORK/hops"
         [[ -s "$WORK/hops" ]] && { echo "tracepath, 1 probe per hop (no loss figure)"; return 0; }
     fi
+    if command -v traceroute &>/dev/null; then
+        # macOS always has it (and many Linuxes); unprivileged UDP probes.
+        # One probe per hop, numeric: "N  address  t ms", or "N  *".
+        traceroute -n -q 1 -w 2 -m 30 "$target" 2>/dev/null | awk '
+            $1 ~ /^[0-9]+$/ {
+                if ($2 == "*") { print $1, "???", "-", "-", "-", "-"; next }
+                ms = $3; print $1, $2, "-", ms, ms, ms
+            }' > "$WORK/hops"
+        [[ -s "$WORK/hops" ]] && { echo "traceroute, 1 probe per hop (no loss figure)"; return 0; }
+    fi
     return 1
+}
+
+# _need_tracer - a route-trace tool, offered when the machine has none of
+# mtr, tracepath and traceroute (macOS always has traceroute).
+_need_tracer() {
+    command -v mtr &>/dev/null || command -v tracepath &>/dev/null || command -v traceroute &>/dev/null && return 0
+    _need_tool traceroute traceroute traceroute traceroute \
+        "path needs a route-trace tool: install mtr (loss and latency per hop), tracepath (iputils) or traceroute."
 }
 
 cmd_path() {
@@ -502,12 +556,13 @@ cmd_path() {
     _posint "--port" "$port"; _posint "--cycles" "$cycles"; _posint "--handshakes" "$hs"
     (( port <= 65535 )) || error_exit "--port must be at most 65535."
     [[ -n "${EPOCHREALTIME:-}" ]] || error_exit "path needs bash 5 (EPOCHREALTIME) to time handshakes; this is ${BASH_VERSION}."
-    command -v timeout &>/dev/null || error_exit "path needs timeout (coreutils) to bound each handshake."
+    _need_timeout
+    _need_tracer
 
     info "Path to ${target}: the route first (about ${cycles} s), then ${hs} handshakes to each local router and to the target."
     local tool
     tool="$(_trace "$target" "$cycles")" \
-        || error_exit "No route trace: install mtr (loss and latency per hop) or tracepath (iputils), or check that ${target} resolves."
+        || error_exit "No route trace: mtr, tracepath and traceroute all failed - check that ${target} resolves, or install mtr (loss and latency per hop)."
     _result "Target" "${target} (handshakes on port ${port})"
     _result "Trace" "$tool"
 
