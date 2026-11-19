@@ -24,7 +24,9 @@ T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 T="$(cd "$T" && pwd)"
 mkdir -p "$T/stub" "$T/home/.ssh" "$T/tcp"
 # The real timeout, taken before the stub that times handshakes shadows it.
-LIMIT_CMD="$(command -v timeout || true)"
+LIMIT_CMD="$(command -v timeout || command -v gtimeout || true)"
+# The PATH before the stubs, for the sandbox without timeout (section 15).
+SYS_PATH="$PATH"
 export PATH="${TEST_DIR}/stubs:$T/stub:$PATH"
 export GUM_ANSWERS="$T/answers" GUM_STATE="$T/state"
 export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config"
@@ -59,7 +61,7 @@ rc="$(cat "$STUBDIR/curl-rc" 2>/dev/null || echo 0)"
 code="$(cat "$STUBDIR/http" 2>/dev/null || echo 200)"
 if [[ "$args" == *"--data-binary @"* ]]; then
     f="${args#*--data-binary @}"; f="${f%% *}"
-    stat -c %s "$f" > "$STUBDIR/upload-size" 2>/dev/null || wc -c < "$f" > "$STUBDIR/upload-size"
+    wc -c < "$f" | tr -d " " > "$STUBDIR/upload-size"   # BSD wc pads, BSD stat has no -c
 fi
 sleep 0.2
 printf '1000000 %s' "$code"
@@ -106,6 +108,13 @@ cat > "$T/stub/tracepath" <<'STUB'
 printf 'tracepath %s\n' "$*" >> "$CALLS"
 cat "$STUBDIR/tracepath.txt" 2>/dev/null
 STUB
+# traceroute: prints $STUBDIR/traceroute.txt; nothing (no route) without it.
+# Stubbed always: macOS has a real one, which would probe the network.
+cat > "$T/stub/traceroute" <<'STUB'
+#!/usr/bin/env bash
+printf 'traceroute %s\n' "$*" >> "$CALLS"
+cat "$STUBDIR/traceroute.txt" 2>/dev/null
+STUB
 
 # timeout: kessel-run's handshake timer runs `timeout N bash -c ... _ host
 # port`. This answers from $STUBDIR/tcp/<host>_<port>, one line per
@@ -115,6 +124,7 @@ cat > "$T/stub/timeout" <<'STUB'
 #!/usr/bin/env bash
 host="${*: -2:1}" port="${*: -1}"
 printf 'tcp %s %s\n' "$host" "$port" >> "$CALLS"
+printf '%s\n' "$2" >> "$STUBDIR/child"    # the shell that times the handshake
 f="$STUBDIR/tcp/${host}_${port}"
 [[ -f "$f" ]] || exit 1
 n="$(cat "$f.n" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$f.n"
@@ -128,7 +138,7 @@ STUB
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/stub/ip"
 chmod +x "$T/stub/"*
 
-reset() { : > "$CALLS"; rm -f "$T/http" "$T/curl-rc" "$T/rtt-n" "$T/refusals" "$T/remote-iperf3" "$T/upload-size" "$T/mtr.json" "$T/tracepath.txt"; rm -rf "$T/tcp"; mkdir -p "$T/tcp"; }
+reset() { : > "$CALLS"; rm -f "$T/http" "$T/curl-rc" "$T/rtt-n" "$T/refusals" "$T/remote-iperf3" "$T/upload-size" "$T/mtr.json" "$T/tracepath.txt" "$T/traceroute.txt" "$T/child"; rm -rf "$T/tcp"; mkdir -p "$T/tcp"; }
 export KESSEL_RUN_HANDSHAKE_GAP=0
 
 # mtr_hops "host loss avg worst" ... - the stub's JSON, as mtr -j writes it.
@@ -328,7 +338,7 @@ check "a hop with no reply is ???"                        bash -c 'grep -E "^ +3
 check "the last hop parsed despite its asymm note"        bash -c 'grep -E "^ +4 +83\.174\.50\.140 +- +9\.3" <<<"$OUT"'
 reset
 run path
-check "neither tool: it says what to install"             has "No route trace: install mtr (loss and latency per hop) or tracepath (iputils)" "$OUT"
+check "no tool traces: it says so, and what to install"   has "No route trace: mtr, tracepath and traceroute all failed" "$OUT"
 check "and exits non-zero"                                [ "$RC" != 0 ]
 
 echo "## 13. path: options and the menu"
@@ -346,6 +356,67 @@ tcp 9.9.9.9 443 $(rep 40 9000)
 printf '%s\n' "path     — every hop on the way, and which one is slow" "9.9.9.9" "no" > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"
 OUT="$(limited bash "$FRONT" </dev/null 2>&1)"
 check "the menu offers path and runs it to the typed target" bash -c 'grep -q "^mtr -n -j -c 20 9.9.9.9$" "$CALLS" && grep -q "Nothing wrong found: no loss reaching 9.9.9.9" <<<"$OUT"'
+
+echo "## 14. path: traceroute when mtr and tracepath give nothing (macOS has only it)"
+reset
+cat > "$T/traceroute.txt" <<'TR'
+traceroute to 1.1.1.1 (1.1.1.1), 30 hops max, 40 byte packets
+ 1  192.168.3.1  2.512 ms
+ 2  *
+ 3  83.174.50.140  9.344 ms
+TR
+tcp 192.168.3.1 80 $(rep 20 2000)
+tcp 1.1.1.1 443 $(rep 20 9000)
+run path --handshakes 20
+check "it exits 0"                                        [ "$RC" = 0 ]
+check "traceroute is used and named"                      has "Trace      traceroute, 1 probe per hop (no loss figure)" "$OUT"
+check "numeric, one probe per hop"                        grep -q '^traceroute -n -q 1 -w 2 -m 30 1.1.1.1$' "$CALLS"
+check "its time per hop, no loss figure"                  bash -c 'grep -E "^ +1 +192\.168\.3\.1 +- +2\.5 +2\.5" <<<"$OUT"'
+check "a hop with no reply is ???"                        bash -c 'grep -E "^ +2 +\?\?\? " <<<"$OUT"'
+
+echo "## 15. path: handshakes are timed by the bash running the script, not the first on PATH"
+check "the child is \$BASH, an absolute path"           bash -c '[[ "$(sort -u "$1")" == "$2" ]]' _ "$T/child" "$(command -v bash)"
+
+echo "## 16. path without timeout: gtimeout, or coreutils offered"
+# A PATH with everything this machine has except timeout, gtimeout and brew,
+# so the case is the same on Linux (which has timeout) and macOS.
+mkdir -p "$T/sys" "$T/stub2" "$T/gt" "$T/brewdir"
+IFS=: read -r -a sysdirs <<< "$SYS_PATH"
+for d in "${sysdirs[@]}"; do
+    for f in "$d"/*; do
+        b="${f##*/}"
+        case "$b" in timeout|gtimeout|brew) continue ;; esac
+        [[ -x "$f" && ! -e "$T/sys/$b" ]] && ln -s "$f" "$T/sys/$b"
+    done
+done
+for f in "$T/stub/"*; do [[ "${f##*/}" == timeout ]] || cp "$f" "$T/stub2/"; done
+cat > "$T/brewdir/brew" <<STUB
+#!/usr/bin/env bash
+printf 'brew %s\n' "\$*" >> "\$CALLS"
+[[ "\$*" == "install coreutils" ]] && cp "$T/stub/timeout" "$T/gt/gtimeout"
+exit 0
+STUB
+chmod +x "$T/brewdir/brew"
+NOTO_PATH="${TEST_DIR}/stubs:$T/stub2:$T/gt:$T/sys"
+path_noto() { OUT="$(PATH="$1" limited "$(command -v bash)" "$FRONT" path 9.9.9.9 --handshakes 3 </dev/null 2>&1)"; RC=$?; }
+setup16() { reset; mtr_hops "192.168.3.1 0 2.0 3.0" "9.9.9.9 0 9.0 10.0"; tcp 192.168.3.1 80 $(rep 9 2000); tcp 9.9.9.9 443 $(rep 9 9000); rm -f "$T/gt/gtimeout"; : > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"; }
+
+setup16
+cp "$T/stub/timeout" "$T/gt/gtimeout"
+path_noto "$NOTO_PATH"
+check "gtimeout alone: it is used, and path runs"         bash -c '[[ "$1" == 0 ]] && grep -q "^tcp 9.9.9.9 443$" "$2"' _ "$RC" "$CALLS"
+
+setup16
+printf '%s\n' yes > "$GUM_ANSWERS"
+path_noto "$T/brewdir:$NOTO_PATH"
+check "neither, with Homebrew: coreutils is offered and installed" grep -q '^brew install coreutils$' "$CALLS"
+check "...and path then runs with gtimeout"               bash -c '[[ "$1" == 0 ]] && grep -q "^tcp 9.9.9.9 443$" "$2"' _ "$RC" "$CALLS"
+
+setup16
+printf '%s\n' no > "$GUM_ANSWERS"
+path_noto "$T/brewdir:$NOTO_PATH"
+check "declined: it says why and stops"                   bash -c '[[ "$1" != 0 ]] && grep -q "path needs timeout (coreutils) to bound each handshake" <<<"$2"' _ "$RC" "$OUT"
+check "...and installs nothing"                           bash -c '! grep -q "^brew install" "$1"' _ "$CALLS"
 
 echo
 if (( FAILS )); then echo "FAIL - ${FAILS} check(s) failed"; exit 1; fi
