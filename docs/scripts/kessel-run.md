@@ -3,12 +3,13 @@
 `kessel-run/kessel-run.sh`
 
 How fast is the connection, and when it is slow, is it the internet line or the
-network in the house? Two tests, from the menu or straight from the command line:
+network in the house - and which router? Three tests, from the menu or straight from the command line:
 
 | Test | Measures | Against |
 | ---- | -------- | ------- |
 | **internet** | latency and jitter, then download and upload throughput | Cloudflare's speed endpoints (`speed.cloudflare.com`, the ones its own speed test uses), with `curl` |
 | **lan** | throughput both ways | another machine, with `iperf3` |
+| **path** | every hop's loss and latency, then how fast each of your routers and the target set up new connections, and a verdict naming the hop where things go wrong | a target on the internet (default `1.1.1.1`), with `mtr` (or `tracepath`) and bash |
 
 A slow internet result next to a fast LAN result points at the line or the ISP.
 A slow LAN result points at the cable, the switch or the Wi-Fi.
@@ -19,6 +20,7 @@ A slow LAN result points at the cable, the switch or the Wi-Fi.
 kessel-run.sh                                   # menu
 kessel-run.sh internet [--seconds N] [--streams N]
 kessel-run.sh lan <host> [--port N] [--seconds N] [--streams N] [--no-ssh]
+kessel-run.sh path [target] [--port N] [--cycles N] [--handshakes N]
 ```
 
 Defaults: 10 seconds per direction, 4 parallel streams, port 5201.
@@ -94,9 +96,71 @@ server) and not retried.
 The ssh connection uses `BatchMode`: the host needs key-based login, because a
 password prompt would hang the test.
 
+## The path test
+
+Why it exists: on 2026-11-18 corelia's new connections sometimes stalled for
+0.2-1.7 s (Kamino item 285). Ping and a plain trace were clean all the way - a
+router answers those in its fast lane. What found it was timing TCP handshakes
+to each router: the Huawei mesh master stalled, the Vodafone router behind it
+much less. This test does that by itself.
+
+1. **The route**, with `mtr -n -j` (20 cycles, `--cycles`): each hop's address,
+   loss, average and worst latency. Without mtr, or where mtr cannot send its
+   probes, `tracepath`: one probe per hop and no loss figure.
+2. **Handshakes to your routers**: every hop with a private address
+   (10/8, 172.16/12, 192.168/16, and 100.64/10, where ISPs put customers behind
+   carrier-grade NAT) gets 40 handshakes (`--handshakes`) on the first of ports
+   80, 443, 53, 22 that accepts one. Routers on the internet refuse them, so
+   they get none.
+3. **Handshakes to the target** on port 443 (`--port`), the same way.
+4. **The table and a verdict.**
+
+A handshake is timed with bash's own `/dev/tcp`, between two `EPOCHREALTIME`
+reads around the connect alone, in one process: nothing to install, nothing
+sent but the connection itself, and a connection to meksha measures 0.4 ms. Each
+is bounded by `timeout` (3 s): a lost connection request would otherwise wait
+two minutes. One counts as **slow** above 100 ms or 3 x that host's median,
+whichever is more, so a distant target's normal latency is not a stall.
+
+Example (corelia, 2026-11-19, shortened):
+
+```
+  Hop  Address           Loss   Avg ms  Worst ms   Connect  median   worst    slow
+    1  192.168.3.1         0%      2.9       7.6   :80         2.7  1682.1    4/40
+    2  192.168.1.1         5%      4.0       5.2   :80         3.9   421.4    4/40
+    3  5.158.0.3          70%      8.8       9.7
+    7  1.1.1.1             0%      9.1      10.7
+  →  1.1.1.1                                     :443        8.4    15.5    0/40
+```
+
+How the verdict reads it:
+
+- **Loss that reaches the target** is traced back to the first hop from which
+  every later hop loses packets too: the problem starts at that router or the
+  link into it.
+- **Loss at a middle hop that the target does not show** is that router
+  deprioritising replies to traces: not a problem. (Hops 2 and 3 above.)
+- **A router that stalls new connections** (2 or more slow handshakes, or any
+  with no answer): the first one on the path is named, because every connection
+  beyond it passes through it, with its ping latency beside it when that is
+  fine. The target's row then says whether connections it *forwards* stall
+  too: if not, it was the router's own services answering late (above: the
+  Huawei stalled, 1.1.1.1 through it did not, in that run).
+- **Stalls only at the target**, none on your routers: the cause is beyond
+  your network.
+- **A latency step that stays up** is pointed out (the longest link on the
+  path), and a router that accepts none of the ports is said to be untimed.
+- Otherwise: nothing wrong found.
+
+Run it more than once: a router that stalls now and then can have a clean
+minute.
+
 ## Requirements
 
 - `curl` for the internet test.
+- `mtr` (and `jq`, to read its JSON) or `tracepath`, bash 5 and `timeout` for
+  the path test. mtr sends its probes without root where its `mtr-packet` has
+  the `cap_net_raw` capability, as Fedora and Debian install it.
 - `jq` and `iperf3` for the LAN test. A missing local `iperf3` is offered through
   Homebrew when present (no reboot on Bazzite), otherwise through
   dnf/apt/rpm-ostree.
@@ -108,5 +172,7 @@ The LAN picker offers the last host first, then the concrete `Host` entries of
 `~/.ssh/config` (wildcards skipped), then a field to type a host. For a typed
 host it also asks whether to start the server over ssh. The choice is saved in
 `~/.config/kessel-run/kessel-run.conf` (`LAN_HOST`, `LAN_SSH`).
+
+The path test asks for the target, `1.1.1.1` unless you type another.
 
 A failed test returns to the menu instead of closing it.

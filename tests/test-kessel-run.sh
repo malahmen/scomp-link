@@ -11,6 +11,8 @@
 # shellcheck disable=SC2016
 # The single quotes around `bash -c` bodies are the point: the child expands
 # $OUT itself, from the environment, which is why it is exported.
+# shellcheck disable=SC2046
+# $(rep N value) is split on purpose: one argument per scripted handshake.
 set -uo pipefail
 
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +22,9 @@ command -v jq &>/dev/null || { echo "SKIP - jq is not installed (the LAN test pa
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 T="$(cd "$T" && pwd)"
-mkdir -p "$T/stub" "$T/home/.ssh"
+mkdir -p "$T/stub" "$T/home/.ssh" "$T/tcp"
+# The real timeout, taken before the stub that times handshakes shadows it.
+LIMIT_CMD="$(command -v timeout || true)"
 export PATH="${TEST_DIR}/stubs:$T/stub:$PATH"
 export GUM_ANSWERS="$T/answers" GUM_STATE="$T/state"
 export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config"
@@ -30,7 +34,6 @@ FAILS=0
 check() { local d="$1"; shift; if "$@"; then echo "   ok   - $d"; else echo "   FAIL - $d"; FAILS=$((FAILS + 1)); fi; }
 has()   { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
-if command -v timeout &>/dev/null; then LIMIT_CMD=timeout; else LIMIT_CMD=""; fi
 limited() { if [[ -n "$LIMIT_CMD" ]]; then "$LIMIT_CMD" 60 "$@"; else "$@"; fi; }
 
 # ---- stubs ------------------------------------------------------------------
@@ -90,11 +93,57 @@ if [[ " $* " == *" -R "* ]]; then bps=935500000; else bps=941250000; fi
 printf '{"end":{"sum_sent":{"bits_per_second":%s,"retransmits":12},"sum_received":{"bits_per_second":%s}}}\n' $((bps + 5000000)) "$bps"
 STUB
 
+# mtr: prints $STUBDIR/mtr.json (exit 1 without it, as an mtr that cannot
+# send probes). tracepath: prints $STUBDIR/tracepath.txt.
+cat > "$T/stub/mtr" <<'STUB'
+#!/usr/bin/env bash
+printf 'mtr %s\n' "$*" >> "$CALLS"
+[[ -f "$STUBDIR/mtr.json" ]] || exit 1
+cat "$STUBDIR/mtr.json"
+STUB
+cat > "$T/stub/tracepath" <<'STUB'
+#!/usr/bin/env bash
+printf 'tracepath %s\n' "$*" >> "$CALLS"
+cat "$STUBDIR/tracepath.txt" 2>/dev/null
+STUB
+
+# timeout: kessel-run's handshake timer runs `timeout N bash -c ... _ host
+# port`. This answers from $STUBDIR/tcp/<host>_<port>, one line per
+# connection in turn (cycling): microseconds, or F for no answer (exit 124).
+# No file: the port refuses (exit 1).
+cat > "$T/stub/timeout" <<'STUB'
+#!/usr/bin/env bash
+host="${*: -2:1}" port="${*: -1}"
+printf 'tcp %s %s\n' "$host" "$port" >> "$CALLS"
+f="$STUBDIR/tcp/${host}_${port}"
+[[ -f "$f" ]] || exit 1
+n="$(cat "$f.n" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$f.n"
+total="$(grep -c . "$f")"
+v="$(sed -n "$(( n % total + 1 ))p" "$f")"
+[[ "$v" == F ]] && exit 124
+echo "$v"
+STUB
+
 # ip: no route information, so the link speed line is simply left out.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/stub/ip"
 chmod +x "$T/stub/"*
 
-reset() { : > "$CALLS"; rm -f "$T/http" "$T/curl-rc" "$T/rtt-n" "$T/refusals" "$T/remote-iperf3" "$T/upload-size"; }
+reset() { : > "$CALLS"; rm -f "$T/http" "$T/curl-rc" "$T/rtt-n" "$T/refusals" "$T/remote-iperf3" "$T/upload-size" "$T/mtr.json" "$T/tracepath.txt"; rm -rf "$T/tcp"; mkdir -p "$T/tcp"; }
+export KESSEL_RUN_HANDSHAKE_GAP=0
+
+# mtr_hops "host loss avg worst" ... - the stub's JSON, as mtr -j writes it.
+mtr_hops() {
+    local i=0 h l a w out=""
+    for spec in "$@"; do
+        read -r h l a w <<< "$spec"; i=$((i + 1))
+        out+="${out:+,}{\"count\":$i,\"host\":\"$h\",\"Loss%\":$l,\"Snt\":20,\"Last\":$a,\"Avg\":$a,\"Best\":$a,\"Wrst\":$w,\"StDev\":0.1}"
+    done
+    printf '{"report":{"mtr":{"src":"t","dst":"x","tests":20},"hubs":[%s]}}\n' "$out" > "$T/mtr.json"
+}
+# tcp <host> <port> <value>... - the handshake times (us) or F, in turn.
+tcp() { local h="$1" p="$2"; shift 2; printf '%s\n' "$@" > "$T/tcp/${h}_${p}"; }
+# n copies of a value
+rep() { local n="$1" v="$2"; for ((k = 0; k < n; k++)); do echo "$v"; done; }
 export OUT=""
 run() { OUT="$(limited bash "$FRONT" "$@" </dev/null 2>&1)"; RC=$?; }
 
@@ -186,9 +235,117 @@ check "the pick is saved"                                 grep -q '^LAN_HOST=mek
 reset
 printf '%s\n' "lan      — iperf3 to another machine" "last: meksha" "no" > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"
 OUT="$(limited bash "$FRONT" </dev/null 2>&1)"
-check "the last host is offered first"                    bash -c 'grep "<option>" <<<"$OUT" | sed -n 4p | grep -q "last: meksha"'
+check "the last host is offered first"                    bash -c 'grep "<option>" <<<"$OUT" | sed -n 5p | grep -q "last: meksha"'
 check "and not offered twice"                             [ "$(grep -c '<option> .*meksha' <<<"$OUT")" = 1 ]
 check "picking it runs the test"                          has "Download   935.5 Mbit/s" "$OUT"
+
+echo "## 8. path: hops, handshakes to the private ones only, the stalling router named"
+reset
+mtr_hops "192.168.3.1 0 2.9 3.5" "192.168.1.1 5 4.0 5.2" "5.158.0.3 70 8.8 9.7" "??? 100 0 0" "1.1.1.1 0 9.1 10.7"
+# The Huawei: 2.7 ms, but 3 handshakes of 400 ms and 1 with no answer, in 20.
+tcp 192.168.3.1 80 $(rep 16 2700) 400000 400000 400000 F
+# The Vodafone answers only on 53.
+tcp 192.168.1.1 53 $(rep 20 3000)
+tcp 1.1.1.1 443 $(rep 20 9000)
+run path --handshakes 20 --cycles 7
+check "it exits 0"                                        [ "$RC" = 0 ]
+check "mtr ran numeric, JSON, with the cycles, to the default target"  grep -q '^mtr -n -j -c 7 1.1.1.1$' "$CALLS"
+check "the trace tool is named"                           has "Trace      mtr, 7 cycles" "$OUT"
+check "every hop is listed, the silent one as ???"        bash -c 'for h in 192.168.3.1 192.168.1.1 5.158.0.3 "???" ; do grep -q "  $h " <<<"$OUT" || exit 1; done'
+check "hop 1: port 80, median, worst, slow count"         bash -c 'grep -E "^ +1 +192\.168\.3\.1 +0% +2\.9 +3\.5 +:80 +2\.7 +400\.0 +4/20$" <<<"$OUT"'
+check "hop 2: 80 and 443 refuse, 53 is used"              bash -c 'grep -q "tcp 192.168.1.1 80" "$CALLS" && grep -q "tcp 192.168.1.1 443" "$CALLS" && grep -E "^ +2 +192\.168\.1\.1 .*:53 +3\.0 +3\.0 +0/20$" <<<"$OUT"'
+check "no handshake to a public hop"                      bash -c '! grep -q "tcp 5.158.0.3" "$CALLS"'
+check "the target row: port 443, no stall"                bash -c 'grep -E "→ +1\.1\.1\.1 +:443 +9\.0 +9\.0 +0/20$" <<<"$OUT"'
+check "the stalling router is named, with the numbers"    has "Hop 1 (192.168.3.1) stalls new connections to itself: 3 of 20 handshakes took over 100 ms (worst 400.0 ms, median 2.7 ms), 1 of 20 got no answer within 3 s, while it answers trace probes in 2.9 ms" "$OUT"
+check "forwarded connections fine: said so, not blamed"   has "Connections through it to 1.1.1.1 did not stall in this run" "$OUT"
+check "loss at middle hops only is explained away"        has "Hops 2 (192.168.1.1), 3 (5.158.0.3) lose trace replies, but the target does not" "$OUT"
+check "no 'nothing wrong' alongside a finding"            bash -c '! grep -q "Nothing wrong found" <<<"$OUT"'
+
+echo "## 9. path: two routers stall - the first is blamed - and the target through them"
+reset
+mtr_hops "192.168.3.1 0 2.9 3.5" "192.168.1.1 0 4.0 5.0" "1.1.1.1 0 9.1 10.7"
+tcp 192.168.3.1 80 $(rep 17 2700) 400000 400000 400000
+tcp 192.168.1.1 80 $(rep 17 3000) 500000 500000 500000
+tcp 1.1.1.1 443 $(rep 17 9000) 450000 450000 450000
+run path --handshakes 20
+check "the first stalling router is the one blamed"        has "Verdict    Hop 1 (192.168.3.1) stalls new connections to itself" "$OUT"
+check "the one behind it is named as maybe its stalls"     has "Hop 2 stalls too, but connections to it pass through hop 1" "$OUT"
+check "connections through it stalled too: restart advice" has "Connections through it to 1.1.1.1 stalled too (3 of 20 over 100 ms, worst 450.0 ms)" "$OUT"
+check "access-point mode suggested if it persists"         has "access-point or bridge mode" "$OUT"
+
+echo "## 9b. path: a router that only drops handshakes is flagged"
+reset
+mtr_hops "192.168.3.1 0 2.9 3.5" "1.1.1.1 0 9.1 10.7"
+tcp 192.168.3.1 80 $(rep 19 2700) F
+tcp 1.1.1.1 443 $(rep 20 9000)
+run path --handshakes 20
+check "one unanswered handshake is enough, said as such"   has "Hop 1 (192.168.3.1) stalls new connections to itself: 1 of 20 got no answer within 3 s, while" "$OUT"
+
+echo "## 10. path: stalls only at the target, loss from a hop onwards, a latency step"
+reset
+mtr_hops "192.168.3.1 0 2.9 3.5" "10.0.0.1 0 4.0 5.0" "5.5.5.5 10 40.0 44.0" "6.6.6.6 12 42.0 45.0" "1.1.1.1 15 41.0 46.0"
+tcp 192.168.3.1 80 $(rep 20 2700)
+tcp 10.0.0.1 443 $(rep 20 4000)
+tcp 1.1.1.1 443 $(rep 16 41000) 300000 300000 300000 F
+run path --handshakes 20
+check "loss traced to the hop where it starts"            has "Packets are lost from hop 3 (5.5.5.5) onwards, 15% at the target" "$OUT"
+check "target stalls with clean routers: beyond your network" has "New connections to 1.1.1.1 stall (3 of 20 over 123 ms, worst 300.0 ms) but none of your routers does" "$OUT"
+check "the latency step is located"                       has "Latency rises by 36.0 ms at hop 3 (5.5.5.5) and stays up" "$OUT"
+check "the slow threshold follows a distant target's median (3 x 41)"  bash -c 'grep -E "→ +1\.1\.1\.1 +:443 +41\.0 +300\.0 +4/20$" <<<"$OUT"'
+
+echo "## 11. path: a clean path, a closed router, private and public ranges"
+reset
+mtr_hops "172.31.255.1 0 1.0 1.5" "172.32.0.1 0 3.0 4.0" "100.100.0.1 0 5.0 6.0" "192.168.9.1 0 6.0 7.0" "1.1.1.1 0 9.0 10.0"
+tcp 172.31.255.1 22 $(rep 20 900)
+tcp 100.100.0.1 80 $(rep 20 5000)
+tcp 1.1.1.1 443 $(rep 20 9000)
+run path --handshakes 20
+check "172.31/12 and 100.64/10 are private: probed"       bash -c 'grep -q "tcp 172.31.255.1 80" "$CALLS" && grep -q "tcp 100.100.0.1 80" "$CALLS"'
+check "172.32 is public: not probed"                      bash -c '! grep -q "tcp 172.32.0.1" "$CALLS"'
+check "a router on port 22 is timed there"                bash -c 'grep -E "^ +1 +172\.31\.255\.1 .*:22 +0\.9" <<<"$OUT"'
+check "a router answering no port is said so"             has "Hop 4 (192.168.9.1) accepts none of ports 80 443 53 22" "$OUT"
+check "and shown as closed in the table"                  bash -c 'grep -E "^ +4 +192\.168\.9\.1 .* closed" <<<"$OUT"'
+check "nothing wrong found"                               has "Nothing wrong found: no loss reaching 1.1.1.1, and no connection stalls" "$OUT"
+
+echo "## 12. path: tracepath when mtr cannot run; neither is an error"
+reset
+cat > "$T/tracepath.txt" <<'TP'
+ 1?: [LOCALHOST]                      pmtu 1500
+ 1:  192.168.3.1                                           2.539ms
+ 1:  192.168.3.1                                           1.887ms
+ 2:  192.168.1.1                                           3.609ms
+ 3:  no reply
+ 4:  83.174.50.140                                         9.344ms asymm  5
+     Too many hops: pmtu 1500
+TP
+tcp 192.168.3.1 80 $(rep 20 2000)
+tcp 192.168.1.1 80 $(rep 20 3000)
+tcp 1.1.1.1 443 $(rep 20 9000)
+run path --handshakes 20
+check "tracepath is used and named"                       has "Trace      tracepath, 1 probe per hop (no loss figure)" "$OUT"
+check "its first time per hop, no loss figure"            bash -c 'grep -E "^ +1 +192\.168\.3\.1 +- +2\.5 +2\.5" <<<"$OUT"'
+check "a hop with no reply is ???"                        bash -c 'grep -E "^ +3 +\?\?\? " <<<"$OUT"'
+check "the last hop parsed despite its asymm note"        bash -c 'grep -E "^ +4 +83\.174\.50\.140 +- +9\.3" <<<"$OUT"'
+reset
+run path
+check "neither tool: it says what to install"             has "No route trace: install mtr (loss and latency per hop) or tracepath (iputils)" "$OUT"
+check "and exits non-zero"                                [ "$RC" != 0 ]
+
+echo "## 13. path: options and the menu"
+reset
+run path --cycles 0
+check "--cycles 0 is refused"                             has "--cycles must be a whole number above zero" "$OUT"
+run path --port 70000
+check "a port above 65535 is refused"                     has "--port must be at most 65535" "$OUT"
+run path a.example b.example
+check "two targets are refused"                           has "path: one target only" "$OUT"
+reset
+mtr_hops "192.168.3.1 0 2.0 3.0" "9.9.9.9 0 9.0 10.0"
+tcp 192.168.3.1 80 $(rep 40 2000)
+tcp 9.9.9.9 443 $(rep 40 9000)
+printf '%s\n' "path     — every hop on the way, and which one is slow" "9.9.9.9" "no" > "$GUM_ANSWERS"; echo 0 > "$GUM_STATE"
+OUT="$(limited bash "$FRONT" </dev/null 2>&1)"
+check "the menu offers path and runs it to the typed target" bash -c 'grep -q "^mtr -n -j -c 20 9.9.9.9$" "$CALLS" && grep -q "Nothing wrong found: no loss reaching 9.9.9.9" <<<"$OUT"'
 
 echo
 if (( FAILS )); then echo "FAIL - ${FAILS} check(s) failed"; exit 1; fi
