@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Install and launch lazydocker, the terminal UI for Docker
+# termux: a UI for Docker, which Android cannot run
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: lazydocker
 # -----------------------------------------------------------------------------

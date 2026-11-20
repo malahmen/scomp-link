@@ -125,7 +125,10 @@ awk -v m="$BOOTSTRAP_MARKER" 'index($0,m){exit} {print}' "$SETUP_SH" > "$out_set
 # Scrub scomp-link-internal names from the reused functions' comments/messages
 # so the standalone setup doesn't reference tooling that isn't shipped with it.
 # (any starlight-*/starlight_*.sh first, else the init.sh rule would mangle them.)
-perl -pi -e 's/\bstarlight[-_][A-Za-z0-9]+\.sh\b/this tool/g; s/\binit\.sh\b/this tool/g' "$out_setup"
+# sed -E, not perl: Termux has no perl unless installed. No \b (BSD sed lacks
+# it): a non-word character or the line's edge stands in for it, and is kept.
+sed -E "s/(^|[^A-Za-z0-9_])starlight[-_][A-Za-z0-9]+\\.sh(\$|[^A-Za-z0-9_])/\\1this tool\\2/g; s/(^|[^A-Za-z0-9_])init\\.sh(\$|[^A-Za-z0-9_])/\\1this tool\\2/g" \
+    "$out_setup" > "${out_setup}.tmp" && mv "${out_setup}.tmp" "$out_setup"
 
 # A best-effort tool installer (only appended when the manifest lists tools).
 # Prefers mise (already bootstrapped, cross-platform — same path gum uses), then
@@ -142,6 +145,8 @@ ensure_tool() {
         export PATH="$HOME/.local/share/mise/shims:$PATH"
     elif [ "$OS" = "macos" ] && command_exists brew; then
         brew install "$bin" || true
+    elif [ "$OS" = "termux" ]; then
+        pkg install -y "$bin" || true      # Termux: no sudo, apt-get is not for us
     elif command_exists apt-get; then
         sudo apt-get install -y "$bin" || true
     elif command_exists dnf; then

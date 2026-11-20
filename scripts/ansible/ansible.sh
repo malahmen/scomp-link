@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Install and manage Ansible (core + collections) via mise
+# termux: Ansible is installed with mise, which has no Android build
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: ansible-playbook
 # -----------------------------------------------------------------------------

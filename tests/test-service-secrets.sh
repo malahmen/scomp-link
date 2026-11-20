@@ -27,6 +27,23 @@ check "a length beyond one urandom block is filled exactly (200; one block gives
 out="$(gen 16 'a-f0-9')"
 check "a charset narrows the output (16 hex digits)" grep -qxE '[a-f0-9]{16}' <<< "$out"
 check "a bad length is refused" bash -c 'source "$1"; ! _gen_secret 0 2>/dev/null' _ "${SVC_DIR}/_common/secret.sh"
+# Without head or tr (Termux had neither on a /usr/bin:/bin PATH) the loop
+# used to spin forever: `set -e` is off inside $(...). It must fail instead.
+# A watchdog of 5 s; `sleep` is stubbed here, so it waits with read -t.
+_secret_without_tools() {
+    local bash_bin p _
+    bash_bin="$(command -v bash)"
+    PATH=/nonexistent "$bash_bin" -c 'set -euo pipefail; source "$1"; s="$(_gen_secret 8)"' \
+        _ "${SVC_DIR}/_common/secret.sh" 2>/dev/null &
+    p=$!
+    for _ in {1..50}; do
+        kill -0 "$p" 2>/dev/null || break
+        read -rt 0.1 <> <(:) || true
+    done
+    if kill -0 "$p" 2>/dev/null; then kill "$p"; wait "$p" 2>/dev/null; return 1; fi
+    ! wait "$p"
+}
+check "a missing head or tr fails, it does not hang" _secret_without_tools
 
 # docker_run_env <VAR> - the value VAR was given in the last `docker run`:
 # from the container env the docker stub recorded, as a secret is passed as

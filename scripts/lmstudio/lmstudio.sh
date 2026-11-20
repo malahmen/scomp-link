@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Install and manage LM Studio (Flatpak), headless service support
+# termux: LM Studio is a desktop Flatpak run by systemd
 # Standalone export (export.sh): no extra setup deps — LM Studio app + display deps are handled at runtime.
 # -----------------------------------------------------------------------------
 # lmstudio.sh

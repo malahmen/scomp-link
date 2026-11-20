@@ -156,7 +156,13 @@ select_target() {
 
     if [[ "$count" -eq 0 ]]; then
         _cluster_err "No deployment targets found."
-        _cluster_err "Start Docker, create a kind cluster, or configure a kubeconfig context."
+        if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; then
+            # Android gives apps no Docker, kind or podman: a cluster is the
+            # only target a phone can reach.
+            _cluster_err "On Termux only a Kubernetes cluster can be a target: pkg install kubectl helm, and put its kubeconfig in ~/.kube/config."
+        else
+            _cluster_err "Start Docker, create a kind cluster, or configure a kubeconfig context."
+        fi
         return 1
     fi
 

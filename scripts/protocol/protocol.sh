@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: protocol - the conversion API (marker · markitdown · transcription) on corelia: build, install, status, test (Podman)
+# termux: runs its services with podman and systemd
 # export-setup: curl git
 # -----------------------------------------------------------------------------
 # protocol.sh

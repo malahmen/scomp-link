@@ -15,7 +15,11 @@ _gen_secret() {
     local len="${1:?_gen_secret: length required}" charset="${2:-A-Za-z0-9}" out="" chunk
     [[ "$len" =~ ^[1-9][0-9]*$ ]] || { echo "_gen_secret: bad length '${len}'" >&2; return 2; }
     while (( ${#out} < len )); do
-        chunk="$(LC_ALL=C head -c 512 /dev/urandom | LC_ALL=C tr -dc "$charset")"
+        # Check the pipeline itself: `set -e` is off inside the caller's
+        # $(...), so a missing head or tr would give an empty chunk every time
+        # and this loop would never end.
+        chunk="$(LC_ALL=C head -c 512 /dev/urandom | LC_ALL=C tr -dc "$charset")" \
+            || { echo "_gen_secret: could not read /dev/urandom through head and tr" >&2; return 1; }
         out+="$chunk"
     done
     printf '%s' "${out:0:len}"

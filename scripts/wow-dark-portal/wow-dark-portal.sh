@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Vanilla WoW multibox client — gum front-end for the dark-portal engine
+# termux: runs WoW clients under Wine
 # Standalone export (export.sh): no extra setup deps — git is checked at runtime (engine clone).
 # -----------------------------------------------------------------------------
 # gum front-end for the standalone, flag-driven `dark-portal` engine — provisions

@@ -62,6 +62,32 @@ get_scripts() {
     fi
 }
 
+# Termux (Android): the app sets TERMUX_VERSION; its prefix is under
+# com.termux (checked too, for a shell started another way).
+_is_termux() { [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; }
+
+# "# termux: <reason>" - a script that cannot work on Android says why. On
+# Termux the menu leaves those out (SCOMP_SHOW_ALL=1 shows them anyway).
+_termux_reason() {
+    sed -n 's/^#[[:space:]]*termux:[[:space:]]*//p' "$1" 2>/dev/null | head -n1
+}
+
+# runnable_scripts <list> - the scripts this host can run: all of them,
+# except on Termux.
+runnable_scripts() {
+    local r
+    if ! _is_termux || [[ "${SCOMP_SHOW_ALL:-0}" == 1 ]]; then
+        printf '%s\n' "$1"
+        return
+    fi
+    while IFS= read -r r; do
+        [ -z "$r" ] && continue
+        [ -n "$(_termux_reason "$SCRIPTS_DIR/$r")" ] || printf '%s\n' "$r"
+    done <<EOF
+$1
+EOF
+}
+
 # One-line "# description:" header from a script (empty when the script has none).
 _describe() {
     sed -n 's/^#[[:space:]]*description:[[:space:]]*//p' "$1" 2>/dev/null | head -n1
@@ -115,6 +141,14 @@ while true; do
     if [ -z "$available" ]; then
         gum style --foreground 196 "No runnable scripts found in $SCRIPTS_DIR."
         exit 1
+    fi
+
+    # On Termux, leave out the scripts that say they cannot work there.
+    all_count=$(grep -c . <<< "$available")
+    available=$(runnable_scripts "$available")
+    hidden=$(( all_count - $(grep -c . <<< "$available") ))
+    if (( hidden > 0 )); then
+        gum style --faint "Termux: ${hidden} scripts hidden - they need Docker, systemd or a desktop, which Android does not give apps. SCOMP_SHOW_ALL=1 shows them."
     fi
 
     # Let user pick — type to filter, Enter to run, ESC to quit. Each row shows

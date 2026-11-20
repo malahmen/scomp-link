@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Install, uninstall, start/stop, and check the status of Docker itself
+# termux: Android gives apps no way to run Docker
 # Standalone export (export.sh): no extra setup deps — Docker Engine + Compose are checked/instructed at runtime.
 # -----------------------------------------------------------------------------
 # docker.sh

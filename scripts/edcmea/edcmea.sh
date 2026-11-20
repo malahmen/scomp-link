@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Elite Dangerous market alerts - watch rules, email through pop, run on a schedule
+# termux: its alerts are sent with pop, which Termux does not package
 # -----------------------------------------------------------------------------
 # Front-end for the EDCMEA engine (Elite Dangerous Commodity Market Email
 # Alert, https://github.com/malahmen/EDCMEA): a Python CLI made for cron that

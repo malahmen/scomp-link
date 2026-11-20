@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Fan curve for hwmon fans (MSI/NCT6687 desktops) — applied through CoolerControl, AIO pump pinned
+# termux: drives a PC's fans through CoolerControl
 # Standalone export (export.sh): no extra setup deps — curl and jq are the
 # engine's, and CoolerControl is a host package with a GUI of its own, so the
 # menu reports a missing daemon rather than installing one.

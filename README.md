@@ -18,7 +18,7 @@ Scomp-Link is a **framework for organizing and launching shell scripts** via an 
 - **Auto-Discovery** - Any `.sh` file in the directory appears in the menu automatically
 - **Interactive TUI** - Powered by [gum](https://github.com/charmbracelet/gum) for beautiful terminal interfaces
 - **Zero Config** - Just drop scripts in and they work
-- **Cross-Platform** - Supports macOS, Linux, and Windows (via WSL)
+- **Cross-Platform** - Supports macOS, Linux, Windows (via WSL) and Android (via [Termux](#termux-android))
 - **Bash 4+ Handling** - Automatically finds modern bash on macOS (which ships with bash 3.2)
 - **Standalone Export** - Bundle any script into a self-contained, scomp-link-free folder (`export.sh`)
 - **Trash Compactor** - Multi-select scripts and delete their folders, confirming each one (`trash-compactor.sh`)
@@ -145,6 +145,7 @@ The setup script will:
 - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
 - **Linux**: apt (Debian/Ubuntu) or dnf (Fedora/RHEL) package manager
 - **Windows**: WSL2 with a Linux distribution installed
+- **Android**: [Termux](https://termux.dev) from F-Droid or GitHub (see [Termux](#termux-android))
 
 ### Optional Dependencies
 
@@ -290,6 +291,7 @@ For best results, your scripts should:
 4. **Source `_common/` vendor-aware** - Resolve `COMMON_DIR` so the script also works when [exported](#exporting-a-script) (deps sit alongside it instead of in `../_common`)
 5. **Declare an export manifest** - so a standalone export knows what to install
 6. **Add a `# description:` header** - a one-line summary the launcher shows next to the script in the picker (and filters on), e.g. `# description: Manage SSH profiles in ~/.ssh/config`
+7. **Add a `# termux:` header if it cannot run on Android** - the reason, e.g. `# termux: needs Docker`; the launcher hides the script on [Termux](#termux-android)
 
 Example script template:
 
@@ -374,6 +376,7 @@ scomp-link/
 │   ├── test-service-secrets.sh       # the service scripts' auto-generated secrets
 │   ├── test-speaches.sh              # the speaches front-end
 │   ├── test-starlight.sh             # the starlight front-end
+│   ├── test-termux.sh                # Termux: setup.sh's detection, pkg in deps.sh, the launcher's '# termux:' filter
 │   ├── test-thermal-exhaust-port.sh  # the thermal-exhaust-port front-end
 │   ├── test-wow-cmangos-teldrassil.sh # the teldrassil front-end (fake engine)
 │   └── test-wow-vmangos-nordrassil.sh # the nordrassil front-end's restore (fake engine)
@@ -503,6 +506,44 @@ scomp-link/
 ```
 
 **Core files** (`setup.sh`, `init.sh`) are the framework. Scripts placed under `scripts/<folder>/` are auto-discovered and shown in the menu. The `_common/` folder is excluded from the menu since it contains shared libraries sourced by other scripts.
+
+---
+
+## Termux (Android)
+
+scomp-link runs in [Termux](https://termux.dev), installed from F-Droid or
+GitHub (the Play Store build is outdated):
+
+```bash
+pkg install git
+git clone https://github.com/malahmen/scomp-link.git
+cd scomp-link
+./setup.sh
+```
+
+`setup.sh` recognises Termux and installs with `pkg`, without sudo. It skips
+mise, because gum and Node.js come from `pkg` there. The package helpers in
+`scripts/_common/deps.sh` use `pkg` too, so a script that needs `jq`,
+`traceroute` or `iperf3` installs it the same way.
+
+Android gives apps no Docker, no systemd and no desktop, so the scripts that
+need one say why in a `# termux: <reason>` header, and the launcher leaves
+them out. It shows how many it hid; `SCOMP_SHOW_ALL=1 ./init.sh` lists them
+anyway. What works there:
+
+- the tools: kessel-run (no `mtr` - it falls back to `traceroute`), k9s and
+  lazygit (from `pkg`), holo-convert, younglings-key, mind-trick, holonet-sync
+  and the other engine front-ends;
+- the service scripts, against a Kubernetes cluster only: `pkg install kubectl
+  helm` and copy the cluster's kubeconfig to `~/.kube/config`;
+- `export.sh`: an exported script's `setup.sh` installs with `pkg` too.
+
+A new script that cannot work on Android should carry the header:
+
+```bash
+# description: Manage the local Docker engine
+# termux: Android gives apps no way to run Docker
+```
 
 ---
 
