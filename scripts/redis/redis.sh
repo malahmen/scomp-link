@@ -94,7 +94,14 @@ _ensure_redis_cli() {
     local os
     os=$(uname -s)
 
-    if [[ "$os" == "Darwin" ]]; then
+    # Termux first: it has apt-get too, but no sudo (its sudo asks for root).
+    # Its redis package carries redis-cli.
+    if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; then
+        if ! pkg install -y redis; then
+            warn "Failed to install redis via pkg."
+            return 1
+        fi
+    elif [[ "$os" == "Darwin" ]]; then
         if ! gum spin --spinner dot --title "Installing redis via brew..." -- \
             brew install redis; then
             warn "Failed to install redis via brew."

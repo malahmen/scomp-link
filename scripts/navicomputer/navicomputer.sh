@@ -65,7 +65,9 @@ resolve_engine() {
 
 # jq is the engine's hard dependency; the front-end parses its JSON too.
 install_jq() {
-    if command -v brew &>/dev/null; then gum spin --title "Installing jq..." -- brew install jq
+    # Termux first: it has apt-get too, but no sudo (its sudo asks for root).
+    if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; then pkg install -y jq
+    elif command -v brew &>/dev/null; then gum spin --title "Installing jq..." -- brew install jq
     elif command -v apt-get &>/dev/null; then sudo apt-get update -y && sudo apt-get install -y jq
     elif command -v dnf &>/dev/null; then sudo dnf install -y jq
     else warn "No supported package manager — install jq manually."; fi
