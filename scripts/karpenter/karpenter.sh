@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Install and manage Karpenter on any K8s cluster
+# termux: builds Karpenter from source with Go and runs it on kind (Docker)
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl kind
 # -----------------------------------------------------------------------------

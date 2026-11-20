@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Build & install GameConqueror/scanmem (GUI memory scanner)
+# termux: builds a desktop GUI memory scanner from source
 # Standalone export (export.sh): no extra setup deps — OS packages are installed at runtime (Linux-only).
 # -----------------------------------------------------------------------------
 # gameconqueror.sh

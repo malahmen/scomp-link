@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Build & install the ComfyEngine memory scanner from source
+# termux: builds a desktop memory scanner from source
 # Standalone export (export.sh): no extra setup deps — build deps (cmake/g++/Qt6/Capstone) are installed at runtime.
 # -----------------------------------------------------------------------------
 # comfyengine.sh

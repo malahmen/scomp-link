@@ -115,7 +115,14 @@ cron_run() {
         else cmd+="$c"; fi
     done
     rm -f "$T/py-argv" "$T/py-env"
-    env -i PATH=/usr/bin:/bin HOME="$T/home" /bin/sh -c "$cmd"
+    # Termux's cronie runs $PREFIX/bin/sh with $PREFIX/bin: it has no /bin.
+    # It keeps termux-exec's LD_PRELOAD, which makes #!/usr/bin/env work.
+    local sh=/bin/sh keep=(PATH=/usr/bin:/bin)
+    if [[ "${PREFIX:-}" == */com.termux/* ]]; then
+        sh="$PREFIX/bin/sh"; keep=(PATH="$PREFIX/bin")
+        [[ -n "${LD_PRELOAD:-}" ]] && keep+=(LD_PRELOAD="$LD_PRELOAD")
+    fi
+    env -i "${keep[@]}" HOME="$T/home" "$sh" -c "$cmd"
 }
 
 echo "# the menu"

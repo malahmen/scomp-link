@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: EA App staged-update fix + Ubisoft Connect offscreen-window fix + KDE greeter refresh-rate fix + Lofree Edge keyd keyboard remap + Wine keyboard-focus fix
+# termux: desktop Linux fixes (Wine prefixes, KWin, keyd)
 # Standalone export (export.sh): no extra setup deps — OS packages are installed at runtime (Linux-only utility).
 # -----------------------------------------------------------------------------
 # bazzite-utils.sh

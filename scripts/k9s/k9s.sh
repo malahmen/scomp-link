@@ -37,12 +37,23 @@ TOOL="k9s"
 # install / uninstall / status — via mise
 # -----------------------------------------------------------------------------
 
+# Termux (Android): mise has no Android build, and Termux packages k9s
+# itself, so pkg installs and removes it there.
+_is_termux() { [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; }
+
 _ensure_mise() {
     command -v mise &>/dev/null || error_exit "mise is not installed. Run setup.sh first."
 }
 
 cmd_install() {
     header "k9s — Install"
+    if _is_termux; then
+        command -v k9s &>/dev/null && { success "k9s already installed: $(command -v k9s)"; return; }
+        pkg install -y k9s || error_exit "pkg install failed for k9s."
+        command -v k9s &>/dev/null || error_exit "k9s is still missing after 'pkg install k9s'."
+        success "k9s installed: $(command -v k9s)"
+        return
+    fi
     _ensure_mise
 
     if command -v k9s &>/dev/null; then
@@ -64,6 +75,13 @@ cmd_uninstall() {
     header "k9s — Uninstall"
 
     command -v k9s &>/dev/null || { warn "k9s doesn't appear to be installed."; return; }
+
+    if _is_termux; then
+        gum confirm "Remove k9s (pkg uninstall)?" || { info "Cancelled."; return; }
+        pkg uninstall -y k9s || error_exit "pkg uninstall failed for k9s."
+        success "k9s uninstalled."
+        return
+    fi
 
     gum confirm "Remove k9s (via mise)?" || { info "Cancelled."; return; }
 

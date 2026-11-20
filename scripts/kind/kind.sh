@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Create and manage Kind Kubernetes clusters
+# termux: kind runs Kubernetes in Docker, which Android cannot run
 # Standalone export (export.sh): tools the slimmed setup.sh pre-installs.
 # export-setup: kubectl kind
 # -----------------------------------------------------------------------------

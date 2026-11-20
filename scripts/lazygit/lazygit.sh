@@ -35,12 +35,23 @@ TOOL="lazygit"
 # only installed version).
 # -----------------------------------------------------------------------------
 
+# Termux (Android): mise has no Android build, and Termux packages lazygit
+# itself, so pkg installs and removes it there.
+_is_termux() { [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; }
+
 _ensure_mise() {
     command -v mise &>/dev/null || error_exit "mise is not installed. Run setup.sh first."
 }
 
 cmd_install() {
     header "lazygit — Install"
+    if _is_termux; then
+        command -v lazygit &>/dev/null && { success "lazygit already installed: $(command -v lazygit)"; return; }
+        pkg install -y lazygit || error_exit "pkg install failed for lazygit."
+        command -v lazygit &>/dev/null || error_exit "lazygit is still missing after 'pkg install lazygit'."
+        success "lazygit installed: $(command -v lazygit)"
+        return
+    fi
     _ensure_mise
 
     if command -v lazygit &>/dev/null; then
@@ -62,6 +73,13 @@ cmd_uninstall() {
     header "lazygit — Uninstall"
 
     command -v lazygit &>/dev/null || { warn "lazygit doesn't appear to be installed."; return; }
+
+    if _is_termux; then
+        gum confirm "Remove lazygit (pkg uninstall)?" || { info "Cancelled."; return; }
+        pkg uninstall -y lazygit || error_exit "pkg uninstall failed for lazygit."
+        success "lazygit uninstalled."
+        return
+    fi
 
     gum confirm "Remove lazygit (via mise)?" || { info "Cancelled."; return; }
 

@@ -193,7 +193,12 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/nc"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/sleep"
 chmod +x "$T/bin/"*
 
-export PATH="${SVC_TEST_DIR}/stubs:$T/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# The system's own tools, after the stubs. Termux (Android) has no /usr/bin
+# or /bin: its coreutils are in $PREFIX/bin, and without them `head` and `tr`
+# are missing.
+_sys_path="/usr/bin:/bin:/usr/sbin:/sbin"
+[[ "${PREFIX:-}" == */com.termux/* ]] && _sys_path="${PREFIX}/bin:${_sys_path}"
+export PATH="${SVC_TEST_DIR}/stubs:$T/bin:${_sys_path}"
 export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config"
 # Port-forward PID files live under $XDG_RUNTIME_DIR (Kamino 196): the real one
 # is the user's session folder, so it is pointed in here too.

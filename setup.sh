@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# setup.sh — Bootstrap script for gum-based tooling on Linux/macOS
+# setup.sh — Bootstrap script for gum-based tooling on Linux, macOS and Termux (Android)
 # Detects OS, installs curl if missing, installs mise, installs gum,
 # optionally installs Node.js/npm (LTS via mise), runs init.sh
 # -----------------------------------------------------------------------------
@@ -20,8 +20,19 @@ fatal() { printf "\033[0;31m[ERROR] %s\033[0m\n" "$*" >&2; exit 1; }
 
 command_exists() { command -v "$1" &>/dev/null; }
 
+# Termux (Android): a Linux userland in the app's own prefix, without root,
+# /etc/os-release or sudo, with its own package manager (pkg, apt underneath).
+# The app sets TERMUX_VERSION; the prefix path is checked too, because a shell
+# started another way (termux-docker, ssh into Termux) may not have it.
+is_termux() { [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; }
+
 # OS detection
 detect_os() {
+    if is_termux; then
+        OS="termux"
+        PKG_MANAGER="pkg"
+        return
+    fi
     case "$(uname -s)" in
         Darwin)
             OS="macos"
@@ -59,7 +70,7 @@ Supported: Ubuntu/Debian and derivatives, Fedora/RHEL and derivatives, macOS."
             fi
             ;;
         *)
-            fatal "Unsupported OS: $(uname -s). Supported: Linux, macOS."
+            fatal "Unsupported OS: $(uname -s). Supported: Linux, macOS, Termux (Android)."
             ;;
     esac
 }
@@ -78,6 +89,13 @@ ensure_curl() {
     fi
 
     warn "curl not found. Attempting to install..."
+
+    if [ "$OS" = "termux" ]; then
+        pkg install -y curl || true
+        command_exists curl || fatal "curl is still missing after 'pkg install curl' - see the error above."
+        ok "curl installed."
+        return
+    fi
 
     # curl install requires sudo on Linux
     if ! sudo -n true 2>/dev/null; then
@@ -105,6 +123,13 @@ Install curl with your package manager, then re-run this script."
 
 # mise
 ensure_mise() {
+    # Termux packages gum and Node itself; mise's Linux builds are not made
+    # for Android, so it is not used there (and not activated either).
+    if [ "$OS" = "termux" ]; then
+        info "Termux: mise is not needed (gum and Node come from pkg)."
+        return
+    fi
+
     info "Looking for mise..."
 
     if command_exists mise; then
@@ -157,6 +182,7 @@ Please open a new terminal and re-run."
 # (not just when mise was freshly installed above) since a pre-existing mise
 # install may never have had shell activation configured either.
 ensure_mise_activation() {
+    [ "$OS" = "termux" ] && return 0
     local profile_file="" shell_name=""
 
     case "${SHELL:-}" in
@@ -205,6 +231,14 @@ ensure_gum() {
 
     if command_exists gum; then
         ok "gum found: $(command -v gum)"
+        return
+    fi
+
+    if [ "$OS" = "termux" ]; then
+        info "Installing gum via pkg..."
+        pkg install -y gum || true
+        command_exists gum || fatal "gum is still missing after 'pkg install gum' - see the error above."
+        ok "gum installed: $(command -v gum)"
         return
     fi
 
@@ -286,6 +320,9 @@ ensure_git() {
         macos)
             brew install git
             ;;
+        termux)
+            pkg install -y git || true
+            ;;
         linux)
             if ! sudo -n true 2>/dev/null; then
                 fatal "git is missing, and 'sudo -n true' failed — so this script cannot install it without prompting.
@@ -320,6 +357,9 @@ ensure_vim() {
         macos)
             brew install vim
             ;;
+        termux)
+            pkg install -y vim || true
+            ;;
         linux)
             if ! sudo -n true 2>/dev/null; then
                 fatal "vim is missing, and 'sudo -n true' failed — so this script cannot install it without prompting.
@@ -353,6 +393,9 @@ ensure_tree() {
     case "$OS" in
         macos)
             brew install tree
+            ;;
+        termux)
+            pkg install -y tree || true
             ;;
         linux)
             if ! sudo -n true 2>/dev/null; then
@@ -390,6 +433,18 @@ ensure_node() {
 
     warn "Node.js / npm not found."
     warn "Some scripts (e.g. starlight_astro.sh, bmad.sh) require Node.js."
+
+    if [ "$OS" = "termux" ]; then
+        if ! gum confirm "Install Node.js LTS via pkg (nodejs-lts)?"; then
+            warn "Skipping Node.js installation. Re-run setup.sh or: pkg install nodejs-lts"
+            return
+        fi
+        pkg install -y nodejs-lts || true
+        command_exists node && command_exists npm || fatal "Node.js is still missing after 'pkg install nodejs-lts' - see the error above."
+        _warn_node_version
+        ok "Node.js installed: node $(node --version)  npm $(npm --version)"
+        return
+    fi
 
     if ! gum confirm "Install Node.js LTS via mise?"; then
         warn "Skipping Node.js installation. Re-run setup.sh or install manually if needed."

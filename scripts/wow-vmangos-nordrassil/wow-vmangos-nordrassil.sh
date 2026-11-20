@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Vanilla WoW (VMaNGOS) server — gum front-end for the nordrassil engine
+# termux: builds the server's container images, which needs Docker
 # Standalone export (export.sh): no extra setup deps — git is checked at runtime (engine clone).
 # -----------------------------------------------------------------------------
 # gum front-end for the standalone, flag-driven `nordrassil` engine (the World

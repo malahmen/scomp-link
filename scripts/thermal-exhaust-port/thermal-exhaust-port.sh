@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # description: Stepped fan curve for EC-controlled fans (Framework Desktop) — no hwmon PWM needed
+# termux: drives a PC's fans through its embedded controller, as a systemd service
 # Standalone export (export.sh): no extra setup deps — ectool comes from the
 # host's firmware tooling (already present on Bazzite) and cannot be installed
 # from a package manager, so the menu reports it rather than promising a fix.
