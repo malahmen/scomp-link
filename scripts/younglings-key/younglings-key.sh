@@ -77,7 +77,11 @@ resolve_engine() {
 # openssl guardrail (the engine's only dependency) — offer to install it.
 # -----------------------------------------------------------------------------
 install_openssl() {
-    if command -v brew &>/dev/null; then
+    # Termux first: it has apt-get too, but no sudo (its sudo asks for root).
+    # The openssl command is in openssl-tool there; openssl is the library.
+    if [[ -n "${TERMUX_VERSION:-}" || "${PREFIX:-}" == */com.termux/* ]]; then
+        pkg install -y openssl-tool
+    elif command -v brew &>/dev/null; then
         gum spin --spinner dot --title "Installing openssl (brew)..." -- brew install openssl
     elif command -v apt-get &>/dev/null; then
         sudo apt-get update -y && sudo apt-get install -y openssl

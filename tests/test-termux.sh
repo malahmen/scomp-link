@@ -99,6 +99,32 @@ launch offhost
 check "off Termux, every script is offered" has "<option> needs-docker/needs-docker.sh" "$T/out"
 check "  with no Termux note" lacks "Termux:" "$T/out"
 
+echo "# scripts with their own installer"
+# Termux has apt-get too, and a sudo that only says "No superuser detected.
+# Are you rooted?" - navicomputer's jq install hit that on a phone. Each
+# installer is run with the stubs above (and no brew, which Termux lacks but
+# this host may have): it must use pkg, with Termux's name.
+# own_installer <script> <function> <expected pkg call>
+own_installer() {
+    local f="$REPO/scripts/$1"
+    sed -n "/^$2() {/,/^}/p" "$f" > "$T/fn.sh"
+    : > "$T/calls"
+    termux bash -c 'gum() { [[ $1 == spin ]] && { while [[ $1 != -- ]]; do shift; done; shift; "$@"; return; }; return 0; }
+        warn() { :; }; command() { [[ $1 == -v && $2 =~ ^(jq|openssl|redis-cli|brew)$ ]] && return 1; builtin command "$@"; }
+        source "$1"; "$2"' _ "$T/fn.sh" "$2" > "$T/out" 2>&1
+    check "$1: $3" grep -qx "$3" "$T/calls"
+    check "  without sudo" lacks "sudo" "$T/calls"
+}
+own_installer navicomputer/navicomputer.sh install_jq 'pkg install -y jq'
+own_installer younglings-key/younglings-key.sh install_openssl 'pkg install -y openssl-tool'
+own_installer redis/redis.sh _ensure_redis_cli 'pkg install -y redis'
+# And any new one: a script shown on Termux that runs sudo apt-get or dnf
+# itself (not in a message: no quote before it) must have a pkg branch.
+while IFS= read -r f; do
+    grep -qE '^#[[:space:]]*termux:' "$f" && continue
+    check "$(basename "$f") installs with pkg on Termux too" grep -qE '(^|[^A-Za-z_])pkg install' "$f"
+done < <(grep -rlE '^[^#"]*sudo (apt-get|apt|dnf) (update|install)' "$REPO/scripts" --include='*.sh' | sort)
+
 echo "# every '# termux:' script says why"
 while IFS= read -r f; do
     r="$(sed -n 's/^#[[:space:]]*termux:[[:space:]]*//p' "$f" | head -n1)"
