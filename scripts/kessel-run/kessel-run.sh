@@ -618,6 +618,18 @@ _join() { local sep="$1" out="$2"; shift 2; local x; for x in "$@"; do out+="${s
 
 _fmt1() { [[ "$1" == - || -z "$1" ]] && { echo "-"; return; }; awk -v x="$1" 'BEGIN { printf "%.1f", x }'; }
 
+# _stall_why <slow> <unanswered> <of> <threshold ms> <worst ms> [median ms] -
+# what stalled, in words: the slow handshakes (worst, and median when given),
+# and the unanswered ones, each only when there are any. The worst is of the
+# answered ones, so it is quoted with the slow count only - "0 of 40 over
+# 100 ms, worst 13.7 ms" read as a stall that was not one.
+_stall_why() {
+    local s="$1" f="$2" n="$3" t="$4" w="$5" m="${6:-}" why=""
+    (( s )) && why="${s} of ${n} handshakes took over ${t} ms (worst ${w} ms${m:+, median ${m} ms})"
+    (( f )) && why+="${why:+, }${f} of ${n} got no answer within ${CONNECT_TIMEOUT} s"
+    printf '%s' "$why"
+}
+
 # _path_verdict - plain-language lines on what the table shows. Reads the hop
 # arrays of cmd_path (dynamic scope).
 _path_verdict() {
@@ -661,9 +673,7 @@ _path_verdict() {
     done
     if (( first >= 0 )); then
         read -r m wv s f n t <<< "${hop_hs[$first]}"
-        local why=""
-        (( s )) && why="${s} of ${n} handshakes took over ${t} ms (worst ${wv} ms, median ${m} ms)"
-        (( f )) && why+="${why:+, }${f} of ${n} got no answer within ${CONNECT_TIMEOUT} s"
+        local why; why="$(_stall_why "$s" "$f" "$n" "$t" "$wv" "$m")"
         local ping=""
         if [[ "${hop_worst[$first]}" != - ]] && awk -v w="${hop_worst[$first]}" -v l="${hop_loss[$first]}" 'BEGIN { exit !(w < 50 && (l == "-" || l == 0)) }'; then
             ping=", while it answers trace probes in $(_fmt1 "${hop_avg[$first]}") ms: it forwards traffic fine but its processor is slow to set up new connections"
@@ -679,7 +689,7 @@ _path_verdict() {
         local tm tw ts tf tn tt
         read -r tm tw ts tf tn tt <<< "$dest_hs"
         if [[ "$tm" != - ]] && (( ts >= 2 || tf >= 1 )); then
-            _result "" "Connections through it to ${target} stalled too (${ts} of ${tn} over ${tt} ms, worst ${tw} ms): pages and apps start late. Restart that router and run this again; if it persists, take it out of the routing path (access-point or bridge mode) and let the next router route."
+            _result "" "Connections through it to ${target} stalled too ($(_stall_why "$ts" "$tf" "$tn" "$tt" "$tw")): pages and apps start late. Restart that router and run this again; if it persists, take it out of the routing path (access-point or bridge mode) and let the next router route."
         else
             _result "" "Connections through it to ${target} did not stall in this run: its own services (web page, DNS) answer late, forwarded traffic was fine this time. Run this again a few times; if the target's row starts stalling too, restart that router."
         fi
@@ -692,7 +702,7 @@ _path_verdict() {
     if [[ "$dm" == - ]]; then
         _result "Note" "${target} accepted none of the ${dn} handshakes on that port: try --port with one it serves."
     elif (( first < 0 && (ds >= 2 || df >= 1) )); then
-        _result "Verdict" "New connections to ${target} stall (${ds} of ${dn} over ${dt} ms, worst ${dw} ms) but none of your routers does: the cause is beyond your network - the ISP's side or the target."
+        _result "Verdict" "New connections to ${target} stall ($(_stall_why "$ds" "$df" "$dn" "$dt" "$dw")) but none of your routers does: the cause is beyond your network - the ISP's side or the target."
         said=1
     fi
 

@@ -280,7 +280,7 @@ tcp 1.1.1.1 443 $(rep 17 9000) 450000 450000 450000
 run path --handshakes 20
 check "the first stalling router is the one blamed"        has "Verdict    Hop 1 (192.168.3.1) stalls new connections to itself" "$OUT"
 check "the one behind it is named as maybe its stalls"     has "Hop 2 stalls too, but connections to it pass through hop 1" "$OUT"
-check "connections through it stalled too: restart advice" has "Connections through it to 1.1.1.1 stalled too (3 of 20 over 100 ms, worst 450.0 ms)" "$OUT"
+check "connections through it stalled too: restart advice" has "Connections through it to 1.1.1.1 stalled too (3 of 20 handshakes took over 100 ms (worst 450.0 ms))" "$OUT"
 check "access-point mode suggested if it persists"         has "access-point or bridge mode" "$OUT"
 
 echo "## 9b. path: a router that only drops handshakes is flagged"
@@ -291,6 +291,17 @@ tcp 1.1.1.1 443 $(rep 20 9000)
 run path --handshakes 20
 check "one unanswered handshake is enough, said as such"   has "Hop 1 (192.168.3.1) stalls new connections to itself: 1 of 20 got no answer within 3 s, while" "$OUT"
 
+echo "## 9c. path: the target's only stall is a handshake with no answer"
+# Seen live 2026-11-20: the verdict said "stalled too (0 of 40 over 100 ms,
+# worst 13.7 ms)" - a stall it then gave no number for.
+reset
+mtr_hops "192.168.3.1 0 2.9 3.5" "1.1.1.1 0 9.1 10.7"
+tcp 192.168.3.1 80 $(rep 17 2700) 400000 400000 400000
+tcp 1.1.1.1 443 $(rep 19 9000) F
+run path --handshakes 20
+check "the unanswered one is what is reported"             has "Connections through it to 1.1.1.1 stalled too (1 of 20 got no answer within 3 s)" "$OUT"
+check "  with no slow count of zero, nor its fast worst"   bash -c '! grep -qE "stalled too \(0 of|worst 9\.0 ms" <<<"$OUT"'
+
 echo "## 10. path: stalls only at the target, loss from a hop onwards, a latency step"
 reset
 mtr_hops "192.168.3.1 0 2.9 3.5" "10.0.0.1 0 4.0 5.0" "5.5.5.5 10 40.0 44.0" "6.6.6.6 12 42.0 45.0" "1.1.1.1 15 41.0 46.0"
@@ -299,7 +310,7 @@ tcp 10.0.0.1 443 $(rep 20 4000)
 tcp 1.1.1.1 443 $(rep 16 41000) 300000 300000 300000 F
 run path --handshakes 20
 check "loss traced to the hop where it starts"            has "Packets are lost from hop 3 (5.5.5.5) onwards, 15% at the target" "$OUT"
-check "target stalls with clean routers: beyond your network" has "New connections to 1.1.1.1 stall (3 of 20 over 123 ms, worst 300.0 ms) but none of your routers does" "$OUT"
+check "target stalls with clean routers: beyond your network" has "New connections to 1.1.1.1 stall (3 of 20 handshakes took over 123 ms (worst 300.0 ms), 1 of 20 got no answer within 3 s) but none of your routers does" "$OUT"
 check "the latency step is located"                       has "Latency rises by 36.0 ms at hop 3 (5.5.5.5) and stays up" "$OUT"
 check "the slow threshold follows a distant target's median (3 x 41)"  bash -c 'grep -E "→ +1\.1\.1\.1 +:443 +41\.0 +300\.0 +4/20$" <<<"$OUT"'
 
